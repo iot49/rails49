@@ -222,7 +222,7 @@ export class RrLiveView extends LitElement {
             <span>Live View</span>
             <span>FPS: ${fps}</span>
             <span>Inf Time: ${timeMs}ms</span>
-            <span>Model: ${this.classifier ? this.classifier.spec.model : 'None'}</span>
+            <span>Model: ${this.classifier ? `${this.classifier.model}-${this.classifier.precision}` : 'None'}</span>
         </div>
     `;
 

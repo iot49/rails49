@@ -334,25 +334,19 @@ export class RrLabel extends LitElement {
     return p.matrixTransform(ctm.inverse());
   }
 
-  private debugClick(event: MouseEvent) {
+  private async debugClick(event: MouseEvent) {
     const screenCoords = this.toSVGPoint(event.clientX, event.clientY);
 
-    // Default size for debug patch
-
-    
     if (!this._imageBitmap || !this.classifier) {
         console.warn("Classifier or ImageBitmap not ready for debugging");
         return;
     }
 
     const img = this._imageBitmap;
-    
-    // --- Scaled Patch via Classifier.patch ---
-    const model_dpt = this.classifier.spec.dpt || 28;
     const img_dpt = this.manifest.dots_per_track;
     
-    const scale_factor = model_dpt / img_dpt;
-    const img_patch = this.classifier.patch(img, screenCoords, this.classifier.spec.crop_size, scale_factor);
+    // --- Scaled Patch via Classifier.patch ---
+    const img_patch = await this.classifier.patch(img, screenCoords, img_dpt);
 
     if (img_patch) {
       // Setup Popup Container

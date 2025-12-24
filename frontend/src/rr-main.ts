@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { provide } from '@lit/context';
 import { R49File, r49FileContext } from './app/r49file.ts';
-import { Classifier, ClassifierSpec, classifierContext } from './app/classifier.ts';
+import { Classifier, classifierContext } from './app/classifier.ts';
 
 
 @customElement('rr-main')
@@ -46,18 +46,12 @@ export class RrMain extends LitElement {
     this._r49File.addEventListener('r49-file-changed', this._handleFileChange);
   }
 
-  private _handleClassifierSettingsChange = async (e: Event) => {
+  private _handleClassifierSettingsChange = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       const { model, precision } = detail;
       
-      console.log(`Loading classifier: ${model} (${precision})`);
-      try {
-          const spec = await ClassifierSpec.load(model, precision);
-          this._classifier = new Classifier(spec);
-          console.log(`Classifier context updated for ${model}`);
-      } catch (err) {
-          console.error("Failed to load classifier spec", err);
-      }
+      console.log(`Setting classifier: ${model} (${precision})`);
+      this._classifier = new Classifier(model, precision);
   }
 
   @state()
