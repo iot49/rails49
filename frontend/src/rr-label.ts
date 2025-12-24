@@ -127,10 +127,7 @@ export class RrLabel extends LitElement {
     // So the number of SVG units per screen pixel is imageWidth / screenWidth.
     const scale = imageWidth / width;
 
-    const newSize = MARKER_SIZE_PX * scale;
-    if (this.symbolSize !== newSize) {
-      this.symbolSize = newSize;
-    }
+    this.symbolSize = MARKER_SIZE_PX * scale;
   }
 
 
