@@ -130,8 +130,6 @@ export class RrLabel extends LitElement {
     this.symbolSize = MARKER_SIZE_PX * scale;
   }
 
-
-
   willUpdate(changedProperties: Map<string, any>) {
     // When props change, we may need to resize symbols or update the transform
     if (changedProperties.has('r49File') || changedProperties.has('imageIndex')) {
@@ -370,15 +368,14 @@ export class RrLabel extends LitElement {
 
       const classifyPromise = this.classifier.classify(img, screenCoords, img_dpt);
       
-      classifyPromise.then((primary) => {
+      classifyPromise.then((label) => {
         const resultDiv = document.createElement('div');
         resultDiv.style.background = '#e8f5e9';
         resultDiv.style.padding = '4px';
-        resultDiv.innerHTML = `<strong>Scaled (x${scale_factor.toFixed(2)}):</strong> ${primary}`;
+        resultDiv.innerHTML = label;
         this.shadowRoot?.querySelector('#debug-popup-container')?.appendChild(resultDiv);
       });
 
-      // Display Scaled Canvas
       this.shadowRoot?.querySelector('#debug-popup-container')?.appendChild(img_patch);
     }
   }
