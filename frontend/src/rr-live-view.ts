@@ -6,15 +6,14 @@ import { R49File, r49FileContext } from './app/r49file.ts';
 import { Classifier, classifierContext } from './app/classifier.ts';
 import { statusBarStyles } from './styles/status-bar.ts';
 import { getMarkerDefs } from './marker-defs.ts';
-import { CAMERA_PARAMS, LIVE_MARKER_SIZE } from './config.ts';
+import { LIVE_MARKER_SIZE } from './config.ts';
+import { getCameraStream } from './app/capture.ts';
 
 interface LiveMarker {
   id: string;
-  u: number;
-  v: number;
-  label: string;
-  actual: string;
-  match: boolean;
+  x: number;
+  y: number;
+  prediction: string;
 }
 
 @customElement('rr-live-view')
@@ -99,9 +98,7 @@ export class RrLiveView extends LitElement {
 
   private async _startCamera() {
     try {
-      this._stream = await navigator.mediaDevices.getUserMedia({
-        video: CAMERA_PARAMS,
-      });
+      this._stream = await getCameraStream();
 
       await this.updateComplete;
 
@@ -178,11 +175,9 @@ export class RrLiveView extends LitElement {
                       
                       results.push({
                           id,
-                          u: marker.x,
-                          v: marker.y,
-                          label: marker.type,
-                          actual: prediction,
-                          match: marker.type === prediction
+                          x: marker.x,
+                          y: marker.y,
+                          prediction
                       });
                   } catch (e) {
                       // ignore out of bound patches etc
@@ -238,22 +233,8 @@ export class RrLiveView extends LitElement {
             <video></video>
             <svg class="overlay-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
                 ${getMarkerDefs(LIVE_MARKER_SIZE)}
-                ${this._detectedMarkers.map(m => {
-                  const color = m.match ? 'green' : 'red';
-                  return svg`
-                      <g>
-                          <use href="#${m.label}" x="${m.u}" y="${m.v}"></use>
-                          <rect 
-                            x=${m.u - LIVE_MARKER_SIZE / 2} 
-                            y=${m.v - LIVE_MARKER_SIZE / 2} 
-                            width=${LIVE_MARKER_SIZE} 
-                            height=${LIVE_MARKER_SIZE} 
-                            class="validation-rect"
-                            stroke=${color}
-                        />
-                      </g>
-                  `;
-                })}
+                ${this._detectedMarkers.map(m => 
+                  svg`<g><use href="#${m.prediction}" x="${m.x}" y="${m.y}"></use></g>`)}
             </svg>
         </div>
       </rr-page>

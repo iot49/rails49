@@ -1,7 +1,7 @@
 export const TITLE = 'RR Labeler';
 
 export const DEFAULT_MODEL = 'resnet18';
-export const DEFAULT_PRECISION = 'fp32';
+export const DEFAULT_PRECISION = 'int8';
 
 export const MODEL_LIST = [
   'resnet18',

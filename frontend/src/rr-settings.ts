@@ -56,7 +56,11 @@ export class RrSettings extends LitElement {
       padding: 1rem;
       display: flex;
       flex-direction: column;
-      gap: 1rem;
+      gap: 1.5rem;
+    }
+
+    sl-radio-group::part(button-group) {
+        gap: 8px;
     }
   `;
 
@@ -81,16 +85,30 @@ export class RrSettings extends LitElement {
 
   private _parseUrlParams() {
       const params = new URLSearchParams(window.location.search);
-      const model = params.get('model');
-      const precision = params.get('precision');
+      const urlModel = params.get('model');
+      const urlPrecision = params.get('precision');
 
-      if (model && MODEL_LIST.includes(model)) {
-          this._selectedModel = model;
+      // 1. Resolve Model (URL > LocalStorage > Default)
+      let model = urlModel;
+      if (!model || !MODEL_LIST.includes(model)) {
+          model = localStorage.getItem('rr-selected-model');
+          if (!model || !MODEL_LIST.includes(model)) {
+              model = DEFAULT_MODEL;
+          }
       }
-      
-      if (precision && PRECISION_OPTIONS.includes(precision)) {
-          this._selectedPrecision = precision;
+      this._selectedModel = model;
+      localStorage.setItem('rr-selected-model', model); // Sync/Update persistence
+
+      // 2. Resolve Precision (URL > LocalStorage > Default)
+      let precision = urlPrecision;
+      if (!precision || !PRECISION_OPTIONS.includes(precision)) {
+          precision = localStorage.getItem('rr-selected-precision');
+          if (!precision || !PRECISION_OPTIONS.includes(precision)) {
+              precision = DEFAULT_PRECISION;
+          }
       }
+      this._selectedPrecision = precision;
+      localStorage.setItem('rr-selected-precision', precision); // Sync/Update persistence
 
       // Emit initial state
       this._emitChange();
@@ -182,42 +200,34 @@ export class RrSettings extends LitElement {
   private _renderClassifierSettings() {
     return html`
       <div class="classifier-settings">
-          <div class="settings-row">
-             <div class="settings-label">Model:</div>
-             <div class="settings-field">
-                 <sl-select 
-                    value=${this._selectedModel}
-                    @sl-change=${this._handleModelChange}
-                 >
-                    ${MODEL_LIST.map(m => html`<sl-option value=${m}>${m}</sl-option>`)}
-                 </sl-select>
-             </div>
-          </div>
+          <sl-radio-group 
+              label="Model" 
+              value=${this._selectedModel}
+              @sl-change=${this._handleModelChange}
+          >
+              ${MODEL_LIST.map(m => html`<sl-radio-button value=${m}>${m}</sl-radio-button>`)}
+          </sl-radio-group>
 
-          <div class="settings-row">
-             <div class="settings-label">Precision:</div>
-             <div class="settings-field">
-                 <sl-select 
-                    value=${this._selectedPrecision}
-                    @sl-change=${this._handlePrecisionChange}
-                 >
-                    ${PRECISION_OPTIONS.map(p => html`<sl-option value=${p}>${p}</sl-option>`)}
-                 </sl-select>
-             </div>
-          </div>
+          <sl-radio-group 
+              label="Precision" 
+              value=${this._selectedPrecision}
+              @sl-change=${this._handlePrecisionChange}
+          >
+              ${PRECISION_OPTIONS.map(p => html`<sl-radio-button value=${p}>${p}</sl-radio-button>`)}
+          </sl-radio-group>
       </div>
     `;
   }
 
-  private _handleModelChange(e: Event) {
-      const select = e.target as HTMLInputElement; // sl-select behaves like input
-      this._selectedModel = select.value;
+  private _handleModelChange(e: CustomEvent) {
+      this._selectedModel = (e.target as any).value;
+      localStorage.setItem('rr-selected-model', this._selectedModel);
       this._emitChange();
   }
 
-  private _handlePrecisionChange(e: Event) {
-      const select = e.target as HTMLInputElement;
-      this._selectedPrecision = select.value;
+  private _handlePrecisionChange(e: CustomEvent) {
+      this._selectedPrecision = (e.target as any).value;
+      localStorage.setItem('rr-selected-precision', this._selectedPrecision);
       this._emitChange();
   }
 

@@ -24,6 +24,12 @@ interface ValidationResult {
   };
 }
 
+// DEBUG: sometimes switching images displays incorrect validation results for some markers
+// triggering an update (e.g. by moving a label) fixes it.
+// diagnose this issue and devise a plan to fix it.
+// Do not make any changes to the code until the issue is diagnosed, 
+// except adding console.log statements if needed.
+
 @customElement('rr-label')
 export class RrLabel extends LitElement {
   static styles = css`
@@ -81,7 +87,7 @@ export class RrLabel extends LitElement {
   imageIndex: number = -1;
 
   @state()
-  _imageBitmap: ImageBitmap | null = null;
+  private _imageBitmap: ImageBitmap | null = null; // Managed by r49File.dispose(), no manual close() here.
   
   @state()
   validationResults: Record<string, ValidationResult> = {};
@@ -131,32 +137,27 @@ export class RrLabel extends LitElement {
   }
 
   willUpdate(changedProperties: Map<string, any>) {
-    // When props change, we may need to resize symbols or update the transform
+    // Synchronously clear state when image or file changes to prevent stale data usage
     if (changedProperties.has('r49File') || changedProperties.has('imageIndex')) {
       this.updateSymbolSize();
-    }
-
-    // Trigger transform update if image changed
-    if (changedProperties.has('imageIndex') || changedProperties.has('r49File')) {
-      const oldIndex = changedProperties.get('imageIndex');
-      if (oldIndex !== this.imageIndex) {
-          this.validationResults = {}; // Clear BEFORE render
-          this._updateImage();
-      }
+      this.validationResults = {};
+      this._imageBitmap = null;
+      this._updateImage();
     }
   }
 
   // When image loads or manifest changes, we might need to recalculate if resolution changed
   updated(changedProperties: Map<string, any>) {
-    // If classifier, bitmap, manifest, or dragging state changes, re-validate
+    // Re-validate markers if the classifier, bitmap, or dragging state changes.
+    // By only validating when _imageBitmap is present, we ensure we don't use stale data.
     if (
         changedProperties.has('classifier') || 
-        (changedProperties.has('_imageBitmap') && this._imageBitmap) ||
-        changedProperties.has('r49File') ||
-        changedProperties.has('imageIndex') ||
+        changedProperties.has('_imageBitmap') ||
         changedProperties.has('dragHandle')
     ) {
-        this.validateMarkers();
+        if (this._imageBitmap && !this.dragHandle) {
+            this.validateMarkers();
+        }
     }
   }
 
@@ -179,53 +180,50 @@ export class RrLabel extends LitElement {
 
   private async validateMarkers() {
     if (this.dragHandle) return;
-    if (this.imageIndex < 0 || !this.manifest?.images[this.imageIndex]) return;
-
-    const currentImage = this.manifest.images[this.imageIndex];
-    if (!currentImage.labels || !this._imageBitmap || !this.classifier) return;
+    const currentImageIndex = this.imageIndex;
+    const currentImage = this.manifest?.images[currentImageIndex];
+    if (!currentImage?.labels || !this._imageBitmap || !this.classifier) return;
     
-    for (const [id, marker] of Object.entries(currentImage.labels)) {
-      const existing = this.validationResults[id];
-      if (
-        existing &&
-        existing.x === marker.x &&
-        existing.y === marker.y &&
-        existing.type === marker.type
-      ) {
-        continue;
-      }
+    const img_dpt = this.manifest.dots_per_track;
+    if (img_dpt <= 0) return; 
 
-      const requestId = (this._markerValidationRequests[id] || 0) + 1;
-      this._markerValidationRequests[id] = requestId;
+    // Use a local object to batch results and prevent multiple render cycles
+    const results: Record<string, ValidationResult> = {};
+    const labels = Object.entries(currentImage.labels);
 
-      const center = { x: marker.x, y: marker.y };
-      const img_dpt = this.manifest.dots_per_track;
+    const tasks = labels.map(async ([id, marker]) => {
+        const requestId = (this._markerValidationRequests[id] || 0) + 1;
+        this._markerValidationRequests[id] = requestId;
 
-      if (img_dpt <= 0) continue; 
+        try {
+            const predictedLabel = await this.classifier!.classify(
+                this._imageBitmap!,
+                { x: marker.x, y: marker.y },
+                img_dpt
+            );
 
-      this.classifier.classify(
-          this._imageBitmap,
-          center,
-          img_dpt
-      ).then((predictedLabel) => {
-        if (this._markerValidationRequests[id] !== requestId) return;
-        
-        const match = predictedLabel === marker.type;
+            // Guard against stale results if image index changed during async work
+            if (this.imageIndex !== currentImageIndex || 
+                this._markerValidationRequests[id] !== requestId) return;
+            
+            results[id] = { 
+               x: marker.x, 
+               y: marker.y, 
+               type: marker.type, 
+               match: predictedLabel === marker.type,
+               predicted: predictedLabel,
+               comparison: undefined 
+            };
+        } catch (e) {
+            console.error(`[rr-label] Classification failed for ${id}`, e);
+        }
+    });
 
-        this.validationResults = {
-          ...this.validationResults,
-          [id]: { 
-             x: marker.x, 
-             y: marker.y, 
-             type: marker.type, 
-             match,
-             predicted: predictedLabel,
-             comparison: undefined 
-          },
-        };
-      }).catch(e => {
-          console.error(`[rr-label] Classification failed for ${id}`, e);
-      });
+    await Promise.all(tasks);
+
+    // One final check before setting state to trigger a single update cycle
+    if (this.imageIndex === currentImageIndex && !this.dragHandle) {
+        this.validationResults = results;
     }
   }
 
