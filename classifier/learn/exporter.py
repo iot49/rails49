@@ -28,7 +28,7 @@ warnings.filterwarnings(
     "ignore", category=UserWarning, module="onnxconverter_common.float16"
 )
 
-KEEP_ONNX = True
+KEEP_ONNX = False
 
 
 class Exporter(LearnerConfig):
@@ -70,7 +70,7 @@ class Exporter(LearnerConfig):
         else:
             raise FileNotFoundError(f"Model file not found at {model_path}")
 
-    def export(self):
+    def export(self, output_dir: Path = None):
         """
         Exports the model to ONNX (FP32, FP16, Int8) and ORT formats.
         """
@@ -81,10 +81,14 @@ class Exporter(LearnerConfig):
         dummy_input = torch.randn(1, 3, self.size, self.size, device=self._dls.device)
 
         # Paths
-        export_dir = self.model_dir / "export"
+        if output_dir:
+            export_dir = output_dir
+        else:
+            export_dir = self.model_dir / "export"
+            
         if export_dir.exists():
             shutil.rmtree(export_dir)
-        export_dir.mkdir(exist_ok=True)
+        export_dir.mkdir(parents=True, exist_ok=True)
 
         # Export both ONNX and ORT formats.
         # ONNX is the standard interchange format.

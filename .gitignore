@@ -1,5 +1,7 @@
 models/
 datasets/
+label-ui/
+tmp/
 .envrc
 .env
 

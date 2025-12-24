@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from pathlib import Path
 
 from classifier.learn.exporter import Exporter
 
@@ -20,8 +21,12 @@ def main():
     print(f"Exporting model {args.model}...")
 
     try:
+        # Export directly to frontend/public/models so they are available at /models/{name}
+        output_dir = Path("frontend/public/models") / args.model
+        print(f"Target directory: {output_dir}")
+
         exporter = Exporter(args.model)
-        exporter.export()
+        exporter.export(output_dir=output_dir)
     except Exception as e:
         print(f"Export failed: {e}")
 
