@@ -1,4 +1,4 @@
-import { CAMERA_PARAMS } from "../config";
+import { CAMERA_PARAMS } from "./config";
 
 /**
  * Requests a camera stream using the shared CAMERA_PARAMS.

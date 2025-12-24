@@ -2,10 +2,10 @@ import { LitElement, html, css, svg } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { consume } from '@lit/context';
 import { Manifest, type MarkerCategory } from './app/manifest.ts';
-import { HEIGHT_COLOR, MARKER_SIZE_PX, WIDTH_COLOR } from './config.ts';
+import { HEIGHT_COLOR, MARKER_SIZE_PX, WIDTH_COLOR } from './app/config.ts';
 
 
-import { getMarkerDefs } from './marker-defs.ts';
+import { getMarkerDefs } from './styles/marker-defs.ts';
 
 import { R49File, r49FileContext } from './app/r49file.ts';
 import { Classifier, classifierContext } from './app/classifier.ts';

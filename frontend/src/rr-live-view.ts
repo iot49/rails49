@@ -5,8 +5,8 @@ import { Manifest } from './app/manifest.ts';
 import { R49File, r49FileContext } from './app/r49file.ts';
 import { Classifier, classifierContext } from './app/classifier.ts';
 import { statusBarStyles } from './styles/status-bar.ts';
-import { getMarkerDefs } from './marker-defs.ts';
-import { LIVE_MARKER_SIZE } from './config.ts';
+import { getMarkerDefs } from './styles/marker-defs.ts';
+import { LIVE_MARKER_SIZE } from './app/config.ts';
 import { getCameraStream } from './app/capture.ts';
 
 interface LiveMarker {

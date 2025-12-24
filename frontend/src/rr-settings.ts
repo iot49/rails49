@@ -10,7 +10,7 @@ import {
   PRECISION_OPTIONS,
   DEFAULT_MODEL,
   DEFAULT_PRECISION
-} from './config.ts';
+} from './app/config.ts';
 
 
 @customElement('rr-settings')
