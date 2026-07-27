@@ -1,5 +1,3 @@
-Here is a complete, copy-ready Contributor License Agreement (CLA) template designed specifically to protect your right to change or upgrade the project's license in the future, while centralizing all community modifications into your official repository.
-------------------------------
 ## Contributor License Agreement (CLA)
 Thank you for your interest in contributing to this project. This Contributor License Agreement ("Agreement") ensures that the project can safely accept your contributions and remain legally sustainable, while preserving our ability to adapt our licensing model in the future.
 By submitting a contribution (e.g., via a GitHub Pull Request, Issue, or commit), you agree to the following terms:
@@ -25,12 +23,3 @@ You hereby grant to the Project Owner a perpetual, worldwide, non-exclusive, no-
 You represent that You are legally entitled to grant these licenses. If your employer has rights to intellectual property you create, you represent that you have received permission to make such contributions on behalf of that employer, or that your employer has waived such rights for this Project.
 ## 6. No Warranty
 Except for the representations explicitly stated in Section 5, Your Contributions are provided on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied, including, without limitation, any warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE.
-------------------------------
-## How to Implement This on GitHub
-
-   1. Save the File: Create a file named CLA.md in the root directory of your repository and paste the text above into it.
-   2. Automate the Check: Do not manually check every pull request. Use a free GitHub action or service like CLA Assistant (cla-assistant.io) or EasyCLA.
-   3. The Workflow: When a developer opens a Pull Request, the automated bot will comment on their PR asking them to sign. They click a link, log into GitHub, and accept the terms. The bot then marks the PR check as passed, allowing you to safely merge the code.
-
-If you want, I can help you write the configuration file to set up a CLA check directly inside a GitHub Actions workflow. Let me know if you would like to do that.
-
