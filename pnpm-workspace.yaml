@@ -1,0 +1,8 @@
+packages:
+  - "lib/*"
+  - "dataset"
+  - "ui"
+allowBuilds:
+  esbuild: true
+  onnxruntime-node: true
+  sharp: true

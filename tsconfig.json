@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // No `paths` here on purpose. Workspace packages resolve through their
+    // pnpm symlinks and each package.json "exports" map, so the exports map is
+    // the single boundary — a deep import into lib/*/src fails identically at
+    // typecheck and at bundle time. See lib/CLAUDE.md.
+    "allowJs": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true
+  }
+}

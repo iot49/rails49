@@ -4,7 +4,7 @@ set -e
 # Set working directory to project root
 cd "$(dirname "$0")/.."
 
-MODEL_DIR="cnn/models"
+MODEL_DIR="classifier/resnet/models"
 VERSION_FILE="$MODEL_DIR/version.txt"
 
 # Check if model files are present
@@ -50,10 +50,10 @@ if command -v uv &>/dev/null; then
   # Resolve the environment first; gracefully skip if deps (e.g. onnxruntime) are
   # incompatible with the current platform (macOS x86_64 is not supported by recent
   # onnxruntime wheels). All other failures are still fatal.
-  if ! (cd cnn && uv sync --quiet 2>/dev/null); then
+  if ! (cd classifier/resnet && uv sync --quiet 2>/dev/null); then
     echo "⚠️  Python environment could not be resolved on this platform. Skipping Python checks."
   else
-    (cd cnn && uv run ruff check . && uv run black --check . && uv run pyright)
+    (cd classifier/resnet && uv run ruff check . && uv run black --check . && uv run pyright)
   fi
 else
   echo "⚠️  uv command not found. Skipping Python checks."

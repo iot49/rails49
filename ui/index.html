@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Railroad Occupancy UI</title>
+    
+    <!-- Shoelace Theme -->
+    <link rel="stylesheet" href="/node_modules/@shoelace-style/shoelace/dist/themes/dark.css" />
+
+    <style>
+      :root {
+        --rr-main-header-height: 60px;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: var(--sl-font-sans);
+        background: #000;
+        color: #eee;
+        height: 100vh;
+        overflow: hidden;
+      }
+      
+      /* Global scrollbar styling */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #111;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #333;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #444;
+      }
+    </style>
+  </head>
+  <body class="sl-theme-dark">
+    <rr-app></rr-app>
+    <script type="module" src="/src/rr-app.ts"></script>
+  </body>
+</html>

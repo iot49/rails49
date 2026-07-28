@@ -1,0 +1,36 @@
+{
+  "name": "@occupancy/ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:http": "HTTP=1 vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lit/reactive-element": "^2.1.2",
+    "@occupancy/classifier": "workspace:*",
+    "@occupancy/r49": "workspace:*",
+    "@occupancy/uid": "workspace:*",
+    "@shoelace-style/shoelace": "^2.20.1",
+    "lit": "^3.3.2",
+    "lit-element": "^4.2.2",
+    "lit-html": "^3.3.2",
+    "onnxruntime-web": "^1.25.1"
+  },
+  "devDependencies": {
+    "@open-wc/testing": "^4.0.0",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@web/test-runner": "^0.20.0",
+    "jsdom": "^26.1.0",
+    "typescript": "~6.0.2",
+    "vite": "^6.4.2",
+    "vite-plugin-static-copy": "^3.1.4",
+    "vitest": "^3.2.0"
+  }
+}

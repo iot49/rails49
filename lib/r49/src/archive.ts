@@ -1,0 +1,142 @@
+import JSZip from 'jszip';
+import { ManifestDataSchema, type ManifestData, type Image } from './manifest.schema.ts';
+
+export class R49Archive {
+  private zip: JSZip;
+  private manifest: ManifestData | null = null;
+
+  constructor(zip?: JSZip) {
+    this.zip = zip || new JSZip();
+  }
+
+  /**
+   * Loads an .r49 archive from binary data and validates its manifest against
+   * the v3 schema.
+   *
+   * @param data Raw archive bytes, in any form the host platform produces.
+   * @throws If the data is empty, is not a readable zip, lacks manifest.json,
+   *         or the manifest fails v3 validation.
+   */
+  static async load(data: Buffer | Blob | ArrayBuffer | Uint8Array): Promise<R49Archive> {
+    const size = (data as any).byteLength ?? (data as any).size ?? 0;
+    if (size === 0) {
+      throw new Error('Cannot load .r49 archive: data is empty');
+    }
+    try {
+      const zip = await JSZip.loadAsync(data);
+      const archive = new R49Archive(zip);
+      await archive.readAndValidateManifest();
+      return archive;
+    } catch (err) {
+      throw new Error(`Failed to load .r49 archive (size: ${size} bytes): ${err}`);
+    }
+  }
+
+  /**
+   * Re-reads manifest.json from the archive and validates it against the v3
+   * schema, replacing any in-memory manifest.
+   *
+   * @throws If manifest.json is absent or fails validation.
+   */
+  async readAndValidateManifest(): Promise<ManifestData> {
+    const manifestFile = this.zip.file('manifest.json');
+    if (!manifestFile) {
+      throw new Error('manifest.json not found in archive');
+    }
+    const content = await manifestFile.async('string');
+    const json = JSON.parse(content);
+    this.manifest = ManifestDataSchema.parse(json);
+    return this.manifest;
+  }
+
+  /**
+   * Writes the in-memory manifest back into the archive. Called by export();
+   * rarely needed directly.
+   *
+   * @throws If no manifest has been loaded or set.
+   */
+  async saveManifest(): Promise<void> {
+    if (!this.manifest) throw new Error('No manifest data to save');
+    this.zip.file('manifest.json', JSON.stringify(this.manifest, null, 2));
+  }
+
+  /**
+   * Returns the validated manifest. The object is live — mutating it changes
+   * what export() writes.
+   *
+   * @throws If the archive was constructed empty and no manifest has been set.
+   */
+  getManifest(): ManifestData {
+    if (!this.manifest) throw new Error('Manifest not loaded or invalid');
+    return this.manifest;
+  }
+
+  /**
+   * Replaces the manifest, validating it against the v3 schema first.
+   *
+   * @throws If the supplied data fails validation.
+   */
+  setManifest(data: ManifestData): void {
+    this.manifest = ManifestDataSchema.parse(data);
+  }
+
+  /**
+   * Reads an image from the archive by its manifest filename.
+   *
+   * @returns The image bytes, or null if no such entry exists.
+   */
+  async getImage(filename: string): Promise<Uint8Array | null> {
+    const file = this.zip.file(filename);
+    if (!file) return null;
+    return await file.async('uint8array');
+  }
+
+  /**
+   * Adds an image to the archive and, if a manifest is loaded, appends a
+   * matching unlabelled entry. Adding an existing filename overwrites the
+   * bytes and leaves the manifest entry (and its labels) intact.
+   */
+  async addImage(filename: string, data: Uint8Array | Buffer | Blob | ArrayBuffer): Promise<void> {
+    this.zip.file(filename, data);
+    if (this.manifest) {
+      const exists = this.manifest.images.some((img: Image) => img.filename === filename);
+      if (!exists) {
+        this.manifest.images.push({ filename, labels: {} });
+      }
+    }
+  }
+
+  /**
+   * Removes an image and its manifest entry, including any labels. Silently
+   * does nothing if the filename is not present.
+   */
+  removeImage(filename: string): void {
+    this.zip.remove(filename);
+    if (this.manifest) {
+      this.manifest.images = this.manifest.images.filter((img: Image) => img.filename !== filename);
+    }
+  }
+
+  /**
+   * Moves an image to a different position in the manifest's image list.
+   * Out-of-range indices are ignored rather than throwing.
+   */
+  reorderImages(fromIndex: number, toIndex: number): void {
+    if (!this.manifest) return;
+    const images = this.manifest.images;
+    if (fromIndex < 0 || fromIndex >= images.length || toIndex < 0 || toIndex >= images.length) return;
+    const [movedImage] = images.splice(fromIndex, 1);
+    images.splice(toIndex, 0, movedImage);
+  }
+
+  /**
+   * Serializes the archive, writing the current manifest first.
+   *
+   * @returns A complete .r49 archive, ready to persist or download.
+   * @throws If no manifest has been loaded or set.
+   */
+  async export(): Promise<Uint8Array> {
+    await this.saveManifest();
+    return await this.zip.generateAsync({ type: 'uint8array' });
+  }
+}

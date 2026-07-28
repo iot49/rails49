@@ -1,0 +1,19 @@
+{
+  "name": "rails49",
+  "private": true,
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "deploy": "./bin/deploy.sh",
+    "config:generate": "uv run --with pyyaml python3 bin/generate_config.py"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "lit": "^3.3.2"
+    }
+  }
+}

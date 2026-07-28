@@ -1,0 +1,80 @@
+# ====================================================================================
+# Global parameters
+# ====================================================================================
+global:
+  # Base domain name for routing and wildcard certificates
+  rails_domain: "rails49.org"
+
+# ====================================================================================
+# Server & Service configurations
+# ====================================================================================
+server:
+  # Remote host SSH alias
+  host: "rails49"
+  # Remote repository target directory
+  dir: "~/iot/track-occupancy"
+  
+  # Shared MQTT broker parameters
+  mqtt:
+    host: "mqtt"
+    port: 1883
+
+  # track-occupancy service parameters
+  track_occupancy:
+    port: 3000
+    interval_ms: 1000
+    mqtt_prefix: "rails49"
+    camera_device: "/dev/video0"
+    r49_path: "/data/layout.r49"
+    model_path: "/models/model.ort"
+    config_path: "/models/config.json"
+
+  # dcc-ex-bridge service parameters
+  dcc_ex_bridge:
+    port: 2560
+    serial_port: "/dev/ttyUSB0"
+
+# ====================================================================================
+# Classifier parameters (syncs to config.json during model export)
+# ====================================================================================
+classifier:
+  # Class labels matching the CNN vocabulary
+  labels: ["coupling", "other", "track", "train"]
+  # Square pixel crop size for the ONNX classifier input (standard shoelace/Vite crop)
+  crop_size: 96
+  # Normalization values (ImageNet defaults)
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+# ====================================================================================
+# CNN Training hyperparameters (Python/Fastai)
+# ====================================================================================
+cnn:
+  # Target patch crop size for training (1.5 * CROP_SIZE) to support translation jitter
+  crop_size_prep: 144
+  # Target Dots Per Track (DPT) resolution mapping
+  sample_dpt: 20
+  # Validation set split ratio
+  val_split: 0.2
+  # Batch size for training
+  default_batch_size: 32
+  # Number of training epochs
+  default_num_epochs: 5
+  # Optimizer learning rate
+  learning_rate: 0.0001
+
+# ====================================================================================
+# Layout & Physical specifications (R49 manifest)
+# ====================================================================================
+layout:
+  # Standard rail gauge in millimeters
+  standard_gauge: 1435.0
+  # Model scale to ratio mapping
+  scale_to_ratio:
+    G: 25
+    O: 48
+    S: 64
+    HO: 87
+    T: 120
+    N: 160
+    Z: 220
