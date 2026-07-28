@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state, query } from 'lit/decorators.js';
 import type { R49Archive } from '@occupancy/r49';
+import { getDPT } from '@occupancy/r49';
 import { BrowserClassifier as Classifier } from '@occupancy/classifier/browser';
 import { getCameraStream } from './capture.js';
 import type { MarkerData } from './marker.js';
@@ -23,6 +24,7 @@ export class RRLiveView extends LitElement {
   @state() private _fps = 0;
   @state() private _latency = 0;
   @state() private _sampleTime = 0;
+  @state() private _needsCalibration = false;
 
   @query('rr-viewer') private _viewer!: RrViewer;
 
@@ -145,6 +147,17 @@ export class RRLiveView extends LitElement {
     this._lastFrameTime = startTime;
 
     const manifest = this.archive.getManifest();
+
+    const dpt = getDPT(manifest);
+    if (dpt === null) {
+      this._needsCalibration = true;
+      this._markers = [];
+      this._latency = performance.now() - startTime;
+      requestAnimationFrame(() => this._loop());
+      return;
+    }
+    this._needsCalibration = false;
+
     // In live view, we usually classify based on the first image's labels
     // or a specialized "live" marker set. For now, use markers from image[0].
     const sourceWidth = (source as HTMLVideoElement).videoWidth || (source as HTMLImageElement).naturalWidth;
@@ -167,8 +180,7 @@ export class RRLiveView extends LitElement {
           y: m.y * (sourceHeight / resHeight)
         };
 
-        const imgDpt = Classifier.calculateDpt(manifest);
-        const results = await this._classifier.classify(source, scaledMarker, imgDpt);
+        const results = await this._classifier.classify(source, scaledMarker, dpt);
         
         // Pick the "best" label for the icon (prioritize train > coupling > track)
         const priority = ['train', 'coupling', 'track'];
@@ -206,6 +218,12 @@ export class RRLiveView extends LitElement {
         .latency=${this._latency}
         .sampleTime=${this._sampleTime}
       ></rr-stats-bar>
+
+      ${this._needsCalibration ? html`
+        <div style="padding: 0.5rem 1rem; background: #4a2f00; color: #ffcc80;">
+          This layout has no calibration data. Calibrate it in the editor (toolbar → Calibrate) to enable live classification.
+        </div>
+      ` : ''}
 
       <rr-viewer
         .stream=${this._stream}

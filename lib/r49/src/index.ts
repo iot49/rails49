@@ -23,11 +23,13 @@ export type {
 } from './manifest.schema.ts';
 
 //── Scale geometry ───────────────────────────────────────────────────────────
-// Converting between modelling scales, physical gauge, and image resolution.
+// Consumers work with scale names and pixel-domain measurements only — the
+// prototype domain (real-world 1435mm gauge) and the model domain (physical
+// gauge in mm) are internal implementation details of how getDPT() is
+// computed.
 export {
-  getGauge,
   getDPT,
-  Scale2Number,
+  VALID_SCALES,
   type ValidScales,
 } from './manifest.schema.ts';
 
@@ -36,5 +38,9 @@ export {
 // could not be replaced without a breaking change. Validation is an
 // implementation detail — callers get validated data or an exception.
 //
-// Withheld: STANDARD_GAUGE. It is an input to getGauge(), not a result callers
-// need; exposing it invites gauge arithmetic to be reimplemented downstream.
+// Withheld: STANDARD_GAUGE and Scale2Number, the prototype-domain constants,
+// and getGaugeMM (prototype gauge / scale ratio), the function built from
+// them. Nothing outside this package needs a physical model-domain gauge in
+// mm — only the pixel-domain getDPT() and the scale names in VALID_SCALES.
+// Exposing the prototype domain would invite gauge arithmetic to be
+// reimplemented downstream (which is exactly what lib/classifier used to do).

@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
-import { Scale2Number } from '@occupancy/r49';
+import { VALID_SCALES } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
@@ -120,8 +120,8 @@ export class RRSettingsDialog extends LitElement {
                 value=${this.layout?.scale || 'N'} 
                 @sl-change=${(e: any) => this._onLayoutChange('scale', e.target.value)}
               >
-                ${Object.keys(Scale2Number).map(s => html`
-                  <sl-option value=${s}>${s} (1:${Scale2Number[s as keyof typeof Scale2Number]})</sl-option>
+                ${VALID_SCALES.map(s => html`
+                  <sl-option value=${s}>${s}</sl-option>
                 `)}
               </sl-select>
 

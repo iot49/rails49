@@ -1,4 +1,4 @@
-import { type Point, getGauge, type ValidScales } from '@occupancy/r49';
+import { type Point, type ManifestData, getDPT } from '@occupancy/r49';
 import type { InferenceSession, Tensor } from 'onnxruntime-common';
 
 export interface ClassifierConfig {
@@ -41,16 +41,14 @@ export abstract class BaseClassifier {
 
   /**
    * Calculates the true Dots Per Track (DPT) from a layout manifest.
+   * @throws if the manifest has no calibration data yet.
    */
-  static calculateDpt(manifest: any): number {
-    const cal = manifest.layout?.calibration;
-    if (!cal || !cal.p0 || !cal.p1 || !cal.size_mm) return 30; // Fallback
-    const dx = cal.p0.x - cal.p1.x;
-    const dy = cal.p0.y - cal.p1.y;
-    const distPixels = Math.sqrt(dx * dx + dy * dy);
-    const pixelsPerMm = distPixels / cal.size_mm;
-    const gauge = getGauge((manifest.layout?.scale as ValidScales) || 'N');
-    return pixelsPerMm * gauge;
+  static calculateDpt(manifest: ManifestData): number {
+    const dpt = getDPT(manifest);
+    if (dpt === null) {
+      throw new Error('Fatal Error: layout has no calibration data — calibrate it before classifying.');
+    }
+    return dpt;
   }
 
   /**

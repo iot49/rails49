@@ -14,7 +14,11 @@ export const STANDARD_GAUGE = 1435.0; // Standard gauge in mm
 
 export type ValidScales = keyof typeof Scale2Number;
 
-export function getGauge(scale: ValidScales): number {
+/** Every valid scale name, in the order defined by {@link Scale2Number}. */
+export const VALID_SCALES: readonly ValidScales[] = Object.keys(Scale2Number) as ValidScales[];
+
+/** Model-domain track gauge in mm (prototype gauge / scale ratio). Internal — the prototype domain is not part of the package's public contract. */
+function getGaugeMM(scale: ValidScales): number {
   return STANDARD_GAUGE / Scale2Number[scale];
 }
 
@@ -29,7 +33,7 @@ export function getDPT(manifest: ManifestData): number | null {
     const dy = cal.p0.y - cal.p1.y;
     const distPixels = Math.sqrt(dx * dx + dy * dy);
     const pixelsPerMm = distPixels / cal.size_mm;
-    const gauge = getGauge((manifest.layout?.scale as ValidScales) || 'N');
+    const gauge = getGaugeMM((manifest.layout?.scale as ValidScales) || 'N');
     return pixelsPerMm * gauge;
   }
   return null;

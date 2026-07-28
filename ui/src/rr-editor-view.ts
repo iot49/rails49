@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { R49Archive } from '@occupancy/r49';
+import { R49Archive, getDPT } from '@occupancy/r49';
 import { BrowserClassifier as Classifier } from '@occupancy/classifier/browser';
 import { make_id } from '@occupancy/uid';
 import * as ort from 'onnxruntime-web';
@@ -23,6 +23,7 @@ export class RREditorView extends LitElement {
   @state() private _activeTool: string | null = null;
   @state() private _imageUrls: Map<string, string> = new Map();
   @state() private _classificationResults: Map<string, string[]> = new Map();
+  @state() private _needsCalibration = false;
 
   private _classifier: Classifier | null = null;
 
@@ -112,6 +113,15 @@ export class RREditorView extends LitElement {
   private async _runClassification() {
     if (!this.archive || !this._classifier) return;
     const manifest = this.archive.getManifest();
+
+    const dpt = getDPT(manifest);
+    if (dpt === null) {
+      this._needsCalibration = true;
+      this._classificationResults = new Map();
+      return;
+    }
+    this._needsCalibration = false;
+
     const currentImage = manifest.images[this._currentImageIndex];
     if (!currentImage) return;
 
@@ -134,8 +144,7 @@ export class RREditorView extends LitElement {
 
     const results = new Map<string, string[]>();
     for (const [id, m] of Object.entries(currentImage.labels)) {
-      const imgDpt = Classifier.calculateDpt(manifest);
-      const res = await this._classifier.classify(img, m as any, imgDpt);
+      const res = await this._classifier.classify(img, m as any, dpt);
       results.set(id, res);
     }
     this._classificationResults = results;
@@ -177,6 +186,7 @@ export class RREditorView extends LitElement {
         size_mm: 100
       };
       this.requestUpdate();
+      this._runClassification();
     }
   }
 
@@ -314,7 +324,7 @@ export class RREditorView extends LitElement {
         id,
         ...d,
         type: d.type as any,
-        status: (detected.includes(d.type) ? 'match' : 'mismatch') as any,
+        status: (this._needsCalibration ? 'pending' : (detected.includes(d.type) ? 'match' : 'mismatch')) as any,
         detectedLabels: detected
       };
     }) : [];
@@ -331,9 +341,14 @@ export class RREditorView extends LitElement {
       </div>
 
       <div class="main-content">
-        ${!this.archive 
+        ${!this.archive
           ? html`<div style="padding: 2rem; color: #888;">No archive loaded. Use the toolbar to open an .r49 file.</div>`
           : html`
+            ${this._needsCalibration ? html`
+              <div style="padding: 0.5rem 1rem; background: #4a2f00; color: #ffcc80;">
+                This layout has no calibration data. Calibrate it (toolbar → Calibrate) before classification results can be shown.
+              </div>
+            ` : ''}
             <rr-viewer
               .src=${src}
               .markers=${markers}
