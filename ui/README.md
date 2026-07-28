@@ -93,7 +93,6 @@ rr-app                          ← top-level shell, context providers
 
 **Behavior**:
 - Layout tab: name, scale, calibration dimensions
-- Classifier tab: model selection (local upload or server catalog)
 - Classifier config is NOT stored in the manifest (fix legacy design flaw). It's passed directly to the `Classifier` instance.
 
 ---

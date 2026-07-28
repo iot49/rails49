@@ -17,10 +17,8 @@ import type { RrViewer } from './rr-viewer.js';
 @customElement('rr-live-view')
 export class RRLiveView extends LitElement {
   @property({ attribute: false }) archive: R49Archive | null = null;
-  @property({ type: String }) serverUrl = '';
-  
+
   @state() private _stream: MediaStream | null = null;
-  @state() private _serverImageSrc = '';
   @state() private _markers: MarkerData[] = [];
   @state() private _fps = 0;
   @state() private _latency = 0;
@@ -30,7 +28,6 @@ export class RRLiveView extends LitElement {
 
   private _classifier: Classifier | null = null;
   private _running = false;
-  private _pollInterval: any = null;
   private _lastFrameTime = 0;
 
   static styles = css`
@@ -50,18 +47,13 @@ export class RRLiveView extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
-    if (this.serverUrl) {
-      this._startPolling();
-    } else {
-      await this._startCamera();
-    }
+    await this._startCamera();
     this._startClassification();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._stopCamera();
-    this._stopPolling();
     this._running = false;
     this._classifier?.release();
   }
@@ -81,30 +73,13 @@ export class RRLiveView extends LitElement {
     }
   }
 
-  private _startPolling() {
-    this._pollInterval = setInterval(() => {
-      this._serverImageSrc = `${this.serverUrl}/api/snapshot?t=${Date.now()}`;
-    }, 1000); // 1Hz poll for snapshots
-  }
-
-  private _stopPolling() {
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      this._pollInterval = null;
-    }
-  }
-
   private async _startClassification() {
     if (!this.archive) return;
     this._running = true;
 
-    const modelPrefix = (window.location.hostname.endsWith('pages.dev') || window.location.hostname === __RAILS_DOMAIN__)
-      ? `https://ui.${__RAILS_DOMAIN__}/ui`
-      : '/ui';
-
     let config: any;
     try {
-      const response = await fetch(`${modelPrefix}/models/config.json`);
+      const response = await fetch('/ui/models/config.json');
       if (!response.ok) {
         throw new Error(`Failed to load config.json (status: ${response.status})`);
       }
@@ -138,7 +113,7 @@ export class RRLiveView extends LitElement {
 
     // Load default model
     try {
-      await this._classifier.load(`${modelPrefix}/models/model.ort`);
+      await this._classifier.load('/ui/models/model_int8.ort');
     } catch (err) {
       console.warn('Failed to load default model', err);
     }
@@ -234,7 +209,6 @@ export class RRLiveView extends LitElement {
 
       <rr-viewer
         .stream=${this._stream}
-        .src=${this._serverImageSrc}
         .markers=${this._markers}
         .resolution=${resolution}
         ?interactive=${false}

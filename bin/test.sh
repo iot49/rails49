@@ -6,9 +6,11 @@ cd "$(dirname "$0")/.."
 
 MODEL_DIR="classifier/resnet/models"
 VERSION_FILE="$MODEL_DIR/version.txt"
+# The quantized model is the one that ships, so it is the one under test.
+MODEL_FILE="model_int8.ort"
 
 # Check if model files are present
-if [ ! -f "$MODEL_DIR/model.ort" ] || [ ! -f "$MODEL_DIR/config.json" ]; then
+if [ ! -f "$MODEL_DIR/$MODEL_FILE" ] || [ ! -f "$MODEL_DIR/config.json" ]; then
   if [ "$CI" = "true" ]; then
     echo "🤖 CI environment detected. Downloading model files..."
     mkdir -p "$MODEL_DIR"
@@ -18,17 +20,17 @@ if [ ! -f "$MODEL_DIR/model.ort" ] || [ ! -f "$MODEL_DIR/config.json" ]; then
     fi
     TARGET_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
     echo "🔍 Target version: $TARGET_VERSION"
-    
-    MODEL_URL="https://github.com/iot49/rails49/releases/download/${TARGET_VERSION}/model.ort"
+
+    MODEL_URL="https://github.com/iot49/rails49/releases/download/${TARGET_VERSION}/${MODEL_FILE}"
     CONFIG_URL="https://github.com/iot49/rails49/releases/download/${TARGET_VERSION}/config.json"
-    
-    echo "📥 Downloading model.ort..."
-    curl -L -s -f -S -o "$MODEL_DIR/model.ort" "$MODEL_URL"
+
+    echo "📥 Downloading $MODEL_FILE..."
+    curl -L -s -f -S -o "$MODEL_DIR/$MODEL_FILE" "$MODEL_URL"
     echo "📥 Downloading config.json..."
     curl -L -s -f -S -o "$MODEL_DIR/config.json" "$CONFIG_URL"
     echo "✅ Model version $TARGET_VERSION downloaded successfully for CI."
   else
-    echo "⚠️  Warning: Model files ($MODEL_DIR/model.ort or config.json) are missing."
+    echo "⚠️  Warning: Model files ($MODEL_DIR/$MODEL_FILE or config.json) are missing."
     echo "   The classification regression test will be skipped."
     echo "   To run it, make sure the model files are present in $MODEL_DIR."
   fi

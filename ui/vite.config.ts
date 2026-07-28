@@ -58,8 +58,10 @@ const config: VitestConfig = {
           src: 'node_modules/onnxruntime-web/dist/*.{wasm,mjs,js}',
           dest: 'ort',
         },
+        // Only the quantized model ships. The fp32 model.ort is 45 MB, over
+        // Cloudflare Pages' 25 MiB per-file limit; model_int8.ort is 11 MB.
         ...(includeModels ? [{
-          src: '../classifier/resnet/models/*.{ort,json}',
+          src: '../classifier/resnet/models/{model_int8.ort,config.json}',
           dest: 'models',
         }] : []),
       ],

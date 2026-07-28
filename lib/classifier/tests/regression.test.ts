@@ -10,8 +10,8 @@ function getPaths() {
   const baseDir = isPackageRoot ? path.resolve(cwd, '../..') : cwd;
   
   return {
-    modelPath: path.resolve(baseDir, 'cnn/models/model.ort'),
-    configPath: path.resolve(baseDir, 'cnn/models/config.json'),
+    modelPath: path.resolve(baseDir, 'classifier/resnet/models/model_int8.ort'),
+    configPath: path.resolve(baseDir, 'classifier/resnet/models/config.json'),
     datasetDir: path.resolve(baseDir, 'dataset/r49'),
   };
 }

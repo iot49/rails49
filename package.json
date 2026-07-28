@@ -1,6 +1,7 @@
 {
   "name": "rails49",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

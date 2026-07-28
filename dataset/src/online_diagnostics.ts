@@ -4,8 +4,8 @@ import { R49Archive } from '@occupancy/r49';
 import { NodeClassifier } from '@occupancy/classifier/node';
 
 const DATA_DIR = 'r49';
-const MODEL_PATH = '../cnn/models/model.onnx';
-const CONFIG_PATH = '../cnn/models/config.json';
+const MODEL_PATH = '../classifier/resnet/models/model.onnx';
+const CONFIG_PATH = '../classifier/resnet/models/config.json';
 
 async function getAllFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -67,7 +67,7 @@ async function main() {
   }
 
   // Save to JSON for comparison
-  const outputPath = '../cnn/results/online_confusion_matrix.json';
+  const outputPath = '../classifier/resnet/results/online_confusion_matrix.json';
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, JSON.stringify({
     labels,

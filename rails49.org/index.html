@@ -366,14 +366,14 @@
     <header>
         <div class="container header-content">
             <div class="brand">Rails49</div>
-            <div class="badge">Local Cloud Stack</div>
+            <div class="badge">Computer Vision</div>
         </div>
     </header>
 
     <main class="container">
         <section class="hero animate">
-            <h1 class="hero-title">Autonomous Model Railroad<br><span>Intelligence & Control</span></h1>
-            <p class="hero-subtitle">High-precision overhead computer vision track occupancy detection integrated with modern reverse-proxied local cloud services.</p>
+            <h1 class="hero-title">Model Railroad<br><span>Track Occupancy Detection</span></h1>
+            <p class="hero-subtitle">Overhead cameras and a CNN image classifier detect trains and rolling stock on your layout — running entirely in the browser, with no server and no installation.</p>
             <div class="cta-group">
                 <a href="/ui/" class="btn btn-primary">Launch Occupancy UI</a>
                 <a href="https://github.com/iot49/rails49" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">Browse GitHub Repository</a>
@@ -382,45 +382,45 @@
 
         <section class="features">
             <div class="section-header animate delay-1">
-                <h2 class="section-title">Core Architecture Services</h2>
-                <p class="section-subtitle">Fully containerized microservices managed via Docker Compose and secured locally.</p>
+                <h2 class="section-title">How It Works</h2>
+                <p class="section-subtitle">Photograph the layout, mark the spots you care about, train a classifier, watch it run live.</p>
             </div>
-            
+
             <div class="grid animate delay-2">
                 <div class="card">
+                    <div class="card-icon">📐</div>
+                    <h3 class="card-title">Layout Editor</h3>
+                    <p class="card-desc">Load overhead photographs of your layout, calibrate the scale against a known reference length, and mark each point you want monitored as track, train, or coupling.</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-icon">📦</div>
+                    <h3 class="card-title">The .r49 Format</h3>
+                    <p class="card-desc">A single portable archive holding your layout photographs alongside a validated manifest of scale, calibration, and every labelled marker. Open and save it straight from the browser.</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-icon">🧠</div>
+                    <h3 class="card-title">ResNet-18 Classifier</h3>
+                    <p class="card-desc">Image crops extracted around each marker train a ResNet-18 convolutional network with Fastai, exported to ONNX for fast, portable inference.</p>
+                </div>
+
+                <div class="card">
                     <div class="card-icon">🎥</div>
-                    <h3 class="card-title">Track Occupancy Detector</h3>
-                    <p class="card-desc">High-performance TypeScript backend coordinating overhead live camera streams, ResNet-18 neural classifier ONNX inference runs, and instant MQTT occupancy events.</p>
+                    <h3 class="card-title">Live View</h3>
+                    <p class="card-desc">Point a phone or tablet camera at the layout and every marker is classified in real time, with occupancy drawn as an overlay and per-frame timing shown alongside.</p>
                 </div>
 
                 <div class="card">
-                    <div class="card-icon">🔌</div>
-                    <h3 class="card-title">DCC-EX Bridge</h3>
-                    <p class="card-desc">A command-aware serial-to-TCP/MQTT multiplexer connecting physical layout control stations directly into our secure microservices event bus.</p>
+                    <div class="card-icon">🔒</div>
+                    <h3 class="card-title">Runs In Your Browser</h3>
+                    <p class="card-desc">ONNX Runtime executes the network on-device via WebAssembly. Your photographs and layout files never leave the machine you are working on.</p>
                 </div>
 
                 <div class="card">
-                    <div class="card-icon">🚂</div>
-                    <h3 class="card-title">Rocrail Automation Server</h3>
-                    <p class="card-desc">Persistently mounted Rocrail automation server supporting scheduled backups, layout configuration storage, and automatic nightly Git snapshots.</p>
-                </div>
-
-                <div class="card">
-                    <div class="card-icon">🛡️</div>
-                    <h3 class="card-title">Traefik Security Gateway</h3>
-                    <p class="card-desc">Reverse proxy and TLS termination terminal utilizing secure wildcard Let's Encrypt certificates through Cloudflare DNS for local whitelist routing.</p>
-                </div>
-
-                <div class="card">
-                    <div class="card-icon">📡</div>
-                    <h3 class="card-title">NanoMQ Broker</h3>
-                    <p class="card-desc">Ultra-low latency central MQTT broker handling all inter-service communications, telemetry packets, and remote throttle commands.</p>
-                </div>
-
-                <div class="card">
-                    <div class="card-icon">📱</div>
-                    <h3 class="card-title">WebThrottle</h3>
-                    <p class="card-desc">Modern responsive browser throttle optimized for tablets and mobile devices to orchestrate cab speed, direction, and accessory operations.</p>
+                    <div class="card-icon">📏</div>
+                    <h3 class="card-title">Scale Aware</h3>
+                    <p class="card-desc">Calibration is expressed in dots-per-track, so a model trained on one layout transfers to another regardless of gauge, from Z through G scale.</p>
                 </div>
             </div>
         </section>
@@ -432,8 +432,7 @@
                     <div class="tech-item">Lit & Vite</div>
                     <div class="tech-item">TypeScript</div>
                     <div class="tech-item">ONNX Runtime</div>
-                    <div class="tech-item">Docker Compose</div>
-                    <div class="tech-item">Traefik v3</div>
+                    <div class="tech-item">WebAssembly</div>
                     <div class="tech-item">Fastai & PyTorch</div>
                 </div>
             </div>
@@ -442,7 +441,7 @@
 
     <footer>
         <div class="container">
-            <p>&copy; 2026 Rails49 System. Deployed securely on local network. <a href="https://github.com/iot49/rails49" target="_blank" rel="noopener noreferrer">Source Code</a></p>
+            <p>&copy; 2026 Rails49. Detection is imperfect — responsibility for safe layout operation rests with the user. <a href="https://github.com/iot49/rails49" target="_blank" rel="noopener noreferrer">Source Code</a></p>
         </div>
     </footer>
 

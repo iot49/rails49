@@ -19,7 +19,6 @@ import './rr-thumbnail-bar.js';
 @customElement('rr-editor-view')
 export class RREditorView extends LitElement {
   @property({ attribute: false }) archive: R49Archive | null = null;
-  @property({ type: String }) serverUrl = '';
   @state() private _currentImageIndex = 0;
   @state() private _activeTool: string | null = null;
   @state() private _imageUrls: Map<string, string> = new Map();
@@ -71,13 +70,9 @@ export class RREditorView extends LitElement {
   private async _initClassifier() {
     if (!this.archive) return;
     
-    const modelPrefix = (window.location.hostname.endsWith('pages.dev') || window.location.hostname === __RAILS_DOMAIN__)
-      ? `https://ui.${__RAILS_DOMAIN__}/ui`
-      : '/ui';
-
     let config: any;
     try {
-      const response = await fetch(`${modelPrefix}/models/config.json`);
+      const response = await fetch('/ui/models/config.json');
       if (!response.ok) {
         throw new Error(`Failed to load config.json (status: ${response.status})`);
       }
@@ -108,7 +103,7 @@ export class RREditorView extends LitElement {
     });
 
     try {
-      await this._classifier.load(`${modelPrefix}/models/model.ort`);
+      await this._classifier.load('/ui/models/model_int8.ort');
     } catch (err) {
       console.error('Failed to load classifier', err);
     }
@@ -210,15 +205,7 @@ export class RREditorView extends LitElement {
       input.click();
     } else if (source === 'camera') {
       try {
-        let data: Uint8Array;
-        if (this.serverUrl) {
-          const response = await fetch(`${this.serverUrl}/api/snapshot`);
-          if (!response.ok) throw new Error(`Server snapshot failed: ${response.statusText}`);
-          const buffer = await response.arrayBuffer();
-          data = new Uint8Array(buffer);
-        } else {
-          data = await captureFromCamera();
-        }
+        const data = await captureFromCamera();
         const filename = `capture_${make_id(3)}.jpg`;
         await this.archive.addImage(filename, data);
         await this._refreshImageUrls();

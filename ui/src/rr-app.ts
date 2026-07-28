@@ -8,20 +8,8 @@ import { setBasePath } from '@shoelace-style/shoelace/dist/utilities/base-path.j
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 
-declare const __RAILS_DOMAIN__: string;
-
 // Set the base path for Shoelace assets (icons, etc.)
 setBasePath('/ui/shoelace');
-
-function getBaseDomain(): string {
-  const hostname = window.location.hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return __RAILS_DOMAIN__;
-  }
-  return hostname.replace(/^(ui|throttle|mqtt|rocrail|traefik)\./, '');
-}
-
-const DEFAULT_SERVER_URL = `https://ui.${getBaseDomain()}`;
 
 /**
  * Top-level application shell.
@@ -31,9 +19,6 @@ export class RRApp extends LitElement {
   @state() private _archive: R49Archive | null = null;
   @state() private _viewMode: 'editor' | 'live' = 'editor';
   @state() private _status = 'No archive loaded';
-  @state() private _serverUrl = localStorage.getItem('rr-server-url') || DEFAULT_SERVER_URL;
-  @state() private _serverConnected = false;
-  @state() private _isSyncing = false;
 
   static styles = css`
     :host {
@@ -52,27 +37,6 @@ export class RRApp extends LitElement {
     }
   `;
 
-  connectedCallback() {
-    super.connectedCallback();
-    this._checkServer();
-    setInterval(() => this._checkServer(), 10000);
-  }
-
-  private async _checkServer() {
-    try {
-      const response = await fetch(`${this._serverUrl}/api/snapshot`, { method: 'HEAD' });
-      const wasConnected = this._serverConnected;
-      this._serverConnected = response.ok;
-      
-      // Auto-load if we just connected
-      if (this._serverConnected && !wasConnected) {
-        await this._onServerDownload(true); // silent auto-load
-      }
-    } catch (e) {
-      this._serverConnected = false;
-    }
-  }
-
   /**
    * Helper to show a toast notification using Shoelace sl-alert
    */
@@ -90,52 +54,6 @@ export class RRApp extends LitElement {
     return (alert as any).toast();
   }
 
-  private _onServerUrlChange(e: CustomEvent) {
-    this._serverUrl = e.detail.url;
-    localStorage.setItem('rr-server-url', this._serverUrl);
-    this._checkServer();
-  }
-
-  private async _onServerDownload(silent = false) {
-    if (this._isSyncing) return;
-    try {
-      this._isSyncing = true;
-      const response = await fetch(`${this._serverUrl}/api/r49?t=${Date.now()}`);
-      if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
-      const arrayBuffer = await response.arrayBuffer();
-      this._archive = await R49Archive.load(arrayBuffer);
-      this._status = this._archive.getManifest().layout.name || 'Downloaded Layout';
-      if (!silent) this._notify('Download successful', 'success', 'cloud-download');
-    } catch (err) {
-      console.error('Failed to download from server', err);
-      this._notify(`Download failed: ${String(err)}`, 'danger', 'exclamation-triangle');
-    } finally {
-      this._isSyncing = false;
-    }
-  }
-
-  private async _onServerUpload() {
-    if (!this._archive) return;
-    if (!this._validateCalibration()) return;
-    if (this._isSyncing) return;
-    try {
-      this._isSyncing = true;
-      const data = await this._archive.export();
-      const response = await fetch(`${this._serverUrl}/api/r49`, {
-        method: 'POST',
-        body: data as any,
-        headers: { 'Content-Type': 'application/octet-stream' }
-      });
-      if (!response.ok) throw new Error(`Upload failed: ${response.statusText}`);
-      this._notify('Upload successful', 'success', 'cloud-upload');
-    } catch (err) {
-      console.error('Failed to upload to server', err);
-      this._notify(`Upload failed: ${String(err)}`, 'danger', 'exclamation-triangle');
-    } finally {
-      this._isSyncing = false;
-    }
-  }
-  
   private _onFileNew() {
     this._archive = new R49Archive();
     this._archive.setManifest({
@@ -217,11 +135,6 @@ export class RRApp extends LitElement {
       a.click();
       URL.revokeObjectURL(url);
       this._notify('Saved to disk', 'success', 'download');
-
-      // Auto-upload if connected
-      if (this._serverConnected) {
-        await this._onServerUpload();
-      }
     } catch (err) {
       console.error('Failed to save archive', err);
       this._notify(`Save failed: ${String(err)}`, 'danger', 'exclamation-diamond');
@@ -251,16 +164,11 @@ export class RRApp extends LitElement {
     }
 
     return html`
-      <rr-header 
+      <rr-header
         .viewMode=${this._viewMode}
         .layout=${layout}
-        .serverConnected=${this._serverConnected}
-        .isSyncing=${this._isSyncing}
         @rr-view-toggle=${this._onViewToggle}
         @rr-layout-change=${this._onLayoutChange}
-        @rr-server-url-change=${this._onServerUrlChange}
-        @rr-server-download=${() => this._onServerDownload()}
-        @rr-server-upload=${this._onServerUpload}
       >
         <span slot="status">${this._status}</span>
       </rr-header>
@@ -268,14 +176,13 @@ export class RRApp extends LitElement {
       <main>
         ${this._viewMode === 'editor' 
           ? html`
-              <rr-editor-view 
+              <rr-editor-view
                 .archive=${this._archive}
-                .serverUrl=${this._serverConnected ? this._serverUrl : ''}
                 @rr-file-new=${this._onFileNew}
                 @rr-file-open=${this._onFileOpen}
                 @rr-file-save=${this._onFileSave}
               ></rr-editor-view>`
-          : html`<rr-live-view .archive=${this._archive} .serverUrl=${this._serverConnected ? this._serverUrl : ''}></rr-live-view>`
+          : html`<rr-live-view .archive=${this._archive}></rr-live-view>`
         }
       </main>
     `;

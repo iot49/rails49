@@ -50,7 +50,7 @@ import type { ClassifierConfig } from '@occupancy/classifier';
 
 const config: ClassifierConfig = await (await fetch('/models/config.json')).json();
 const classifier = new BrowserClassifier(config);
-await classifier.load('/models/model.ort');
+await classifier.load('/models/model_int8.ort');
 
 // `image` is anything drawable: <img>, <video>, ImageBitmap, canvas.
 const labels = await classifier.classify(image, { x: 512, y: 300 }, imageDpt);

@@ -116,38 +116,4 @@ describe('rr-app', () => {
     expect(notifySpy).toHaveBeenCalledWith('Saved to disk', 'success', 'download');
     expect(exportSpy).toHaveBeenCalled();
   });
-
-  it('uploads to server when saving and connected', async () => {
-    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
-    archive.getManifest().layout.calibration = {
-      p0: { x: 100, y: 100 },
-      p1: { x: 200, y: 200 },
-      size_mm: 100
-    };
-    (el as any)._archive = archive;
-    (el as any)._serverConnected = true;
-    (el as any)._serverUrl = 'http://test-server';
-    
-    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((url) => {
-      if (typeof url === 'string' && url.includes('config.json')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({
-            dpt: 30,
-            crop_size: 96,
-            labels: ['track', 'train'],
-            mean: [0.485, 0.456, 0.406],
-            std: [0.229, 0.224, 0.225]
-          })
-        } as any);
-      }
-      return Promise.resolve({ ok: true } as any);
-    });
-    
-    await (el as any)._onFileSave();
-    
-    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining('http://test-server/api/r49'), expect.objectContaining({
-      method: 'POST'
-    }));
-  });
 });
