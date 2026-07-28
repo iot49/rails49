@@ -2,37 +2,8 @@
 # Global parameters
 # ====================================================================================
 global:
-  # Base domain name for routing and wildcard certificates
+  # Base domain name the site is published under
   rails_domain: "rails49.org"
-
-# ====================================================================================
-# Server & Service configurations
-# ====================================================================================
-server:
-  # Remote host SSH alias
-  host: "rails49"
-  # Remote repository target directory
-  dir: "~/iot/track-occupancy"
-  
-  # Shared MQTT broker parameters
-  mqtt:
-    host: "mqtt"
-    port: 1883
-
-  # track-occupancy service parameters
-  track_occupancy:
-    port: 3000
-    interval_ms: 1000
-    mqtt_prefix: "rails49"
-    camera_device: "/dev/video0"
-    r49_path: "/data/layout.r49"
-    model_path: "/models/model.ort"
-    config_path: "/models/config.json"
-
-  # dcc-ex-bridge service parameters
-  dcc_ex_bridge:
-    port: 2560
-    serial_port: "/dev/ttyUSB0"
 
 # ====================================================================================
 # Classifier parameters (syncs to config.json during model export)

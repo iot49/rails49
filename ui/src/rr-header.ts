@@ -15,8 +15,6 @@ import type { RRSettingsDialog } from './rr-settings-dialog.js';
 export class RRHeader extends LitElement {
   @property({ type: String }) viewMode: 'editor' | 'live' = 'editor';
   @property({ type: Object }) layout: any = null;
-  @property({ type: Boolean }) serverConnected = false;
-  @property({ type: Boolean }) isSyncing = false;
 
   @query('rr-settings-dialog') settingsDialog!: RRSettingsDialog;
 
@@ -67,26 +65,6 @@ export class RRHeader extends LitElement {
       color: var(--sl-color-primary-100);
     }
 
-    .connection-status {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.8rem;
-      color: rgba(255, 255, 255, 0.8);
-      background: rgba(0, 0, 0, 0.2);
-      padding: 0.2rem 0.5rem;
-      border-radius: 1rem;
-      margin-left: 1rem;
-    }
-
-    .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-    }
-
-    .dot.online { background-color: #4ade80; box-shadow: 0 0 5px #4ade80; }
-    .dot.offline { background-color: #f87171; }
   `;
 
   private _onToggleView() {
@@ -113,10 +91,6 @@ export class RRHeader extends LitElement {
           <div class="title-status">
             <slot name="status">Occupancy UI</slot>
           </div>
-          <div class="connection-status">
-            <div class="dot ${this.serverConnected ? 'online' : 'offline'}"></div>
-            ${this.serverConnected ? 'Connected' : 'Offline'}
-          </div>
         </div>
 
         <div class="right-section">
@@ -124,11 +98,7 @@ export class RRHeader extends LitElement {
         </div>
       </nav>
 
-      <rr-settings-dialog 
-        .layout=${this.layout} 
-        .serverConnected=${this.serverConnected}
-        .isSyncing=${this.isSyncing}
-      ></rr-settings-dialog>
+      <rr-settings-dialog .layout=${this.layout}></rr-settings-dialog>
     `;
   }
 }

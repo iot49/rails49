@@ -40,10 +40,20 @@ echo "📁 Syncing UI assets to '$DEPLOY_DIR/ui'..."
 mkdir -p "$DEPLOY_DIR/ui"
 rsync -a --delete ui/dist/ "$DEPLOY_DIR/ui/"
 
-# 3. Clean up large WASM and ORT model files from the deploy directory (they will load from CDN/local server in the cloud)
-echo "🧹 Excluding large WASM and ORT files to stay under Cloudflare's 25 MiB file size limit..."
+# 3. Clean up the large ONNX Runtime WASM binaries. They exceed Cloudflare's
+#    25 MiB per-file limit and are loaded from the jsDelivr CDN in production
+#    instead (see the wasmPaths branch in rr-live-view.ts / rr-editor-view.ts).
+#    The quantized model (model_int8.ort, 11 MB) is under the limit and ships.
+echo "🧹 Excluding large WASM files to stay under Cloudflare's 25 MiB file size limit..."
 find "$DEPLOY_DIR/ui" -name "*.wasm" -delete
-find "$DEPLOY_DIR/ui" -name "*.ort" -delete
+
+# Fail loudly rather than deploying a bundle Cloudflare will reject.
+OVERSIZED=$(find "$DEPLOY_DIR" -type f -size +25M)
+if [ -n "$OVERSIZED" ]; then
+  echo "❌ Error: these files exceed Cloudflare's 25 MiB limit:"
+  echo "$OVERSIZED"
+  exit 1
+fi
 
 # Check if deploy directory exists
 if [ ! -d "$DEPLOY_DIR" ]; then

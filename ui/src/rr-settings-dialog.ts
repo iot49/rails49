@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property, state, query } from 'lit/decorators.js';
+import { customElement, property, query } from 'lit/decorators.js';
 import { Scale2Number } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
@@ -13,18 +13,6 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { SlDialog } from '@shoelace-style/shoelace';
 
-declare const __RAILS_DOMAIN__: string;
-
-function getBaseDomain(): string {
-  const hostname = window.location.hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return __RAILS_DOMAIN__;
-  }
-  return hostname.replace(/^(ui|throttle|mqtt|rocrail|traefik)\./, '');
-}
-
-const DEFAULT_SERVER_URL = `https://ui.${getBaseDomain()}`;
-
 /**
  * Dialog for configuring layout settings and selecting classifiers.
  * 
@@ -34,10 +22,6 @@ const DEFAULT_SERVER_URL = `https://ui.${getBaseDomain()}`;
 @customElement('rr-settings-dialog')
 export class RRSettingsDialog extends LitElement {
   @property({ type: Object }) layout: { name?: string; scale: string; calibration?: any } = { scale: 'N' };
-  @property({ type: Boolean }) serverConnected = false;
-  @property({ type: Boolean }) isSyncing = false;
-  
-  @state() private _serverUrl = localStorage.getItem('rr-server-url') || DEFAULT_SERVER_URL;
 
   @query('sl-dialog') private _dialog!: SlDialog;
 
@@ -99,22 +83,6 @@ export class RRSettingsDialog extends LitElement {
     this._dialog.hide();
   }
 
-  private _onServerUrlChange(url: string) {
-    this._serverUrl = url;
-    this.dispatchEvent(new CustomEvent('rr-server-url-change', {
-      detail: { url },
-      bubbles: true,
-      composed: true
-    }));
-  }
-
-  private _onServerSync(action: 'upload' | 'download') {
-    this.dispatchEvent(new CustomEvent(`rr-server-${action}`, {
-      bubbles: true,
-      composed: true
-    }));
-  }
-
   private _onLayoutChange(field: string, value: any) {
     this.dispatchEvent(new CustomEvent('rr-layout-change', {
       detail: { layout: { [field]: value } },
@@ -138,7 +106,6 @@ export class RRSettingsDialog extends LitElement {
       <sl-dialog label="Settings" style="--width: 500px;">
         <sl-tab-group>
           <sl-tab slot="nav" panel="layout">Layout</sl-tab>
-          <sl-tab slot="nav" panel="server">Server</sl-tab>
 
           <sl-tab-panel name="layout">
             <div class="settings-grid">
@@ -164,48 +131,6 @@ export class RRSettingsDialog extends LitElement {
                 value=${this.layout?.calibration?.size_mm || ''} 
                 @sl-change=${(e: any) => this._onCalibrationSizeChange(Number(e.target.value))}
               ></sl-input>
-            </div>
-          </sl-tab-panel>
-
-          <sl-tab-panel name="server">
-            <div class="settings-grid">
-              <div class="label">Server URL</div>
-              <sl-input 
-                value=${this._serverUrl} 
-                @sl-change=${(e: any) => this._onServerUrlChange(e.target.value)}
-                placeholder=${DEFAULT_SERVER_URL}
-              ></sl-input>
-
-              <!-- Save button (toolbar) uploads to server when connected.
-              <div class="label">Actions</div>
-              <div style="display: flex; gap: 0.5rem;">
-                <sl-button 
-                  variant="primary" 
-                  size="small" 
-                  ?disabled=${!this.serverConnected}
-                  ?loading=${this.isSyncing}
-                  @click=${() => this._onServerSync('download')}
-                >
-                  <sl-icon slot="prefix" name="cloud-download"></sl-icon>
-                  Download .r49
-                </sl-button>
-                <sl-button 
-                  variant="success" 
-                  size="small" 
-                  ?disabled=${!this.serverConnected}
-                  ?loading=${this.isSyncing}
-                  @click=${() => this._onServerSync('upload')}
-                >
-                  <sl-icon slot="prefix" name="cloud-upload"></sl-icon>
-                  Upload .r49
-                </sl-button>
-              </div>
-              -->
-
-              <div class="label">Status</div>
-              <div style="color: ${this.serverConnected ? 'var(--sl-color-success-600)' : 'var(--sl-color-danger-600)'}">
-                ${this.serverConnected ? 'Connected' : 'Offline'}
-              </div>
             </div>
           </sl-tab-panel>
         </sl-tab-group>
