@@ -3,6 +3,7 @@ name = "cnn"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Bernhard Boser", email = "bernhard.e.boser@gmail.com" }
 ]

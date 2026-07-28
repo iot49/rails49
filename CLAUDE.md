@@ -90,7 +90,7 @@ Which model ships is named in four places, and they must agree: the static-copy 
 
 ## Contributing
 
-Contributions require signing the CLA (`CLA.md`), enforced by `.github/workflows/cla.yml` on pull requests.
+MIT licensed (`LICENSE`). There is no CLA and no contributor gate on pull requests — contributions are taken under the project's own terms.
 
 ## 🛠 Technology Stack
 

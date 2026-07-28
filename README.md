@@ -18,6 +18,7 @@ See [CLAUDE.md](CLAUDE.md) for the repository layout, development commands, and
 the technology stack, and [lib/CLAUDE.md](lib/CLAUDE.md) for the interface
 convention the shared TypeScript libraries follow.
 
-Contributions require signing the [Contributor License Agreement](CLA.md),
-which is enforced automatically on pull requests.
+Pull requests are welcome. By contributing you agree that your contributions
+are licensed under the [MIT License](LICENSE), the same terms that cover the
+rest of the project.
 
