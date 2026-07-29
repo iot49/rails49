@@ -4,6 +4,9 @@ import { R49Archive } from '@occupancy/r49';
 import './rr-header.js';
 import './rr-editor-view.js';
 import './rr-live-view.js';
+// PROTOTYPE — throwaway, wayfinder ticket #5. Reached only via ?proto in the
+// URL; delete this import with the rest of src/prototype/.
+import './prototype/rr-proto-editor.js';
 import { setBasePath } from '@shoelace-style/shoelace/dist/utilities/base-path.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -19,6 +22,10 @@ export class RRApp extends LitElement {
   @state() private _archive: R49Archive | null = null;
   @state() private _viewMode: 'editor' | 'live' = 'editor';
   @state() private _status = 'No archive loaded';
+
+  // PROTOTYPE — throwaway, wayfinder ticket #5. True when the URL carries
+  // ?proto; goes away with src/prototype/.
+  private readonly _proto = new URL(window.location.href).searchParams.has('proto');
 
   static styles = css`
     :host {
@@ -174,7 +181,15 @@ export class RRApp extends LitElement {
       </rr-header>
 
       <main>
-        ${this._viewMode === 'editor' 
+        ${this._viewMode === 'editor' && this._proto
+          ? html`
+              <rr-proto-editor
+                .archive=${this._archive}
+                @rr-file-new=${this._onFileNew}
+                @rr-file-open=${this._onFileOpen}
+                @rr-file-save=${this._onFileSave}
+              ></rr-proto-editor>`
+          : this._viewMode === 'editor'
           ? html`
               <rr-editor-view
                 .archive=${this._archive}
