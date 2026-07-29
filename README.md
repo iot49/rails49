@@ -19,6 +19,21 @@ the technology stack, and [lib/CLAUDE.md](lib/CLAUDE.md) for the interface
 convention the shared TypeScript libraries follow.
 
 Pull requests are welcome. By contributing you agree that your contributions
-are licensed under the [MIT License](LICENSE), the same terms that cover the
-rest of the project.
+are licensed under the [GNU Affero General Public License v3.0](LICENSE), the
+same terms that cover the rest of the project. There is no CLA.
+
+## 📄 License
+
+Copyright (C) 2026 Bernhard Boser
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See [LICENSE](LICENSE) for the full text.
+
+The project is AGPL-3.0 because it ships a detector derived from
+[Ultralytics YOLO](https://github.com/ultralytics/ultralytics), which is
+AGPL-3.0 licensed; trained weights inherit those terms. If you deploy a
+modified version, the licence requires you to make your source available to
+its users.
 

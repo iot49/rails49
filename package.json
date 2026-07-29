@@ -1,7 +1,7 @@
 {
   "name": "rails49",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

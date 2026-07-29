@@ -24,3 +24,8 @@ dataset/data/
 
 # IDE files
 *.code-workspace
+
+# Claude Code — settings.json is shared and tracked; everything else is local
+.claude/settings.local.json
+.claude/worktrees/
+.claude/.cc-writes/
