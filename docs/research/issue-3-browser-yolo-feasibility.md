@@ -21,7 +21,7 @@ The four questions, answered with measured numbers:
 | :-- | :-- | :-- |
 | Weight budget vs 25 MiB | **3.33 MiB** measured (`.ort`, INT8, OBB head) | 7.5× under |
 | Runs under `onnxruntime-web` WASM? | **Yes — executed, correct output shape** | — |
-| Mobile latency | 656 ms measured @1024², ~340 ms extrapolated @960×544, on a 2017 Intel laptop under WASM single-thread | see §7, §8 |
+| Mobile latency | **377.6 ms measured** @960×544 (656 ms @1024²), on a 2017 Intel laptop under WASM single-thread | see §7, §8 |
 | Export path | `ultralytics` → ONNX → ORT static quant → `.ort`; parallels `classifier/resnet/` exactly | — |
 
 **Take the OBB head.** It costs **+2.5% file size and ~+1% FLOPs** over the
@@ -188,7 +188,9 @@ Ultralytics fp32 ONNX downloaded from `github.com/ultralytics/assets` tag
 | `yolo26n-obb.onnx` (fp32, as released) | 10,207,250 | 9.73 | 39% |
 | `yolo26n-obb` INT8 QDQ `.onnx` | — | 3.05 | 12% |
 | `yolo26n-obb` INT8 QOperator `.onnx` | — | 2.78 | 11% |
-| **`yolo26n-obb.int8-qdq.ort`** | **3,493,032** | **3.33** | **13%** |
+| **`yolo26n-obb.int8-qdq.ort`** @1024² | **3,493,032** | **3.33** | **13%** |
+| **`yolo26n-obb` INT8 `.ort` @960×544** (recommended, §7) | **3,460,456** | **3.30** | **13%** |
+| `yolo26n-obb` INT8 `.ort` @640×384 | 3,443,344 | 3.28 | 13% |
 | `yolo26n.int8-qdq.ort` (axis-aligned, for reference) | 3,403,640 | 3.25 | 13% |
 | `yolo26n.ort` (fp32, for reference) | 10,047,440 | 9.58 | 38% |
 | *(today)* `model_int8.ort` ResNet-18 | — | ~11 | 44% |
@@ -330,18 +332,39 @@ needs the oriented head. 640 is too small.
 above one P3 cell — stock at 18 px, and it is half the compute of the released
 1024² export.
 
-Projected latency, **extrapolated linearly in pixel count** from the measured
-245.3 ms for INT8 `.ort` at 640² under ORT-web WASM single-thread on the i7-7820HQ
-(the per-pixel cost of the OBB head is within ~1% of the detect head, §3):
+### These were then measured, not left as projections
 
-| input | extrapolated WASM 1-thread on i7-7820HQ |
-| :-- | --: |
-| 640×384 | ~150 ms |
-| **960×544** | **~310 ms** |
-| 1280×736 | ~560 ms |
+`yolo26n-obb.pt` was re-exported at both rectangular sizes with
+`model.export(format="onnx", imgsz=[h, w], simplify=True, batch=1)`, statically
+quantized against the same 10 corpus frames, converted to `.ort`, and run through
+the §6 harness on the same machine:
 
-These are extrapolations and are labelled as such. The measured anchors are the
-five rows in §6. See §12 for the experiment that replaces them with real numbers.
+| input | fp32 `.onnx` | INT8 `.ort` | ORT-web WASM, 1 thread | output |
+| :-- | --: | --: | --: | :-- |
+| 640×384 | 9.55 MiB | **3.28 MiB** | **186.3 ms** | `1×300×7` |
+| **960×544** | 9.61 MiB | **3.30 MiB** | **377.6 ms** | `1×300×7` |
+| 960×544 (fp32, for contrast) | 9.61 MiB | — | 605.8 ms | `1×300×7` |
+| 1024×1024 (released) | 9.73 MiB | 3.33 MiB | 656.2 ms | `1×300×7` |
+
+Three things this confirms:
+
+* **Rectangular export preserves the NMS-free head.** Output stays `[1, 300, 7]`
+  at both sizes. (Ultralytics warns that non-square `imgsz` breaks its `val`
+  command; it does not affect export or predict.)
+* **960×544 costs 42% less than the released 1024² export** (377.6 vs 656.2 ms)
+  while giving the corpus a better pixel budget on the long axis. Ultralytics'
+  own summary for the 960×544 export reports **6.9 GFLOPs**, against the 7.0
+  predicted in the table above — the FLOPs model is sound.
+* **My linear-in-pixels latency extrapolation under-predicted by ~22–24%**
+  (predicted ~150 / ~310 ms, measured 186.3 / 377.6 ms). Latency is not purely
+  proportional to pixel count; there is fixed per-inference overhead. Anyone
+  projecting to other resolutions from these numbers should add that margin
+  rather than scaling naively — which is precisely why these rows were measured
+  instead of left as arithmetic.
+
+Note the re-export came out at **opset 17**, not the released files' opset 20,
+because the local `torch==2.2.2` pin caps it. It loaded and ran under ORT-web
+regardless, which widens rather than narrows the compatibility window.
 
 ---
 
@@ -393,7 +416,9 @@ Two follow-ups for whoever picks this up:
 ## 9. Export path and repo layout
 
 The pipeline mirrors `classifier/resnet/` closely enough that the existing
-conventions transfer with almost no invention.
+conventions transfer with almost no invention. **Every stage below from
+`best.pt` onward was executed end-to-end during this research** (on the released
+DOTA weights rather than trained ones), so the path is verified, not proposed.
 
 ```
 dataset/r49/*.r49                     endpoint labels (v4, decision 6)
@@ -568,12 +593,7 @@ Stated plainly rather than guessed at.
    stride threshold. Confirming it means training at 640×384 / 960×544 / 1280×736
    and comparing recall on the track class specifically, which is where the small-
    object limit bites.
-5. **Rectangular-export sizes and latency.** I exported only at the released
-   1024²; the rectangular figures in §7 are extrapolations. Exporting
-   `yolo26n-obb.pt` at `imgsz=[544, 960]` and re-running §6's harness would replace
-   them with measurements. Requires a working `ultralytics` install (torch on
-   macOS x86_64 is the friction here; any Linux box or Colab does it in minutes).
-6. **INT8 accuracy delta.** The CNN's experience is instructive — `model_int8.ort`
+5. **INT8 accuracy delta.** The CNN's experience is instructive — `model_int8.ort`
    scores 99.58% against fp32's 99.69%, with the gate at 99.5%, i.e. under one
    sample of headroom. Whatever gate the detector gets should be set with more
    slack than that, and #4's finding that the current regression set is
@@ -656,6 +676,9 @@ Stated plainly rather than guessed at.
 
 **Measurement environment.** Intel Core i7-7820HQ @ 2.90 GHz (4 physical / 8
 logical), macOS 13.7.8, Node v20.5.1, `onnxruntime==1.23.2` (Python),
-`onnxruntime-web@1.25.1` (Node/WASM), `onnx`, `onnxconverter-common`. Latency is
-the median of 6 timed runs after 2 warmups on random input. Calibration data for
-static quantization: 10 frames extracted from `lighting.r49` and `simple.r49`.
+`onnxruntime-web@1.25.1` (Node/WASM), `onnx==1.22.0`, `onnxconverter-common`,
+`ultralytics==8.4.109` on `torch==2.2.2` (the last macOS x86_64 build) for the
+rectangular re-exports. Latency is the median of 6 timed runs after 2 warmups on
+random input. Calibration data for static quantization: 10 frames extracted from
+`lighting.r49` and `simple.r49`. `yolo26n-obb` fused summary as reported by
+Ultralytics: 132 layers, **2,449,332 parameters**, 6.9 GFLOPs at 960×544.
