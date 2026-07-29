@@ -1,470 +1,337 @@
-# UI 
+# UI
 
-UI for coniguring track occupancy detection. Also provides a life view for real time observation of track occupancy.
+Web app for configuring track occupancy detection, plus a live view for real-time observation.
 
-## Naming Conventions
+Everything runs client-side: `.r49` archives are opened and saved through the file picker, and
+classification runs in the browser via ONNX Runtime. There is no backend.
 
-### Custom Element Prefix: `rr-`
+* **`SPEC.md`** — what the app is *for*, and the requirements it is working toward. Much of it is not
+  built yet; treat it as the target, not a description.
+* **`CLAUDE.md`** — build, test, and deploy mechanics, and the invariants an edit can break.
+* **This file** — the component reference: what exists today, and each component's interface.
 
-All custom HTML elements in this project use the `rr-` prefix (**r**ail**r**oad).
+## Naming conventions
 
-**Why `rr-`:**
-- Required by the HTML spec — custom elements must contain a hyphen to distinguish them from future standard elements
-- `rr-` is project-specific and does not conflict with any common library prefix (`sl-` for Shoelace, `md-` for Material, etc.)
-- Short, memorable, and self-documenting within the model railroad domain
+### Custom element prefix: `rr-`
 
-**Rules:**
-- All Lit `@customElement` registrations use `rr-<noun>` or `rr-<noun>-<qualifier>`
-- Examples: `rr-app`, `rr-viewer`, `rr-editor-view`, `rr-toolbar`, `rr-stats-bar`
-- Non-element modules (template functions, utilities, types) use plain `camelCase` filenames with no prefix: `marker.ts`, `classifier.ts`, `capture.ts`
+All custom elements use the `rr-` prefix (**r**ail**r**oad).
 
-### File Naming
+- The HTML spec requires a hyphen in custom element names, to distinguish them from future standard
+  elements.
+- `rr-` does not collide with common library prefixes (`sl-` for Shoelace, `md-` for Material).
+- Registrations are `rr-<noun>` or `rr-<noun>-<qualifier>`: `rr-app`, `rr-viewer`, `rr-editor-view`.
+
+### File naming
 
 | Kind | Convention | Example |
 |---|---|---|
 | Lit custom element | `rr-<name>.ts` | `rr-viewer.ts` |
 | SVG template module | `<name>.ts` | `marker.ts` |
-| Utility / service | `<name>.ts` | `classifier.ts`, `capture.ts` |
+| Utility / service | `<name>.ts` | `capture.ts` |
 | Test file | `<name>.test.ts` in `tests/` | `tests/marker.test.ts` |
 
+Non-element modules use plain camelCase filenames with no prefix.
+
 ---
 
-## Component Hierarchy
+## Component hierarchy
 
 ```
-rr-app                          ← top-level shell, context providers
-├── rr-header                   ← app bar: title, view toggle, settings gear
-│   └── rr-settings-dialog      ← layout/classifier settings (sl-dialog)
-├── rr-editor-view              ← editor mode (toolbar + thumbnails + viewer)
+rr-app                          ← shell: owns the archive and the view mode
+├── rr-header                   ← app bar: status slot, view toggle, settings gear
+│   └── rr-settings-dialog      ← layout settings (sl-dialog)
+├── rr-editor-view              ← editor mode; owns its own classifier
 │   ├── rr-toolbar              ← vertical icon bar (label tools, file ops)
-│   ├── rr-thumbnail-bar        ← horizontal image selector strip
-│   └── rr-viewer               ← SHARED: media + SVG overlay + markers
-│       └── marker template     ← lit template for single marker (constant screen size)
-└── rr-live-view                ← live mode (camera + classification loop)
-    ├── rr-stats-bar             ← FPS / classification stats overlay
+│   ├── rr-viewer               ← SHARED: media + SVG overlay + markers
+│   │   └── marker.ts           ← module, not an element
+│   └── rr-thumbnail-bar        ← horizontal image selector strip
+└── rr-live-view                ← live mode; owns its own classifier
+    ├── rr-stats-bar            ← FPS / marker-count overlay
     └── rr-viewer               ← SAME component, video source instead of img
-        └── marker template
+        └── marker.ts
 ```
+
+## State and data flow
+
+There is no Lit context and no shared store. `rr-app` holds the single `R49Archive` and passes it
+down as the `.archive` property; children report upward with bubbling `rr-*` custom events:
+
+```
+        .archive ↓                    ↑ rr-* events (bubbles: true, composed: true)
+rr-app ─────────── rr-editor-view ─────────── rr-viewer / rr-toolbar / rr-thumbnail-bar
+   │
+   └─────────────── rr-live-view ───────────── rr-viewer / rr-stats-bar
+```
+
+* **`rr-app` owns:** the archive, the view mode, the status string, and file new/open/save.
+* **`rr-editor-view` owns:** the current image index, the active tool, blob URLs for the images, and
+  per-marker classification results. It mutates the archive in place.
+* **`rr-live-view` owns:** the camera stream and the classification loop. It never mutates the archive.
+* **The classifier is not shared.** `rr-editor-view` and `rr-live-view` each construct their own
+  `BrowserClassifier` and load the model independently.
+
+Lit does not observe mutations *inside* `R49Archive`, so handlers that edit the manifest in place
+call `this.requestUpdate()` explicitly.
 
 ---
 
-## Component Specifications
+## Component reference
 
 ### `rr-app`
 
-**Purpose**: Application shell. Provides shared context and routes between views.
+Application shell. Owns the archive and routes between the two views.
 
-| Property | Type | Description |
-|---|---|---|
-| `viewMode` | `'editor' \| 'live'` | Current view |
+**Internal state** (no public properties): `_archive`, `_viewMode` (`'editor' | 'live'`), `_status`.
+Starts with no archive loaded.
 
-**Context Provided**:
-- `r49Archive: R49Archive` — from `@occupancy/r49`
-- `classifier: Classifier` — ONNX inference session
+**Handles:** `rr-view-toggle`, `rr-layout-change`, `rr-file-new`, `rr-file-open`, `rr-file-save`.
 
-**Behavior**:
-- Listens for `rr-view-toggle` event to switch views
-- On load, initializes archive from default or opens empty state
-- Replaces the manual cloning pattern in legacy `rr-main.ts`
+* `rr-file-new` builds an empty v3 manifest — layout `'New Layout'`, scale `N`, resolution 1920×1080.
+* `rr-file-open` reads a `.r49` through a file input and `R49Archive.load()`.
+* `rr-file-save` **validates calibration first** and aborts with a toast if it fails: `calibration`
+  must exist, `p0`/`p1` must be present, non-NaN, and distinct, and `size_mm` must be a positive
+  number. Only then does it `export()` and download.
+
+Feedback is a Shoelace `sl-alert` toast (`_notify`), not `alert()`.
 
 ---
 
 ### `rr-header`
 
-**Purpose**: Fixed app bar at top.
+Top app bar. Renders the view toggle, the status slot, and the settings gear; hosts
+`rr-settings-dialog` and opens it imperatively via its `show()` method.
+
+| Property | Type | Description |
+|---|---|---|
+| `viewMode` | `'editor' \| 'live'` | Selects the toggle icon and tooltip |
+| `layout` | `object` | Passed through to `rr-settings-dialog` |
 
 | Slot | Content |
 |---|---|
-| `status` | Status bar text (set by active view) |
+| `status` | Status text; falls back to "Occupancy UI" |
 
-**Events Emitted**:
-- `rr-view-toggle` — toggle editor/live
-- Opens `rr-settings-dialog`
+**Emits:** `rr-view-toggle` (no detail).
 
 ---
 
 ### `rr-settings-dialog`
 
-**Purpose**: Layout and classifier configuration.
+Layout settings, in an `sl-dialog` with a single "Layout" tab: name, scale (from `VALID_SCALES`), and
+reference size in mm.
 
-**Properties** (from context):
-- `r49Archive`
-- `classifier`
+| Property | Type | Description |
+|---|---|---|
+| `layout` | `{ name?, scale, calibration? }` | Current layout; defaults to scale `N` |
 
-**Behavior**:
-- Layout tab: name, scale, calibration dimensions
-- Classifier config is NOT stored in the manifest (fix legacy design flaw). It's passed directly to the `Classifier` instance.
+**Methods:** `show()`, `hide()`.
+
+**Emits:** `rr-layout-change` with `{ layout: Partial<Layout> }` — one changed field per event.
+Editing the reference size synthesizes a default `p0`/`p1` if the layout has no calibration yet.
+
+Classifier selection is **not implemented**: there is no classifier tab, and the
+`rr-classifier-change` event named in the source JSDoc is never fired. Classifier config comes from
+`models/config.json` at runtime and is deliberately not stored in the manifest.
 
 ---
 
 ### `rr-toolbar`
 
-**Purpose**: Vertical tool palette for the editor.
+Vertical tool palette for the editor.
 
 | Property | Type | Description |
 |---|---|---|
-| `activeTool` | `string \| null` | Currently selected tool ID |
-| `disabled` | `boolean` | Disable all label tools (no image selected) |
+| `activeTool` | `string \| null` | Highlights the matching button |
+| `disabled` | `boolean` | Disables the label tools; currently never set by `rr-editor-view` |
 
-**Events Emitted**:
-- `rr-tool-select` with `{ tool: string }` — tool clicked
-- `rr-file-new` — create a new empty archive
-- `rr-file-open` — open file picker
-- `rr-file-save` — save current archive
+**Tool IDs**, which `rr-editor-view` and `rr-viewer` both switch on: `track`, `train`, `coupling`,
+`other`, `delete`, `calibrate`. The first four double as marker types.
+
+**Emits:** `rr-tool-select` `{ tool: string }`, `rr-file-new`, `rr-file-open`, `rr-file-save`.
 
 ---
 
 ### `rr-thumbnail-bar`
 
-**Purpose**: Horizontal strip of image thumbnails.
+Horizontal strip of image thumbnails, with drag-and-drop reordering.
 
 | Property | Type | Description |
 |---|---|---|
-| `images` | `string[]` | Array of image URLs (data URIs or blob URLs) |
-| `selectedIndex` | `number` | Currently selected image |
+| `images` | `string[]` | Image URLs (blob URLs) |
+| `selectedIndex` | `number` | Currently selected image; `-1` for none |
 
-**Events Emitted**:
-- `rr-image-select` with `{ index: number }`
-- `rr-image-delete` with `{ index: number }`
-- `rr-image-add` with `{ source: 'camera' \| 'file' }`
+**Emits:** `rr-image-select` `{ index }`, `rr-image-delete` `{ index }`, `rr-image-add`
+`{ source: 'camera' | 'file' }`, `rr-image-reorder` `{ from, to }`.
 
 ---
 
-### `rr-viewer` ⭐ (Key unified component)
+### `rr-viewer` ⭐ shared by both views
 
-**Purpose**: Display media (image or video) with an SVG marker overlay. Used identically by both editor and live views.
+Displays media — image or video — under an SVG marker overlay.
 
 | Property | Type | Description |
 |---|---|---|
 | `src` | `string \| null` | Image URL (editor mode) |
 | `stream` | `MediaStream \| null` | Video stream (live mode) |
-| `markers` | `MarkerData[]` | Array of `{ id, x, y, type, status? }` |
-| `calibration` | `CalibrationData \| null` | p0/p1 calibration points (editor only, image 0) |
-| `interactive` | `boolean` | Enable click-to-place and drag (editor only) |
-| `activeTool` | `string \| null` | Current tool (for click handling) |
-| `resolution` | `{ width, height }` | Native media resolution (SVG viewBox) |
+| `markers` | `MarkerData[]` | Markers to draw |
+| `calibration` | `CalibrationData \| null` | `{ p0, p1, size_mm }`; draws the dashed line and two drag handles |
+| `interactive` | `boolean` | Enables click-to-place, drag, and delete |
+| `activeTool` | `string \| null` | Decides what a click means |
+| `resolution` | `{ width, height }` | Native media resolution → the SVG viewBox |
 
-**Events Emitted** (only when `interactive`):
-- `rr-marker-add` with `{ x, y, type }`
-- `rr-marker-move` with `{ id, x, y }`
-- `rr-marker-delete` with `{ id }`
-- `rr-calibration-move` with `{ id, x, y }`
+**Emits** (only when `interactive`): `rr-marker-add` `{ x, y, type }`, `rr-marker-move` `{ id, x, y }`,
+`rr-marker-delete` `{ id }`, `rr-calibration-move` `{ id: 'p0' | 'p1', x, y }`.
 
-**Internal Structure**:
-```typescript
-import { renderMarker, markerDefs, markerStyles } from './marker.js';
+Clicks add a marker only on empty background, and only when `activeTool` is a marker type — `delete`
+and `calibrate` are excluded. With `delete` active, clicking a marker removes it.
 
-static styles = [viewerStyles, markerStyles];
-```
-```html
-<div class="viewport">
-  <!-- One or the other, never both -->
-  <img .src=${this.src} />
-  <!-- or -->
-  <video .srcObject=${this.stream} autoplay playsinline></video>
+**Methods:** `getVideoElement()`, `getImageElement()` — `rr-live-view` uses these to feed the
+classifier the live frame source.
 
-  <svg viewBox="0 0 ${this.resolution.width} ${this.resolution.height}" 
-       preserveAspectRatio="xMidYMid meet">
-    ${markerDefs()}
-    ${this.markers.map(m => renderMarker(m, this.symbolSize))}
-    <!-- calibration lines/handles -->
-  </svg>
-</div>
-```
+**Why one component for both modes.** `<img>` and `<video>` both use `object-fit: contain`, matched
+to the SVG's `preserveAspectRatio="xMidYMid meet"`, and the SVG overlays the full viewport. The
+viewBox therefore maps 1:1 onto image pixel coordinates, so a marker lands in the same place in
+either mode. Changing one half of that pair silently misplaces every marker.
 
-**Key design**: Both `<img>` and `<video>` use `object-fit: contain` which matches SVG's `preserveAspectRatio="xMidYMid meet"`. The SVG covers the full viewport and the viewBox maps 1:1 to pixel coordinates. This guarantees identical marker placement.
-
-**Scaling**: Uses a `ResizeObserver` to compute `symbolSize = MARKER_SIZE_PX * (viewBoxWidth / elementWidth)`, keeping markers at a constant screen size regardless of zoom or window resize.
+**Scaling.** A `ResizeObserver` recomputes
+`symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, keeping markers a constant
+*screen* size at any zoom or window size. Pointer positions convert through `screenToSvg()`
+(`createSVGPoint` + inverse `getScreenCTM`).
 
 ---
 
-### `marker.ts` (Co-exported Module)
+### `marker.ts`
 
-**Purpose**: Marker rendering for SVG contexts. Implemented as a co-exported module rather than a Custom Element because HTML Custom Elements break the SVG namespace when placed directly inside an `<svg>` tag. All three exports must be used together — the module boundary is the encapsulation mechanism.
-
-**Exports**:
+Marker rendering for SVG. It is a module rather than a custom element because custom elements break
+the SVG namespace when nested inside `<svg>`. **All three exports must be used together** — the
+module boundary is the encapsulation.
 
 | Export | Type | Description |
 |---|---|---|
-| `renderMarker(marker, size)` | `(MarkerData, number) => SVGTemplateResult` | Renders a single marker as SVG nodes (`<use>` + optional validation rect) |
-| `markerDefs()` | `() => SVGTemplateResult` | SVG `<defs>` block containing all symbol definitions (track, train, coupling, other) |
-| `markerStyles` | `CSSResult` | CSS for validation rects, hover states, and drag handles — must be included in the host's `static styles` |
+| `renderMarker(marker, size)` | `(MarkerData, number) => SVGTemplateResult` | One marker: `<title>` tooltip, `<use>` of the type symbol, and a validation rect when `status` is set |
+| `markerDefs()` | `() => SVGTemplateResult` | The `<defs>` block; must appear once inside the host `<svg>` before any marker |
+| `markerStyles` | `CSSResult` | Validation-rect colors and stroke behavior; must go in the host's `static styles` |
 
-**`MarkerData` type**:
+Symbols defined: `track`, `train`, `coupling`, `other`, and `drag-handle` (used for calibration
+points). Each is a 24×24 viewBox centered on (0,0), so `<use transform="translate(x,y)">` places it
+centered without manual offsets. An unrecognized `type` falls back to `other`.
+
+**`MarkerData`**
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string` | Unique marker identifier |
-| `x` | `number` | Position in image pixel coordinates |
-| `y` | `number` | Position in image pixel coordinates |
+| `id` | `string` | Unique marker id |
+| `x`, `y` | `number` | Image pixel coordinates |
 | `type` | `'track' \| 'train' \| 'coupling' \| 'other'` | Marker category |
-| `status` | `'match' \| 'mismatch' \| 'pending' \| null` | Optional validation ring color |
+| `status?` | `'match' \| 'mismatch' \| 'pending' \| null` | Validation ring: green / red / orange. Omit or `null` for no ring |
+| `detectedLabels?` | `string[]` | What the classifier returned; shown as the `<title>` tooltip |
 
 ---
 
 ### `rr-editor-view`
 
-**Purpose**: Orchestrates the editor layout: toolbar + thumbnails + viewer.
+Orchestrates the editor and mutates the archive.
 
-**Behavior**:
-- Manages `currentImageIndex` and `activeTool` state
-- Wires events from child components to `R49Archive` mutations
-- Passes the correct image URL and markers to `rr-viewer`
-- Passes calibration data to `rr-viewer` when `activeTool` is 'calibrate' and the first image is selected.
-- File open/save operations via `R49Archive.load()` / `.export()`
+| Property | Type |
+|---|---|
+| `archive` | `R49Archive \| null` |
+
+* Creates blob URLs for every image in the manifest, revoking the previous set on reload.
+* Marker CRUD writes directly into `manifest.images[i].labels`, keyed by a `make_id()` id.
+* Selecting the `calibrate` tool seeds a default `p0`/`p1`/`size_mm` if the layout has none, and
+  passes `calibration` to `rr-viewer` for as long as that tool stays active.
+* Image add (camera or file), delete, and reorder go through the corresponding `R49Archive` methods.
+* **Classification.** On archive load, image change, or any marker edit, it classifies every marker
+  on the current image and sets each marker's `status` to `match` or `mismatch`. If `getDPT()`
+  returns null the layout is uncalibrated: it shows a banner and marks everything `pending`.
 
 ---
 
 ### `rr-live-view`
 
-**Purpose**: Camera stream with real-time classification overlay.
+Camera stream with a real-time classification overlay.
 
-**Behavior**:
-- Starts camera via `getUserMedia`
-- Runs classification loop on `requestAnimationFrame`
-- Builds marker array from classification results
-- Passes stream + markers to `rr-viewer` with `interactive=false`
-- Renders `rr-stats-bar` for FPS/timing info
+| Property | Type |
+|---|---|
+| `archive` | `R49Archive \| null` |
+
+* Opens the camera via `getCameraStream()` and runs a `requestAnimationFrame` loop, skipping frames
+  until the video reports usable dimensions.
+* **Markers come from `manifest.images[0]`** — the first image acts as the template for where to
+  classify. Coordinates are scaled from the manifest resolution to the live frame's natural size.
+* Each marker's icon is the highest-priority returned label, ordered train > coupling > track.
+* Requires calibration for the same reason as the editor; shows a banner when `getDPT()` is null.
+* Releases the classifier and stops all camera tracks on disconnect.
 
 ---
 
 ### `rr-stats-bar`
 
-**Purpose**: Transparent overlay showing live classification stats.
+Overlay showing live classification stats. Displays FPS, marker count, and time per marker.
 
 | Property | Type | Description |
 |---|---|---|
 | `fps` | `number` | Frames per second |
 | `count` | `number` | Markers classified per frame |
-| `avgMs` | `number` | Average classification time |
+| `sampleTime` | `number` | Milliseconds per marker |
+| `latency` | `number` | Whole-frame time; set by `rr-live-view` but **not currently rendered** |
 
 ---
 
-## Data Flow
+### `capture.ts`
 
-```
-┌──────────────────────────────────────────────────┐
-│ rr-app                                            │
-│   provides: R49Archive (from @occupancy/r49)      │
-│   provides: Classifier (ONNX session)             │
-│                                                    │
-│   ┌────────────────┐    ┌──────────────────────┐  │
-│   │ rr-editor-view │    │ rr-live-view         │  │
-│   │  reads:        │    │  reads:              │  │
-│   │   archive      │    │   archive.manifest   │  │
-│   │  mutates:      │    │   classifier         │  │
-│   │   archive      │    │  mutates: nothing    │  │
-│   └────────────────┘    └──────────────────────┘  │
-│         │                      │                   │
-│         └──────┬───────────────┘                   │
-│                ▼                                   │
-│          rr-viewer                                 │
-│       (shared component)                           │
-└──────────────────────────────────────────────────┘
-```
+Camera helpers, shared by both views.
 
-**Key change from legacy**: `R49Archive` from `@occupancy/r49` replaces both `R49File` and `Manifest`. Lit context provides the archive directly. Mutations call archive methods → Lit's reactive context handles propagation → no manual `EventTarget` cloning.
+| Export | Description |
+|---|---|
+| `DEFAULT_CAMERA_CONSTRAINTS` | 1920×1080 ideal, rear-facing, no audio |
+| `getCameraStream(constraints?)` | `getUserMedia` wrapper; returns a `MediaStream` |
+| `captureFromCamera()` | Opens the camera, grabs one JPEG frame as a `Uint8Array`, and always stops the tracks — with a 5 s timeout |
 
 ---
 
-## Migration from Legacy
+## Testing
 
-| Legacy File | New Location | Notes |
-|---|---|---|
-| `rr-main.ts` | `rr-app.ts` | Replace manual event cloning with Lit context |
-| `rr-page.ts` | `rr-header.ts` | Extract header only, remove slot-based routing |
-| `rr-layout-editor.ts` | `rr-editor-view.ts` | Split into toolbar + thumbnails + viewer |
-| `rr-live-view.ts` | `rr-live-view.ts` | Keep camera/loop logic, delegate rendering to rr-viewer |
-| `rr-label.ts` | `rr-viewer.ts` + `marker.ts` | Split 449-line monolith |
-| `rr-settings.ts` | `rr-settings-dialog.ts` | Decouple classifier config from manifest |
-| `app/r49file.ts` | Use `@occupancy/r49` | Delete |
-| `app/manifest.ts` | Use `@occupancy/r49` schema types | Delete EventTarget wrapper |
-| `app/manifest.schema.ts` | `@occupancy/r49` | Already done (v3 schema) |
-| `app/classify.ts` + `app/classifier.ts` | `app/classifier.ts` | Merge into single clean implementation |
-| `app/capture.ts` | `app/capture.ts` | Keep as-is (clean utility) |
-| `app/perspective_transform.ts` | Delete | No longer needed without OpenCV |
-| `marker-defs.ts` | `marker.ts` | Inline into marker template module |
+Vitest in a **jsdom** environment, with `tests/<module>.test.ts` mirroring `src/<module>.ts`. Run
+`pnpm test` from the repo root: it covers `lib/*` as well, and the UI consumes those packages as
+TypeScript source.
 
----
+`tests/setup.ts` supplies what jsdom lacks globally — `ResizeObserver`, `Element.animate`,
+`matchMedia`, `URL.createObjectURL` — and individual test files stub the rest (`PointerEvent`, SVG
+geometry, `getUserMedia`).
 
-## Testing Strategy
+Two patterns are in use:
 
-### Stack
-
-- **Vitest** — already in the workspace for `@occupancy/r49`
-- **`@open-wc/testing`** — fixtures for rendering Lit components in a real DOM
-- **`@open-wc/testing-helpers`** — `fixture()`, `html`, `oneEvent` utilities
-
-### Regression Command
-
-After every step, run:
-
-```bash
-pnpm test          # runs vitest across all workspaces
-```
-
-This catches regressions in **both** `@occupancy/r49` (the library) and `ui` (the app) in one command.
-
-### Test Pattern
-
-Every component test follows the same pattern — render in a fixture, assert DOM state and events:
+**Pure template modules** — render into a detached element and assert with vitest's `expect`:
 
 ```typescript
-import { fixture, html, expect } from '@open-wc/testing';
-import { renderMarker, markerDefs } from '../src/marker.js';
+import { describe, it, expect } from 'vitest';
+import { render, svg } from 'lit';
+import { markerDefs, renderMarker } from '../src/marker.js';
 
-describe('marker template', () => {
-  it('renders track icon at correct position', async () => {
-    const m = { id: '1', x: 100, y: 200, type: 'track' };
-    const el = await fixture(html`
-      <svg>${markerDefs()}${renderMarker(m, 36)}</svg>
-    `);
-    const use = el.querySelector('use');
-    expect(use?.getAttribute('href')).to.equal('#track');
-  });
-
-  it('shows red ring on mismatch', async () => {
-    const m = { id: '1', x: 0, y: 0, type: 'track', status: 'mismatch' };
-    const el = await fixture(html`
-      <svg>${markerDefs()}${renderMarker(m, 36)}</svg>
-    `);
-    const rect = el.querySelector('.validation-rect');
-    expect(rect?.getAttribute('stroke')).to.equal('red');
-  });
+it('renders a validation rect for a status', () => {
+  const container = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  render(svg`${markerDefs()}${renderMarker({ id: '1', x: 0, y: 0, type: 'track', status: 'mismatch' }, 36)}`, container);
+  expect(container.querySelector('.validation-rect')?.getAttribute('data-status')).toBe('mismatch');
 });
 ```
 
----
+Colors come from `markerStyles` via the `data-status` attribute — assert the attribute, not a
+`stroke` attribute, which the markup does not carry.
 
-## Implementation Steps
+**Components** — `@open-wc/testing` fixtures with its chai-style `expect`:
 
-Each step adds a component **and** its tests. Running `pnpm test` at any point validates everything built so far.
+```typescript
+import { fixture, html, expect } from '@open-wc/testing';
+import '../src/rr-viewer.js';
 
-### Step 1: Scaffold + `marker.ts` ✅
+it('renders <img> when src is set', async () => {
+  const el = await fixture(html`<rr-viewer src="test.jpg"></rr-viewer>`);
+  expect(el.shadowRoot!.querySelector('img')).to.exist;
+});
+```
 
-Initialize `ui/` as a Vite + Lit + Shoelace project in the pnpm workspace. Implement the `marker.ts` co-exported module — three pure functions/values with no state or events.
+**jsdom does not lay out or paint.** `getBoundingClientRect()` returns zeros and SVG geometry methods
+are absent, so `rr-viewer`'s tests stub `createSVGPoint`/`getScreenCTM` per test. Assert DOM
+structure, attributes, and emitted events — visual appearance cannot be verified here.
 
-**Deliverables**: `renderMarker()`, `markerDefs()`, `markerStyles`
-
-**Tests:**
-- `markerDefs()` produces `<defs>` with symbols for each type (`track`, `train`, `coupling`, `other`)
-- `renderMarker()` renders correct SVG symbol `<use>` for each type
-- Applies correct position via `x`/`y` from `MarkerData`
-- Renders validation ring with correct color for each `status`
-- Symbol size matches `size` argument
-- `markerStyles` is a non-empty `CSSResult`
-
-### Step 2: `rr-viewer` (image mode, read-only) ✅
-
-Core unified component. Start with static image + markers, no interactivity.
-
-**Tests:**
-- Renders `<img>` when `src` is set, no `<video>`
-- SVG `viewBox` matches `resolution` property
-- Markers render at correct positions
-- `ResizeObserver` updates symbol size (mock `offsetWidth`)
-- Calibration lines render when `calibration` is provided
-
-### Step 3: `rr-viewer` (interactivity) ✅
-
-Add click-to-place and drag behavior.
-
-**Tests:**
-- Click emits `rr-marker-add` with SVG-space coordinates when `interactive=true`
-- Click does nothing when `interactive=false`
-- Drag emits `rr-marker-move` with correct ID
-- Click on marker with delete tool emits `rr-marker-delete`
-
-### Step 4: `rr-toolbar` ✅
-
-Stateless event emitter — vertical tool palette for the editor.
-
-**Tests:**
-- Clicking each tool emits `rr-tool-select` with correct tool ID
-- Active tool gets highlighted CSS class
-- Tools are disabled when `disabled=true`
-- File buttons emit `rr-file-open` / `rr-file-save`
-
-### Step 5: `rr-thumbnail-bar` ✅
-
-Stateless event emitter — horizontal image selector strip.
-
-**Tests:**
-- Renders correct number of thumbnails from `images` array
-- Selected thumbnail gets `.active` class
-- Click emits `rr-image-select` with index
-- Delete button emits `rr-image-delete` with index
-- Add buttons emit `rr-image-add` with source type
-
-### Step 6: `rr-header` + `rr-settings-dialog` ✅
-
-Shell chrome and configuration forms.
-
-**Tests:**
-- Header renders status slot content
-- Toggle button emits `rr-view-toggle`
-- Settings dialog opens on gear click
-- Layout fields update values and emit changes
-- Scale dropdown populates with all scale options
-
-### Step 7: `rr-editor-view` ✅
-
-Integration: wires toolbar + thumbnails + viewer to `R49Archive`.
-
-**Tests:**
-- Selecting an image updates viewer `src`
-- Selecting a tool updates viewer `activeTool`
-- `rr-marker-add` event creates marker in archive
-- `rr-marker-delete` event removes marker from archive
-- File open loads archive and populates thumbnails
-- **Regression**: all Step 2–5 tests still pass
-
-### Step 8: `rr-app` ✅
-
-Top-level shell with context providers.
-
-**Tests:**
-- Provides `R49Archive` context to children
-- View toggle switches between editor and live views
-- Context updates propagate to nested components
-
-### Step 9: `rr-viewer` (video mode) + `rr-live-view` ✅
-
-Camera stream and real-time classification loop.
-
-**Tests:**
-- Viewer renders `<video>` when `stream` is set, no `<img>`
-- `rr-stats-bar` renders FPS/count/time values
-- Classification loop calls classifier with correct patches (mock `getUserMedia`)
-- **Regression**: all previous tests still pass
-
-### Step 10: New Archive Action ✅
-
-Add the ability to create a new `.r49` file from scratch.
-
-**Deliverables:**
-- Update `rr-toolbar` with a "New file" button that emits `rr-file-new`.
-- Update `rr-app` to handle `rr-file-new` by initializing an empty `R49Archive`.
-- Set default manifest properties (e.g., version 3, layout name 'New Layout', scale 'N', empty images array).
-
-**Tests:**
-- Toolbar "New file" button emits `rr-file-new`
-- Application handles the event and initializes a blank layout context.
-
-### Step 11: Calibration Validation on Save
-
-Prevent the user from saving an `.r49` archive if the layout calibration is incomplete.
-
-**Deliverables:**
-- Update the save logic in `rr-app` or `rr-editor-view` to validate the manifest's layout calibration before exporting.
-- Calibration is strictly required. Show a clear error to the user (e.g., via alert) if `calibration` is undefined, or if `p0`, `p1`, or `size_mm` are missing or invalid.
-- **Definition of Invalid:**
-  - `size_mm` is missing, less than or equal to 0, or NaN.
-  - `p0` or `p1` are missing or their x/y coordinates are NaN.
-  - `p0` and `p1` are identical (distance between them is 0).
-
-**Tests:**
-- Attempting to save with an undefined or missing `calibration` object shows an error and aborts the save.
-- Attempting to save with missing or invalid `p0` or `p1` (e.g. identical points) shows an error and aborts the save.
-- Attempting to save with an invalid `size_mm` (e.g. `<= 0`) shows an error and aborts the save.
-- Valid, user-provided calibration allows the `R49Archive.export()` process to proceed.
+`capture.ts` and `rr-settings-dialog.ts` have no tests yet.
