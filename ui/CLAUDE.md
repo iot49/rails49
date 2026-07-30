@@ -76,8 +76,7 @@ styles in the host's `static styles`, renderer per marker. The module boundary i
 `__RAILS_DOMAIN__` (injected at build time) or `*.pages.dev`, point `ort.env.wasm.wasmPaths` at the
 jsDelivr CDN, because `bin/deploy.sh` strips the 26 MB of `.wasm` from the bundle; otherwise use
 `/ui/ort/`. Then both `load('/ui/models/model_int8.ort')`. **Edit the two in lockstep**, and note the
-model filename must also agree with `ui/vite.config.ts`, `bin/test.sh`, and
-`lib/classifier/tests/regression.test.ts` (see the root `CLAUDE.md`).
+model filename must also agree with `ui/vite.config.ts` (see the root `CLAUDE.md`).
 
 Vite copies the model into the bundle only if `classifier/resnet/models/` exists, so builds and
 typechecks must keep working with no local model present.
