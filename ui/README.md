@@ -97,7 +97,8 @@ Starts with no archive loaded.
 
 **Handles:** `rr-view-toggle`, `rr-layout-change`, `rr-file-new`, `rr-file-open`, `rr-file-save`.
 
-* `rr-file-new` builds an empty v3 manifest — layout `'New Layout'`, scale `N`, resolution 1920×1080.
+* `rr-file-new` builds an empty **v4** manifest — layout `'New Layout'`, scale `N`, resolution
+  1920×1080, empty calibration points and no sensors.
 * `rr-file-open` reads a `.r49` through a file input and `R49Archive.load()`.
 * `rr-file-save` `export()`s and downloads. **It does not validate calibration.** The v3 check read
   `{p0, p1, size_mm}` structurally, which v4 has not — calibration is a list of points that
@@ -263,8 +264,11 @@ Camera stream with a real-time classification overlay.
 
 * Opens the camera via `getCameraStream()` and runs a `requestAnimationFrame` loop, skipping frames
   until the video reports usable dimensions.
-* **Markers come from `manifest.images[0]`** — the first image acts as the template for where to
-  classify. Coordinates are scaled from the manifest resolution to the live frame's natural size.
+* **Markers come from `manifest.layout.sensors`** — the points where occupancy must be reported.
+  They are per layout, so placing one answers for every frame, and a sensor *is* the query point the
+  classifier's interface takes. (v3 used image[0]'s point markers as a stand-in; sensors are what
+  that stand-in was approximating.) Coordinates are scaled from the manifest resolution to the live
+  frame's natural size.
 * Each marker's icon is the highest-priority returned label, ordered train > coupling > track.
 * Shows a banner and classifies nothing when `getDPT()` is null, since crop scaling needs it.
 * Releases the classifier and stops all camera tracks on disconnect.

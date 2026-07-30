@@ -32,10 +32,10 @@ describe('rr-live-view', () => {
   beforeEach(() => {
     archive = new R49Archive();
     archive.setManifest({
-      version: 3,
-      layout: { name: 'Live Test', scale: 'N' },
+      version: 4,
+      layout: { name: 'Live Test', scale: 'N', calibration: { points: [] }, sensors: [] },
       camera: { resolution: { width: 100, height: 100 } },
-      images: [{ filename: 'test.jpg', labels: {} }]
+      images: [{ filename: 'test.jpg', labeled_complete: false, labels: [] }]
     });
 
     // Mock getUserMedia
