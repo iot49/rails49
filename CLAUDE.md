@@ -39,7 +39,7 @@ The UI dev server serves over HTTPS by default because `getUserMedia` requires a
 The whole system is one data path; each directory is a stage in it.
 
 ```
-.r49 archives (dataset/r49/)      layout photos + car/sensor labels, zipped
+.r49 archives (dataset/r49/)      v4: layout photos, calibration, zero labels
         │  ✗ PARKED — no derivation runs today (see below)
         ▼
 dataset/data/                     136×136 crops, deterministic 80/20 split, data.csv
@@ -49,6 +49,12 @@ classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
         │
         └─▶ ui/       BrowserClassifier, onnxruntime-web   ← fetched at runtime
 ```
+
+### The six archives
+
+`dataset/r49/` holds six v4 archives — 46 images, real calibration, **zero labels**, ready for hand-relabeling. They were converted from v3 once, in place, by a throwaway script that was deleted with the conversion (#22); the originals stay recoverable from git history. All 1195 v3 point markers were **dropped, not promoted** — a point carries neither extent nor orientation, so any promotion would be fabricated geometry entering the corpus. `lib/r49/tests/fixtures.test.ts` is the regression guard and asserts exactly what the conversion promised, including that each archive still reports the DPT it reported under v3.
+
+> They are **UI fixtures, not training data.** They sit at DPT 18–19, below `layout.min_dpt` of 20, so no number derived from them predicts model accuracy. Training will use fresh, higher-DPT images captured later.
 
 **The first arrow does not currently run.** `dataset/src/data_prep.ts` and `dataset/src/online_diagnostics.ts` are **parked stubs** that print their reason and exit non-zero — they derived crops and scored a confusion matrix from v3 point markers, which v4 does not store. Deriving from car spans alone gives every crop the same tag, so the vocabulary collapses to one degenerate class with no negatives. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18). The documented route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. **Do not revive them by inventing a substitute vocabulary or synthesising negatives.**
 
