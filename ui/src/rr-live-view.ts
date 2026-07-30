@@ -221,7 +221,8 @@ export class RRLiveView extends LitElement {
 
       ${this._needsCalibration ? html`
         <div style="padding: 0.5rem 1rem; background: #4a2f00; color: #ffcc80;">
-          This layout has no calibration data. Calibrate it in the editor (toolbar → Calibrate) to enable live classification.
+          This layout has no calibration data, so no DPT resolves and classification cannot run.
+          Calibration authoring is not currently available in the editor.
         </div>
       ` : ''}
 
@@ -229,7 +230,6 @@ export class RRLiveView extends LitElement {
         .stream=${this._stream}
         .markers=${this._markers}
         .resolution=${resolution}
-        ?interactive=${false}
       ></rr-viewer>
     `;
   }

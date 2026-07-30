@@ -53,67 +53,34 @@ describe('rr-app', () => {
     expect(el).to.be.instanceOf(RRApp);
   });
 
-  it('shows error when saving without calibration', async () => {
+  // Save no longer validates calibration. The v3 check read {p0, p1, size_mm}
+  // structurally, which v4 does not have: calibration is a list of points that
+  // legitimately starts empty, so "uncalibrated" is a state to report, not an
+  // error to refuse a save over (#19, SPEC.md § Reference points).
+  it('saves an uncalibrated archive without complaint', async () => {
     const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
     (el as any)._archive = archive;
-    
-    const notifySpy = vi.spyOn(el as any, '_notify');
-    
-    await (el as any)._onFileSave();
-    
-    expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('Calibration is missing'), 'warning', 'rulers');
-  });
 
-  it('shows error when saving with identical calibration points', async () => {
-    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
-    archive.getManifest().layout.calibration = {
-      p0: { x: 100, y: 100 },
-      p1: { x: 100, y: 100 },
-      size_mm: 100
-    };
-    (el as any)._archive = archive;
-    
-    const notifySpy = vi.spyOn(el as any, '_notify');
-    
-    await (el as any)._onFileSave();
-    
-    expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('points cannot be identical'), 'warning', 'exclamation-triangle');
-  });
-
-  it('shows error when saving with invalid size_mm', async () => {
-    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
-    archive.getManifest().layout.calibration = {
-      p0: { x: 100, y: 100 },
-      p1: { x: 200, y: 200 },
-      size_mm: 0
-    };
-    (el as any)._archive = archive;
-    
-    const notifySpy = vi.spyOn(el as any, '_notify');
-    
-    await (el as any)._onFileSave();
-    
-    expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('must be a positive number'), 'warning', 'exclamation-triangle');
-  });
-
-  it('proceeds with save when calibration is valid', async () => {
-    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
-    archive.getManifest().layout.calibration = {
-      p0: { x: 100, y: 100 },
-      p1: { x: 200, y: 200 },
-      size_mm: 100
-    };
-    (el as any)._archive = archive;
-    
     const exportSpy = vi.spyOn(archive, 'export').mockResolvedValue(new Uint8Array());
-    
-    await (el as any)._onFileSave();
-    
     const notifySpy = vi.spyOn(el as any, '_notify');
-    
+
     await (el as any)._onFileSave();
-    
-    expect(notifySpy).toHaveBeenCalledWith('Saved to disk', 'success', 'download');
+
     expect(exportSpy).toHaveBeenCalled();
+    expect(notifySpy).toHaveBeenCalledWith('Saved to disk', 'success', 'download');
+  });
+
+  it('reports a save failure', async () => {
+    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+    (el as any)._archive = archive;
+
+    vi.spyOn(archive, 'export').mockRejectedValue(new Error('disk full'));
+    const notifySpy = vi.spyOn(el as any, '_notify');
+
+    await (el as any)._onFileSave();
+
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.stringContaining('Save failed'), 'danger', 'exclamation-diamond'
+    );
   });
 });

@@ -13,11 +13,20 @@ without discussion.**
 | :--- | :--- | :--- |
 | `../SPEC.md` | Requirements and rationale for the **whole project**, not just `ui/` — the **target**, much of it unbuilt (manifest v4, car pairs, assisted labeling, provenance) | *why*, and what to build next |
 | `README.md` | Per-component contracts: properties, events, hierarchy — describes only what is built | the shape of existing components |
-| `src/` | What actually ships (manifest **v3**, point markers only) | ground truth |
+| `src/` | What actually ships | ground truth |
 
-SPEC targets manifest v4 — car pairs, provenance, no track geometry — while `rr-app._onFileNew()` writes
-`version: 3`. That migration is a breaking change that has not started, so don't "fix" the code to
-match SPEC. Where README and the code disagree, the code wins and README is the thing to correct:
+**The editor has been reduced to what v4 supports and no further** (#19). It opens an archive,
+manages its images, edits layout metadata, and reports DPT. Point-marker authoring and two-point
+calibration dragging are gone, and `src/prototype/` with them. The target state was deliberately
+"compiles, tests pass, does less" — **not** "authors v4".
+
+So a missing affordance is usually a deferral, not a bug. Car authoring (chain-clicked spans,
+shared coupler handles, the width rectangle), sensor placement, the calibration-point tool, the
+state-dependent right-click and its context menu, and the completeness affordance are all specified
+in `../SPEC.md` § Labeling Workflow and belong to the editor spec — a separate effort. Don't
+reconstruct them piecemeal to close a gap you notice here.
+
+Where README and the code disagree, the code wins and README is the thing to correct:
 **a change to a component's properties or events belongs in README in the same commit.**
 
 ## Commands
@@ -70,13 +79,18 @@ styles in the host's `static styles`, renderer per marker. The module boundary i
 `setBasePath('/ui/shoelace')` in `rr-app.ts`, `/ui/ort/`, `/ui/models/model_int8.ort`. Changing
 `base` means changing all of them.
 
-### Classifier loading is duplicated
+### Classifier loading lives only in the live view
 
-`rr-editor-view.ts` and `rr-live-view.ts` each contain the same block: if the hostname is
-`__RAILS_DOMAIN__` (injected at build time) or `*.pages.dev`, point `ort.env.wasm.wasmPaths` at the
-jsDelivr CDN, because `bin/deploy.sh` strips the 26 MB of `.wasm` from the bundle; otherwise use
-`/ui/ort/`. Then both `load('/ui/models/model_int8.ort')`. **Edit the two in lockstep**, and note the
-model filename must also agree with `ui/vite.config.ts` (see the root `CLAUDE.md`).
+`rr-live-view.ts` is now the sole place that constructs a `BrowserClassifier`. It branches on the
+hostname: if it is `__RAILS_DOMAIN__` (injected at build time) or `*.pages.dev`, it points
+`ort.env.wasm.wasmPaths` at the jsDelivr CDN, because `bin/deploy.sh` strips the 26 MB of `.wasm`
+from the bundle; otherwise `/ui/ort/`. Then `load('/ui/models/model_int8.ort')`, whose filename must
+agree with `ui/vite.config.ts` (see the root `CLAUDE.md`).
+
+`rr-editor-view.ts` used to carry a byte-identical copy. It went with the v4 reduction (#19): the
+only thing the editor did with a classifier was decorate point markers with a prediction, and v4 has
+no point markers. **Do not reintroduce it there** — the duplication was a standing hazard, and
+nothing in the reduced editor needs inference.
 
 Vite copies the model into the bundle only if `classifier/resnet/models/` exists, so builds and
 typechecks must keep working with no local model present.

@@ -9,51 +9,23 @@ describe('rr-toolbar', () => {
     expect(el).to.be.instanceOf(RRToolbar);
   });
 
-  it('renders all tool buttons', async () => {
+  it('renders the file buttons', async () => {
     const el = await fixture<RRToolbar>(html`<rr-toolbar></rr-toolbar>`);
-    const tools = ['track', 'train', 'coupling', 'other', 'delete'];
-    for (const tool of tools) {
-      expect(el.shadowRoot!.querySelector(`#tool-${tool}`)).to.exist;
+    for (const id of ['file-new', 'file-open', 'file-save']) {
+      expect(el.shadowRoot!.querySelector(`#${id}`), `#${id} missing`).to.exist;
     }
   });
 
-  it('highlights the active tool', async () => {
-    const el = await fixture<RRToolbar>(html`<rr-toolbar activeTool="train"></rr-toolbar>`);
-    const trainBtn = el.shadowRoot!.querySelector('#tool-train')!;
-    expect(trainBtn.classList.contains('active')).to.be.true;
-    expect(trainBtn.getAttribute('aria-checked')).to.equal('true');
-    
-    const trackBtn = el.shadowRoot!.querySelector('#tool-track')!;
-    expect(trackBtn.classList.contains('active')).to.be.false;
-  });
-
-  it('emits rr-tool-select when a tool is clicked', async () => {
+  // The v3 labeling tools are gone with the v4 reduction (#19): v4 stores no
+  // point markers, and its calibration is a list of world-coordinate points
+  // rather than a draggable pair. Nothing here should offer a labeling mode
+  // until the editor spec brings car, sensor and calibration-point tools back.
+  it('offers no labeling, delete, or calibrate tool', async () => {
     const el = await fixture<RRToolbar>(html`<rr-toolbar></rr-toolbar>`);
-    const trackBtn = el.shadowRoot!.querySelector<HTMLButtonElement>('#tool-track')!;
-    
-    setTimeout(() => trackBtn.click());
-    const ev = await oneEvent(el, 'rr-tool-select');
-    
-    expect(ev.detail.tool).to.equal('track');
-  });
-
-  it('disables buttons when disabled=true', async () => {
-    const el = await fixture<RRToolbar>(html`<rr-toolbar disabled></rr-toolbar>`);
-    const btns = el.shadowRoot!.querySelectorAll('button[role="radio"]');
-    btns.forEach(btn => {
-      expect((btn as HTMLButtonElement).disabled).to.be.true;
-    });
-  });
-
-  it('does not emit rr-tool-select when disabled', async () => {
-    const el = await fixture<RRToolbar>(html`<rr-toolbar disabled></rr-toolbar>`);
-    const trackBtn = el.shadowRoot!.querySelector<HTMLButtonElement>('#tool-track')!;
-    
-    let eventFired = false;
-    el.addEventListener('rr-tool-select', () => { eventFired = true; });
-    
-    trackBtn.click();
-    expect(eventFired).to.be.false;
+    for (const tool of ['track', 'train', 'coupling', 'other', 'delete', 'calibrate']) {
+      expect(el.shadowRoot!.querySelector(`#tool-${tool}`), `#tool-${tool} should be gone`).to.not.exist;
+    }
+    expect(el.shadowRoot!.querySelector('[role="radio"]')).to.not.exist;
   });
 
   it('emits rr-file-open when open button is clicked', async () => {

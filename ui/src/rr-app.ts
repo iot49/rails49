@@ -4,9 +4,6 @@ import { R49Archive } from '@occupancy/r49';
 import './rr-header.js';
 import './rr-editor-view.js';
 import './rr-live-view.js';
-// PROTOTYPE — throwaway, wayfinder ticket #5. Reached only via ?proto in the
-// URL; delete this import with the rest of src/prototype/.
-import './prototype/rr-proto-editor.js';
 import { setBasePath } from '@shoelace-style/shoelace/dist/utilities/base-path.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -22,10 +19,6 @@ export class RRApp extends LitElement {
   @state() private _archive: R49Archive | null = null;
   @state() private _viewMode: 'editor' | 'live' = 'editor';
   @state() private _status = 'No archive loaded';
-
-  // PROTOTYPE — throwaway, wayfinder ticket #5. True when the URL carries
-  // ?proto; goes away with src/prototype/.
-  private readonly _proto = new URL(window.location.href).searchParams.has('proto');
 
   static styles = css`
     :host {
@@ -99,39 +92,14 @@ export class RRApp extends LitElement {
     input.click();
   }
 
-  private _validateCalibration(): boolean {
-    if (!this._archive) return false;
-    const manifest = this._archive.getManifest();
-    const cal = manifest.layout.calibration;
-
-    if (!cal) {
-      this._notify('Calibration is missing. Use rulers tool before saving.', 'warning', 'rulers');
-      return false;
-    }
-
-    const { p0, p1, size_mm } = cal;
-
-    if (!p0 || isNaN(p0.x) || isNaN(p0.y) || !p1 || isNaN(p1.x) || isNaN(p1.y)) {
-      this._notify('Calibration points are invalid.', 'warning', 'exclamation-triangle');
-      return false;
-    }
-
-    if (p0.x === p1.x && p0.y === p1.y) {
-      this._notify('Calibration points cannot be identical.', 'warning', 'exclamation-triangle');
-      return false;
-    }
-
-    if (isNaN(size_mm) || size_mm <= 0) {
-      this._notify('Calibration size (mm) must be a positive number.', 'warning', 'exclamation-triangle');
-      return false;
-    }
-
-    return true;
-  }
-
+  // Saving does not validate calibration. The v3 check read {p0, p1, size_mm}
+  // structurally, which v4 does not have — calibration is a list of points that
+  // legitimately starts empty, and "uncalibrated" is a state the format
+  // expresses rather than an error to refuse a save over. The editor reports
+  // DPT instead, and gating the labeling tools on it belongs to the editor
+  // spec. See SPEC.md § Reference points.
   private async _onFileSave() {
     if (!this._archive) return;
-    if (!this._validateCalibration()) return;
     try {
       const data = await this._archive.export();
       const blob = new Blob([data as any], { type: 'application/octet-stream' });
@@ -181,15 +149,7 @@ export class RRApp extends LitElement {
       </rr-header>
 
       <main>
-        ${this._viewMode === 'editor' && this._proto
-          ? html`
-              <rr-proto-editor
-                .archive=${this._archive}
-                @rr-file-new=${this._onFileNew}
-                @rr-file-open=${this._onFileOpen}
-                @rr-file-save=${this._onFileSave}
-              ></rr-proto-editor>`
-          : this._viewMode === 'editor'
+        ${this._viewMode === 'editor'
           ? html`
               <rr-editor-view
                 .archive=${this._archive}

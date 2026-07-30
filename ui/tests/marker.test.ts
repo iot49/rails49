@@ -39,10 +39,6 @@ describe('markerDefs()', () => {
     expect(symbol, `symbol#${type} missing from markerDefs`).not.toBeNull();
   });
 
-  it('contains a <symbol id="drag-handle">', () => {
-    const el = renderSvg(markerDefs());
-    expect(el.querySelector('symbol#drag-handle')).not.toBeNull();
-  });
 });
 
 // ---------------------------------------------------------------------------
