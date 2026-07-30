@@ -22,7 +22,7 @@ Run from the repo root unless noted. pnpm workspace + `uv` for Python.
 | Watch mode (ui) | `pnpm --filter @occupancy/ui test:watch` |
 | UI dev server | `pnpm --filter @occupancy/ui dev` (HTTPS via self-signed cert; `dev:http` for plain HTTP) |
 | Build UI | `pnpm build` |
-| Regenerate `config.json` | `pnpm config:generate` (or `bin/generate_config.py`) |
+| Regenerate `config.json` **and `lib/config`** | `pnpm config:generate` (or `bin/generate_config.py`) |
 | Deploy to Cloudflare Pages | `bin/deploy.sh` |
 | Typecheck one package | `pnpm --filter dataset typecheck` |
 | Python lint/format/types | `cd classifier/resnet && uv run ruff check . && uv run black --check . && uv run pyright` |
@@ -50,7 +50,22 @@ classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
 
 **The first arrow does not currently run.** `dataset/src/data_prep.ts` and `dataset/src/online_diagnostics.ts` are **parked stubs** that print their reason and exit non-zero — they derived crops and scored a confusion matrix from v3 point markers, which v4 does not store. Deriving from car spans alone gives every crop the same tag, so the vocabulary collapses to one degenerate class with no negatives. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18). The documented route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. **Do not revive them by inventing a substitute vocabulary or synthesising negatives.**
 
-`config.yaml` is the single source for parameters that must agree across stages (`crop_size`, normalization mean/std, training hyperparameters, layout and detector constants, scale→ratio table). `config.json` is generated from it and is **gitignored** — never edit it directly, and expect it to be absent on a fresh clone until `pnpm config:generate` runs.
+### `config.yaml` is authored; everything else is generated
+
+`config.yaml` is the single source for parameters that must agree across stages (`crop_size`, normalization mean/std, training hyperparameters, layout and detector constants, scale→ratio table). `pnpm config:generate` emits **two** derived representations from it:
+
+| Output | Tracked? | Consumed by |
+| :--- | :--- | :--- |
+| `config.json` | **gitignored** — absent on a fresh clone until you generate | `ui/vite.config.ts` (for `__RAILS_DOMAIN__`), the model export |
+| `lib/config/src/` | **committed** | `@occupancy/r49`, and TypeScript generally |
+
+`lib/config` is committed precisely so a fresh clone typechecks before anyone runs a generator. **Never hand-edit either output** — edit `config.yaml` and regenerate. `bin/test.sh` regenerates `lib/config` into a temp tree and diffs, so editing `config.yaml` without regenerating fails the full check with the command to run rather than surfacing at runtime.
+
+The package exists to end a duplication: `STANDARD_GAUGE` and the scale→ratio table live in both `config.yaml` and `@occupancy/r49`'s `manifest.schema.ts`, with nothing checking that they match. Wiring `r49` to consume `lib/config` instead is the schema ticket's job (#21). Python keeps reading `config.yaml` directly and does not consume `lib/config`.
+
+> ⚠️ **`detector.classes` is append-only.** A list position *is* a YOLO class index, so reordering or deleting an entry invalidates trained weights while the file still validates — the one config edit that can break a model with nothing noticing. The generator preserves its order exactly and must keep doing so.
+
+`classifier.labels` is **deleted, not corrected**: it named a four-tag CNN vocabulary v4 cannot produce, and nothing could verify it (`TRAIN.ipynb` takes its labels from the dataset vocab). The generator fails loudly if the key reappears.
 
 ### Workspace packages
 
