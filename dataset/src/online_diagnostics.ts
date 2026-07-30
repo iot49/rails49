@@ -1,79 +1,31 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { R49Archive } from '@occupancy/r49';
-import { NodeClassifier } from '@occupancy/classifier/node';
+// PARKED — the marker-driven confusion matrix is gone, not ported. See #18.
+//
+// This script used to re-classify every point marker in every archive with the
+// exported ResNet and print a confusion matrix of marker type against
+// prediction. v4 stores no point markers, so there is nothing to iterate and
+// no per-marker ground-truth tag to compare a prediction against.
+//
+// It is parked rather than rewritten for the same reason dataset prep is: the
+// tags it scored no longer exist in the format. See the comment at the top of
+// data_prep.ts, and SPEC.md § v4 cannot produce a trainable CNN dataset
+// (issue #8).
+//
+// Note also that this measured nothing generalizable — it scored the same
+// archives the model trained on. Whatever replaces it belongs to the held-out
+// protocol SPEC.md § Accuracy leaves open, not to a port of this file.
 
-const DATA_DIR = 'r49';
-const MODEL_PATH = '../classifier/resnet/models/model.onnx';
-const CONFIG_PATH = '../classifier/resnet/models/config.json';
+console.error(
+  [
+    'dataset online-diagnostics is parked: v4 stores no point markers to score.',
+    '',
+    'The confusion matrix compared each marker\'s type tag against a prediction;',
+    'v4 has neither. See SPEC.md § "v4 cannot produce a trainable CNN dataset"',
+    '(issue #8) and the comment at the top of',
+    'dataset/src/online_diagnostics.ts.',
+    '',
+    'A replacement belongs to the held-out accuracy protocol that does not yet',
+    'exist (SPEC.md § Accuracy), not to a port of this script.',
+  ].join('\n')
+);
 
-async function getAllFiles(dir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files = await Promise.all(entries.map((res) => {
-    const resPath = path.resolve(dir, res.name);
-    return res.isDirectory() ? getAllFiles(resPath) : resPath;
-  }));
-  return Array.prototype.concat(...files);
-}
-
-async function main() {
-  const allFiles = await getAllFiles(DATA_DIR);
-  const archives = allFiles.filter(f => f.endsWith('.r49'));
-  console.log(`Found ${archives.length} archives`);
-
-  const modelConfig = JSON.parse(await fs.readFile(CONFIG_PATH, 'utf-8'));
-  const labels = modelConfig.labels;
-
-  const classifier = new NodeClassifier(modelConfig);
-  await classifier.load(MODEL_PATH);
-
-  const confusionMatrix: Record<string, Record<string, number>> = {};
-  for (const label of labels) {
-    confusionMatrix[label] = {};
-    for (const pred of labels) {
-      confusionMatrix[label][pred] = 0;
-    }
-  }
-
-  for (const archivePath of archives) {
-    const data = await fs.readFile(archivePath);
-    const archive = await R49Archive.load(data);
-    const manifest = archive.getManifest();
-
-    for (const image of manifest.images) {
-      const imgData = await archive.getImage(image.filename);
-      if (!imgData) continue;
-
-      for (const [id, marker] of Object.entries(image.labels)) {
-        let trueLabel = marker.type || 'unknown';
-        if (trueLabel === 'train-end') trueLabel = 'train'; // LABEL_MAP in data_prep.ts
-        if (!labels.includes(trueLabel)) continue; // ignore things not in classes
-
-        const imgDpt = NodeClassifier.calculateDpt(manifest);
-        const predLabel = await classifier.classify(imgData, marker, imgDpt);
-        confusionMatrix[trueLabel][predLabel]++;
-      }
-    }
-  }
-
-  console.log('\nConfusion Matrix (True \\ Pred):');
-  console.log(''.padEnd(12) + labels.map(l => l.padStart(12)).join(''));
-  for (const trueLabel of labels) {
-    const row = [trueLabel.padEnd(12)];
-    for (const predLabel of labels) {
-      row.push(confusionMatrix[trueLabel][predLabel].toString().padStart(12));
-    }
-    console.log(row.join(''));
-  }
-
-  // Save to JSON for comparison
-  const outputPath = '../classifier/resnet/results/online_confusion_matrix.json';
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
-  await fs.writeFile(outputPath, JSON.stringify({
-    labels,
-    matrix: confusionMatrix
-  }, null, 2));
-  console.log(`\nSaved confusion matrix to ${outputPath}`);
-}
-
-main().catch(console.error);
+process.exit(1);

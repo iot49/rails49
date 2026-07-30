@@ -6,11 +6,13 @@ This directory contains the machine learning pipeline for training, validating, 
 
 The track occupancy detection workflow is modular and spans multiple directories in this repository. Follow the steps below in order:
 
-### 1. Data Preparation
-Before training, you must extract training image crops from `.r49` railroad layout archives.
-* **Location**: [dataset/](../dataset)
-* **Action**: Run `pnpm run prep` in the dataset folder to scan the `.r49` layout files, extract 136x136 image crops, and split them deterministically (80/20) into a training/validation database in `dataset/data/`.
-* **Documentation**: See the [Dataset Preparation Guide](../dataset/README.md) for more details.
+### 1. Data Preparation — ⚠️ PARKED, this step does not run
+
+`pnpm --filter dataset prep` is a **stub that exits non-zero**. It derived one 136×136 crop per v3 point marker, tagged by the marker's type; v4 stores no point markers. Deriving from car spans alone puts every crop centre on a car, so the vocabulary collapses to one degenerate tag with no negatives.
+
+**There is consequently no corpus to train on today.** The route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18) and the [Dataset Preparation Guide](../../dataset/README.md).
+
+Steps 2–4 below describe a pipeline that remains correct in every respect except that its input no longer exists. They are kept because the ResNet stays retrainable.
 
 ### 2. Model Training & Export
 Train the model and export it to cross-platform runtime formats.
@@ -33,10 +35,11 @@ Publishing is unaffected by the retirement of the accuracy gate, but **nothing d
 
 > **⚠️ TODO:** Automate this process using a script (e.g., using `gh` CLI) to automatically package, version, tag, and upload the models.
 
-### 4. Diagnostic Verification
-Validate the accuracy of the exported model against the full set of labelled archives.
-* **Script**: [dataset/src/online_diagnostics.ts](../../dataset/src/online_diagnostics.ts)
-* **Action**: Run `pnpm --filter dataset online-diagnostics` to classify every marker in `dataset/r49/` with the exported model and print a confusion matrix.
+### 4. Diagnostic Verification — ⚠️ PARKED, this step does not run
+
+`pnpm --filter dataset online-diagnostics` is a **stub that exits non-zero**, for the same reason as step 1: it scored each point marker's type tag against a prediction, and v4 has neither.
+
+It also measured nothing generalizable — it scored the very archives the model trained on. A replacement belongs to the held-out protocol that does not yet exist (`SPEC.md` § Accuracy), not to a port of that script.
 
 ---
 

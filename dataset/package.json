@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "prep": "tsx src/data_prep.ts",
     "online-diagnostics": "tsx src/online_diagnostics.ts"
   },
