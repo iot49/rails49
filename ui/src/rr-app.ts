@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { R49Archive } from '@occupancy/r49';
+import { R49Archive, MANIFEST_VERSION } from '@occupancy/r49';
 import './rr-header.js';
 import './rr-editor-view.js';
 import './rr-live-view.js';
@@ -57,7 +57,7 @@ export class RRApp extends LitElement {
   private _onFileNew() {
     this._archive = new R49Archive();
     this._archive.setManifest({
-      version: 4,
+      version: MANIFEST_VERSION,
       layout: {
         name: 'New Layout',
         scale: 'N',

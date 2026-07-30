@@ -220,6 +220,15 @@ describe('R49Archive', () => {
       expect(loaded.getManifest().images[0].labels[0].class).toBe('not.in.any.vocabulary');
     });
 
+    it('rejects a missing scale rather than defaulting it', () => {
+      // v3 defaulted this to 'N'. DPT = s · gauge_mm(scale), so a silently
+      // assumed scale reports a DPT wrong by the ratio between the two — up
+      // to 8.8x between Z and G. SPEC names only two defaults, and this is
+      // not one of them.
+      const m = manifest({ layout: { calibration: { points: [] }, sensors: [] } });
+      expect(rejection(m)).toBeTruthy();
+    });
+
     it('defaults an absent calibration to empty points', async () => {
       const loaded = await roundTrip(manifest({ layout: { scale: 'N' } }));
       expect(loaded.getManifest().layout.calibration).toEqual({ points: [] });

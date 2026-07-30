@@ -58,22 +58,22 @@ export class RREditorView extends LitElement {
 
     .placeholder {
       padding: 2rem;
-      color: #888;
+      color: var(--sl-color-neutral-500);
     }
 
     .dpt-bar {
       flex-shrink: 0;
       padding: 0.5rem 1rem;
-      font-family: var(--sl-font-mono, monospace);
-      font-size: 0.9rem;
-      background: #1a1a1a;
-      color: #ccc;
-      border-bottom: 1px solid #333;
+      font-family: var(--sl-font-mono);
+      font-size: var(--sl-font-size-small);
+      background: var(--sl-color-neutral-100);
+      color: var(--sl-color-neutral-700);
+      border-bottom: 1px solid var(--sl-color-neutral-200);
     }
 
     .dpt-bar.uncalibrated {
-      background: #4a2f00;
-      color: #ffcc80;
+      background: var(--sl-color-warning-100);
+      color: var(--sl-color-warning-800);
     }
   `;
 

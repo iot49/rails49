@@ -107,7 +107,7 @@ The model files are gitignored; only `classifier/resnet/models/version.txt` is t
 
 Which model ships is named in two places, and they must agree: the static-copy target in `ui/vite.config.ts` and the `_classifier.load()` call in `rr-live-view.ts`. The editor no longer loads a classifier (#19).
 
-`bin/deploy.sh` still strips `*.wasm` (26 MB, also over the limit) — those load from the jsDelivr CDN in production, selected by the `wasmPaths` branch in the two view components. The script now aborts if anything in the deploy directory still exceeds 25 MiB.
+`bin/deploy.sh` still strips `*.wasm` (26 MB, also over the limit) — those load from the jsDelivr CDN in production, selected by the `wasmPaths` branch in `rr-live-view.ts`. The script now aborts if anything in the deploy directory still exceeds 25 MiB.
 
 `bin/test.sh` also skips the Python checks when `uv sync` cannot resolve the environment (recent `onnxruntime` wheels have no macOS x86_64 build); every other Python failure is fatal.
 
