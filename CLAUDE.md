@@ -24,7 +24,7 @@ Run from the repo root unless noted. pnpm workspace + `uv` for Python.
 | Build UI | `pnpm build` |
 | Regenerate `config.json` | `pnpm config:generate` (or `bin/generate_config.py`) |
 | Deploy to Cloudflare Pages | `bin/deploy.sh` |
-| Rebuild training dataset | `pnpm --filter dataset prep` |
+| Typecheck one package | `pnpm --filter dataset typecheck` |
 | Python lint/format/types | `cd classifier/resnet && uv run ruff check . && uv run black --check . && uv run pyright` |
 | Install pre-push hook (runs `bin/test.sh`) | `bin/install-hooks.sh` |
 
@@ -37,21 +37,20 @@ The UI dev server serves over HTTPS by default because `getUserMedia` requires a
 The whole system is one data path; each directory is a stage in it.
 
 ```
-.r49 archives (dataset/r49/)      layout photos + marker labels, zipped
-        │  pnpm --filter dataset prep      (dataset/src/data_prep.ts)
+.r49 archives (dataset/r49/)      layout photos + car/sensor labels, zipped
+        │  ✗ PARKED — no derivation runs today (see below)
         ▼
 dataset/data/                     136×136 crops, deterministic 80/20 split, data.csv
         │  classifier/resnet/TRAIN.ipynb   (Fastai ResNet-18 → ONNX → ORT)
         ▼
 classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
         │
-        ├─▶ ui/       BrowserClassifier, onnxruntime-web   ← fetched at runtime
-        └─▶ dataset/  NodeClassifier, onnxruntime-node
+        └─▶ ui/       BrowserClassifier, onnxruntime-web   ← fetched at runtime
 ```
 
-`config.yaml` is the single source for parameters that must agree across stages (labels, `crop_size`, normalization mean/std, training hyperparameters, scale→ratio table). `config.json` is generated from it and is **gitignored** — never edit it directly, and expect it to be absent on a fresh clone until `pnpm config:generate` runs.
+**The first arrow does not currently run.** `dataset/src/data_prep.ts` and `dataset/src/online_diagnostics.ts` are **parked stubs** that print their reason and exit non-zero — they derived crops and scored a confusion matrix from v3 point markers, which v4 does not store. Deriving from car spans alone gives every crop the same tag, so the vocabulary collapses to one degenerate class with no negatives. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18). The documented route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. **Do not revive them by inventing a substitute vocabulary or synthesising negatives.**
 
-`pnpm --filter dataset online-diagnostics` re-classifies every marker in `dataset/r49/` with the exported model and writes a confusion matrix to `classifier/resnet/results/`.
+`config.yaml` is the single source for parameters that must agree across stages (`crop_size`, normalization mean/std, training hyperparameters, layout and detector constants, scale→ratio table). `config.json` is generated from it and is **gitignored** — never edit it directly, and expect it to be absent on a fresh clone until `pnpm config:generate` runs.
 
 ### Workspace packages
 
