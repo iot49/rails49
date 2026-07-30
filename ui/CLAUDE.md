@@ -11,7 +11,7 @@ without discussion.**
 
 | File | What it is | Trust it for |
 | :--- | :--- | :--- |
-| `SPEC.md` | Requirements and rationale — the **target**, much of it unbuilt (manifest v4, car pairs, assisted labeling, provenance) | *why*, and what to build next |
+| `../SPEC.md` | Requirements and rationale for the **whole project**, not just `ui/` — the **target**, much of it unbuilt (manifest v4, car pairs, assisted labeling, provenance) | *why*, and what to build next |
 | `README.md` | Per-component contracts: properties, events, hierarchy — describes only what is built | the shape of existing components |
 | `src/` | What actually ships (manifest **v3**, point markers only) | ground truth |
 

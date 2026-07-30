@@ -1,6 +1,6 @@
 # Image change detection as an occupancy classifier
 
-Research note on `ui/SPEC.md` § Classifier, option 1 ("Image change"), and its cited prior art
+Research note on `SPEC.md` § Classifier, option 1 ("Image change"), and its cited prior art
 [EX-SensorCAM](https://dcc-ex.com/mkdocs-test/products/ex-sensorcam/ex-sensorcam/).
 
 *Researched 2026-07-29. Sources: EX-SensorCAM source at `DCC-EX/EX-SensorCAM@b07c3f3` (v3.21,
@@ -319,7 +319,7 @@ version does not work.
 
 OpenCV's own documentation states the base assumption plainly: background subtraction is for **static
 cameras** ([tutorial_background_subtraction](https://docs.opencv.org/4.x/d1/dc5/tutorial_background_subtraction.html))
-**[DOC]** — an assumption `ui/SPEC.md` § Image Alignment says rails49 currently makes without
+**[DOC]** — an assumption `SPEC.md` § Image Alignment says rails49 currently makes without
 verifying, with a **silent** failure mode (issue #12).
 
 ### The structural argument, stated precisely **[INF]**
@@ -352,7 +352,7 @@ a wrong, self-sustaining occupancy state somewhere on the layout.
 |---|---|---|
 | Training data / labels | **none** | 46 images, hand-labelled, and SPEC says they must be re-shot |
 | Compute | ~10 integer ops/sensor | ResNet-18 inference, 11 MB ORT model |
-| **Pixel density** | works at **DPT 3.4–7.6** — SensorCAM Table 1 gives QVGA pixel sizes 2.18–4.91 mm at 0.8–1.8 m camera height, vs HO gauge 16.5 mm **[DOC]** | needs **DPT > 20**; the whole 46-image corpus at DPT 18–19 is unusable for training (`ui/SPEC.md` § Calibration) |
+| **Pixel density** | works at **DPT 3.4–7.6** — SensorCAM Table 1 gives QVGA pixel sizes 2.18–4.91 mm at 0.8–1.8 m camera height, vs HO gauge 16.5 mm **[DOC]** | needs **DPT > 20**; the whole 46-image corpus at DPT 18–19 is unusable for training (`SPEC.md` § Calibration) |
 | New layout / unseen stock | works immediately | needs retraining or generalisation evidence that does not yet exist (issue #4) |
 | Response latency | ~0.2–0.5 s | single forward pass |
 
@@ -481,5 +481,5 @@ Input images are box-downsampled to 320 px wide and pushed through RGB888→RGB5
   <https://docs.opencv.org/4.x/d1/dc5/tutorial_background_subtraction.html>
 - CDnet / changedetection.net — <http://changedetection.net/>
 
-**This repo:** `ui/SPEC.md` (§ Classifier, § Accuracy, § Calibration, § Image Alignment),
+**This repo:** `SPEC.md` (§ Classifier, § Accuracy, § Calibration, § Image Alignment),
 `ui/CLAUDE.md`, `CLAUDE.md`, `dataset/r49/*.r49` (46 images across 6 archives, all 1920×1080, HO).

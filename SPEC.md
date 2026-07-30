@@ -1,0 +1,520 @@
+# Model Railroad Track Occupancy Detection with Cameras
+
+## Goals
+
+* Detect presence of trains at specific locations in a layout (**block detection**)
+* Detect location, size (length), and orientation of all trains in a layout (**track occupancy detection**)
+
+## Assumption
+
+Humans can reliably control model railroad trains (and real prototype trains) using primarily visual information. **AI should be able to do the same.**
+
+## Classifier
+
+A classifier is used to establish track occupancy. Solutions include:
+
+1. **Image change.** Images taken subsequently differ as trains move. Requires no training and very little compute. The [EX-SensorCAM](https://dcc-ex.com/mkdocs-test/products/ex-sensorcam/ex-sensorcam/) project uses an ESP32 and an inexpensive camera for this. **Investigated and rejected as a primary strategy** — see below.
+2. **CNN.** A ResNet or MobileNet recognizing the presence or absence of a train at a specific location. Block detection only. This is what ships today.
+3. **Object detector.** A detector such as YOLO that finds the location and orientation of every railroad car on the layout. This gives the most complete information.
+
+**Option 3 is what the live path uses; option 2 is retained but not loaded.** The two are fed from the same labels (see [Location Data](#location-data-cars-and-sensors)), and the CNN answers a genuinely different question — "is this specific point occupied" versus "where is every car" — but [Occupancy Output](#occupancy-output) makes the per-sensor answer a pure geometric consequence of the detector's boxes, which leaves the CNN with no consumer in the live view. So only the detector ships: one model in the bundle, one ORT session, one vocabulary. The classifier package, `TRAIN.ipynb`, and the derived-crop pipeline all survive, so the ResNet stays retrainable and can be revived if the detector disappoints. Proving the detector happens offline through `pnpm --filter dataset online-diagnostics`, not by running both models live. Settled in [issue #7](https://github.com/iot49/rails49/issues/7).
+
+### Image change is not a candidate for occupancy
+
+**Decision: change detection will not be used as a primary occupancy classifier.** Options 2 and 3 are the strategy. This is settled, not open — see the full analysis in [`docs/research/image-change-detection.md`](docs/research/image-change-detection.md).
+
+The reason is structural rather than a matter of tuning. A change detector must adapt its reference frame to survive illumination drift, and must *not* adapt while a train sits still. The only policy that satisfies both is to gate adaptation on the occupancy decision itself — which is what EX-SensorCAM does — and that makes **both error directions absorbing states**: a false trip freezes the reference and therefore persists, while a missed train is averaged into the reference and becomes permanent background. DCC-EX documents this in its own manual: the sensor can remain permanently "occupied" until manually re-referenced. No threshold trades the two off; it only selects which latch you get.
+
+Supporting findings:
+
+* SensorCAM's metric is per-quadrant colour *ratios*, not pixel differencing — deliberately intensity-invariant, with a decision budget of ~10 counts. Re-implemented and run against this repo's own `lighting.r49`, it false-tripped on **100%** of samples of a patch of bare table that is visually identical across the sequence, and 25.5% between the mildest adjacent image pair. `lighting.r49`'s luminance moves only 7%, but its R/B ratio moves 10.5% — precisely the axis the metric measures.
+* No measured accuracy figure is published anywhere by the project; it is self-described Alpha and its own comparison page says it is "not currently suitable for exhibition layouts". SPEC's earlier "gives little information about accuracy" was, if anything, understated.
+* In the literature this is CDnet 2014's *Intermittent Object Motion* category, where unsupervised methods score 0.66–0.78 F-measure against ~0.95 on baseline sequences — and every method that closes the gap does so by adding a semantic segmenter or instance detector, i.e. the field's own answer is Option 3.
+* Change detection has no notion of "train". `lighting.r49`'s variation was in fact produced by placing a cardboard box in the scene; a change detector reports that as occupancy, as it would a hand, a tool, or a person leaning over the layout.
+
+What the rejection does **not** claim: change detection is cheap, needs no labels, and — at the DPT 3.4–7.6 SensorCAM operates at — is the one option not blocked on the DPT > 20 threshold. Those properties make it genuinely useful for jobs that are not occupancy; see [Secondary uses of change detection](#secondary-uses-of-change-detection).
+
+### The detector is YOLO26n-OBB
+
+Settled in [issue #3](https://github.com/iot49/rails49/issues/3) (feasibility) and [issue #10](https://github.com/iot49/rails49/issues/10) (licensing).
+
+| | |
+| :--- | :--- |
+| Family | Ultralytics **YOLO26n-OBB**, fine-tuned from the pretrained DOTA checkpoint |
+| Head | **Oriented** bounding box; NMS-free, exported `end2end: True` |
+| Output tensor | `[1, 300, 7]` — a fixed 300-slot buffer every frame |
+| Input | 960×544 (see [Parameters](#parameters-live-in-configyaml)) |
+| Quantization | **static INT8** |
+| Shipped artifact | `.ort`, **3.30 MiB** measured, against the 25 MiB Cloudflare Pages ceiling |
+| Runtime | `onnxruntime-web`, WASM execution provider |
+
+**The OBB head is required, not an optimization.** It costs +2.5% model size and ~+1% FLOPs. An earlier justification rested on track's poor axis-aligned fill (14–25%), which is moot now that track is not a detector class — and cars in the current corpus sit at a median 4° from horizontal, so the fill argument alone would be weak. The real reason is that [the occupancy test](#the-occupancy-test) **is** point-in-oriented-box against the car's own axis: orientation is a required output of the model, not a way to make its boxes tighter.
+
+**Static INT8 is mandatory and dynamic quantization fails loudly.** `ConvInteger` is `NOT_IMPLEMENTED` on the CPU execution provider — dynamic quantization targets RNN and transformer graphs, static targets CNNs. Static requires calibration data; ten frames from the corpus sufficed. FP16 is not a useful intermediate rung on a CPU/WASM target.
+
+**Where the training pipeline lives in the repo is not specified here.** [Issue #3](https://github.com/iot49/rails49/issues/3) recommends a layout parallel to `classifier/resnet/`; nothing else about it is settled.
+
+#### Licensing: the project is AGPL-3.0
+
+**Adopting YOLO26n-OBB is why this repository is AGPL-3.0 rather than MIT**, and the project's own trained weights are published under AGPL-3.0 too. The relicense has already landed — root `LICENSE` and `package.json` both say so — but it is recorded here because it is a consequence of the detector choice, not an independent preference, and it would have to be revisited if the detector family ever changed.
+
+The usual escape hatch does not apply. The `ultralytics` package is a training-time dependency that never ships — inference runs on `onnxruntime-web`, which is MIT — so no AGPL *code* reaches a user, and the output of a GPL tool is not normally covered by the tool's licence. But **there are 46 images.** YOLO26 cannot be trained from random initialisation on a corpus that size; it must be fine-tuned from the pretrained DOTA checkpoint, which is itself an AGPL-licensed artifact (the licence is embedded in its ONNX metadata). The result is a derivative of a licensed work, not merely a tool's output. **The encumbrance travels with the weights, and the corpus size is what closes the hatch.**
+
+Relicensing is cheap here for reasons specific to this repo: the earlier move to MIT was about shedding the CLA, not about enabling permissive downstream embedding, and AGPL never required a CLA — so none of that overhead returns, and the no-contributor-gate model is unchanged. There is a sole copyright holder, so the change is unilateral. Dependency licences (MIT, BSD, Apache-2.0) are all one-way compatible into AGPL-3.0.
+
+Accepted costs: the change is **forward-only** — the existing MIT snapshot stays MIT and forkable in perpetuity — and permissive downstream embedding is foreclosed. **Rejected:** keeping the repo MIT and treating the weights as a separately-licensed aggregated artifact. Weights being gitignored and shipped as Release assets gives that surface plausibility, but both halves are served from one site as one product.
+
+*Not legal advice. If this becomes commercial, the Ultralytics Enterprise licence question returns.*
+
+## Accuracy
+
+Extremely high accuracy is required to avoid collisions and other problems.
+
+Classifiers can be trained per layout, so only modest generalization is needed — recognizing trains at layout positions absent from the training data, or rolling stock the model has not seen. On that basis >99.9% should be achievable. (Still not sufficient for prototype trains, where accidents are far more costly.)
+
+> ⚠️ **The currently reported 99.58% is not a generalization estimate.** The regression test iterates every marker in every archive, so roughly 770 of its 963 samples were seen during training. It is a *reproducibility* check — does this `.ort` still behave like the published one — not a held-out measurement. Any >99.9% target needs a held-out evaluation that does not yet exist. See issue #4. *More testing and formal assessment is required with newly trained classifiers or detectors.*
+>
+> **The regression test is retired at the v4 conversion** ([issue #8](https://github.com/iot49/rails49/issues/8)), along with the 99.5% gate in `bin/test.sh`, because v4 deletes the point markers it iterates. It guarded an artifact no longer loaded in the live path, using a number that was never a generalization estimate — so the figures above are stale-on-migration rather than targets to preserve. The accepted cost is a window, between the conversion and the first detector, with no automated check that a model rebuild matches the published one.
+
+**Safety:** nothing here may be presented as a safety interlock. The classifier does sometimes miss rolling stock and report phantom trains.
+
+## Occupancy Output
+
+Settled in [issue #7](https://github.com/iot49/rails49/issues/7). The system reports **two layers and no more**:
+
+| | What it is | Source |
+| :--- | :--- | :--- |
+| **L0** | Every detected car: pose, class, confidence — exactly as the detector emitted it | the model |
+| **L1** | Per-sensor state: `occupied` / `clear` / `unknown` | pure geometry over L0 |
+
+**L1 never calls a second model.** It is a pure function of L0, so it cannot contradict the boxes drawn beside it, it needs no second inference, and it costs the same whether a layout has three sensors or three hundred — the detector runs once per frame regardless. There is consequently no disagreement rule to specify.
+
+Everything above L1 — event and transition semantics (Rocrail's enter/in sensors fire on *transitions*, not per-frame state) and block-span occupancy — is deliberately unspecified. L0 carries full car pose, so those remain computable later from archives recorded today.
+
+### The occupancy test
+
+A sensor is `occupied` when a detection's oriented box **strictly contains** its point. No tolerance epsilon: any value would be unvalidatable, the lateral direction already carries ~1.4 m prototype of slack from the derived width, and at a coupler the two boxes abut on a shared endpoint so a point between coupled cars is already inside one of them. A real gap between uncoupled cars should read `clear`, and an epsilon would manufacture a phantom there.
+
+The box tested is **width-normalized**: centre, orientation and length come from the detector, but the DPT-derived width constant **replaces the predicted width**. Width is not observed data — it is a single constant with no per-label override (see [Location Data](#location-data-cars-and-sensors)), so every training label carries the same width and the model's width output is a fit to a constant. Its deviation is pure error, and directional: at DPT 20 a car is ~42 px wide, so a centreline sensor sits ~21 px inside the boundary; an under-predicted 25 px width cuts that to ~12 px and can flip a covered sensor to `clear`. Substituting the constant only ever widens an under-predicted box, which is the safe direction. **L0 still reports the raw predicted box** — normalization belongs to L1's geometry, not to the detector's output.
+
+> ⚠️ **Known limitation: long cars on tight curves.** The box's long axis is the chord between the car's endpoints, but track bows off that chord by the sagitta `L²/8R`. Once that exceeds the half-width (17.2 mm in HO), a sensor near the car's **midpoint** falls outside the box. The ends still register, so a long car crossing a sensor reads occupied → clear → occupied.
+>
+> | Car length (prototype) | Fails below radius |
+> | :--- | :--- |
+> | 40–50 ft freight | ~8.8" — never in practice |
+> | 69 ft | ~16.7" |
+> | 80 ft | ~22.4" |
+> | 85 ft passenger / autorack | **~25.3"** |
+>
+> Accepted rather than fixed: first tests are short cars on straight track. **The mitigation is a constant, not code** — inflate `layout.standard_width` in `config.yaml`. Covering an 85 ft car on an 18" radius needs a half-width ≥ 24.3 mm, i.e. a model width of ~48.5 mm against 34.5 mm — **`standard_width` 3000 → ~4220 mm, a factor of 1.41**.
+>
+> All figures above are computed from `standard_width = 3000`; they move if that constant does.
+>
+> The alternative — projecting onto the track spline and testing arc-length overlap — was rejected. Cost was never the objection (~8,000 distance evaluations, tens of µs against 377,000 µs of inference). It trades this *bounded, quantified* failure for an unbounded one: "nearest spline" is ambiguous exactly where layouts are densest — parallel sidings (~60 px apart at DPT 20), turnouts, yard ladders — and a mis-association reports the **wrong track** occupied, at a rate nothing can bound. (It is also now unbuildable as stated: [issue #13](https://github.com/iot49/rails49/issues/13) removed track geometry from v4, so there is no spline to project onto.)
+
+### The vocabulary
+
+| State | When |
+| :--- | :--- |
+| `occupied` | any detection above the threshold covers the point — **including low-confidence ones** |
+| `clear` | no detection covers the point |
+| `unknown` | the system **cannot answer**: sensor outside the frame, DPT unresolved, model not loaded, or camera drift detected ([issue #12](https://github.com/iot49/rails49/issues/12)) |
+
+**`unknown` is never a confidence outcome.** It means "I was unable to look", not "I looked and I'm unsure" — which is what keeps it genuinely distinct from `clear`.
+
+**Errors are biased toward `occupied`, deliberately.** A missed car costs a collision; a phantom costs "why do trains never go there". This matches prototype practice: real track circuits are wired so that a failure shows occupied. Every case where the model *did* look and saw something therefore resolves to `occupied`, which is why no "unsure" confidence band exists.
+
+The bias reduces the *consequence* of the worse error. It does not make this a safety interlock; the constraint above stands unchanged.
+
+**Accepted consequence:** a persistent phantom `occupied` is worse than cosmetic. A permanently blocked block is never entered and never cleared, so it can **deadlock a controller's schedule**. Weighed against a collision and accepted.
+
+### Confidence
+
+Every L0 detection carries its confidence, and an `occupied` L1 state carries the confidence of the covering detection (the maximum, where several overlap).
+
+**`clear` carries no confidence — absent, not `0.0` and not `1.0`.** `occupied` is evidenced by a specific detection; `clear` is the *absence* of evidence, and nothing scored it. `0.0` would read as "definitely not occupied" and `1.0` as "definitely clear"; both claim a measurement that was never made. This matters because the system's two error modes are asymmetric in *inspectability*: a phantom arrives with a confidence a consumer can threshold, while **a miss arrives as a confident-looking `clear` with nothing behind it**. Leaving that confidence absent is the only encoding that does not hide the distinction.
+
+A **single** confidence threshold, `detector.confidence_threshold` in `config.yaml`. It replaces the hardcoded `0.5` at `lib/classifier/src/base.ts:101`. Two properties of it:
+
+* **Thresholding is decoding, not filtering.** The detector's export is `end2end: True` with output `[1, 300, 7]` — a fixed 300-slot buffer emitted every frame, mostly padding. There is no version of L0 that skips the threshold.
+* **It has a floor above zero.** At 0 you accept 300 phantom cars blanketing the frame, so every sensor reads `occupied` on every frame and the system reports nothing at all. The value must sit low but above the padding noise, and it can only be found by measuring recall against a held-out split — which does not yet exist for either model (see [Accuracy](#accuracy)).
+
+The fail-safe bias lives in **L1**. L0 stays raw, so a consumer wanting a stricter reading can re-threshold the same frame's data without fighting the default.
+
+> ⚠️ **A total miss stays invisible.** No single-model scheme makes it detectable. Two thresholds do not; nor does adding a track class — a missed car with confidently-detected track under it is a *confident false clear*, worse than an unevidenced one, and the two failure modes are correlated so it is not an independent check. Only a genuinely independent second observer would close this: a CNN verifier over the same points, or [change detection](#secondary-uses-of-change-detection). Neither is specified, and neither is worth building before the detector has held-out numbers.
+
+### Output encoding
+
+L0 detections are reported in **`camera.resolution` pixel coordinates**: centre `{x, y}`, length px, width px, orientation in **radians from the +x axis**, plus class and confidence.
+
+That frame is chosen because it is the only stable one. The model's input resolution (960×544) is selected by geometry and changes on re-export; the video's natural size varies per device and camera; normalized 0…1 coordinates sever the link to DPT, which is px/mm. `camera.resolution` is the frame sensors, labels, and calibration are *already* authored in — so the point-in-box test needs no conversion, the SVG viewBox maps 1:1 onto it so boxes draw over the video with no transform, and any length converts to millimetres with one DPT multiply. No millimetre field is stored; it is one multiply away.
+
+**Off-track detections pass through untouched.** A sensor is placed on track by the person who wants an answer there, so a box far from any track contains no sensor and cannot change any L1 verdict — there is nothing to protect. Filtering would need the spline association rejected above — which is now doubly unavailable, since v4 stores no track geometry at all — would make L0 not raw, and would destroy real information: a box around a car sitting in the scenery tells a human something (a false positive, a derailment, a hand over the layout, or a car on unlabeled track) that a suppressed box does not. Confidence, not geometry, is the right filter for junk — a spurious detection is characteristically low-confidence, whereas a genuine car on unlabeled track is confident and should survive.
+
+**Sensor identity: consumers key on `id`; `name` is optional passthrough, absent when unset and never auto-generated.** ids survive edits; names are free text, are not unique, and a controller mapping keyed on one breaks the moment someone renames it. An auto-generated "Sensor 3" is worse than none — indistinguishable from a name a human chose, and it silently stops matching as sensors are added and removed. The optional `name` exists for Rocrail and for humans who cannot remember hex strings; the UI displays the `id` as fallback. No uniqueness is enforced.
+
+**Couplings are not reported.** They are derivable from L0 — two detected box endpoints coinciding — and adding a field or a class for them would restate what the geometry already says.
+
+## Features
+
+The UI provides an interface to create, visualize, and edit `.r49` files via the library in `lib/r49`. The sections below describe the requirements.
+
+### Images
+
+`.r49` files contain a list of images of the model layout taken with an overhead camera. The UI allows acquiring and removing images.
+
+### Calibration
+
+#### Establishes the relation (scale) to the prototype
+
+Supports common track geometries (HO, N, Z, etc).
+
+#### Establishes the relation between image pixels and physical dimensions
+
+To avoid having to recognize objects at different scales, the app uses **DPT** (dots per track width) as the relation between pixel and physical coordinates.
+
+**Example.** Two points in an N-scale layout are 1000 pixels apart in the image and 250 mm apart on the physical layout, giving 1000/250 = **4 dots per millimeter**. Track width in N scale is `STANDARD_GAUGE/160 = 1435/160 ≈ 9 mm` (`STANDARD_GAUGE` is defined in the `.r49` library). Hence **DPT = 4 × 9 = 36** dots per track width for this image.
+
+In practice **DPT > 20** is required: below that, a car is too few pixels across for the detector to localize reliably, and the CNN's crop covers too little of the track to be discriminative. The corpus measured so far sits at DPT 18–19, i.e. marginally under this threshold. The threshold is `layout.min_dpt` in `config.yaml` rather than a number buried in the UI — under `layout` and not `classifier`, because it gates the **editor**.
+
+> **Consequence — UI development and training data are decoupled.** The existing 46 images are below the DPT threshold and need re-shooting, which is not currently possible. They remain perfectly adequate as **UI fixtures**: they exercise every code path in the editor and cost nothing. **Training will use fresh, higher-DPT images captured later.** Do not tune model accuracy against the current corpus, and do not treat its numbers as predictive.
+
+Ideally the layout is perfectly parallel to the camera plane. Then it suffices to specify the distance in millimeters between two points at the same height to establish DPT. Otherwise the image suffers perspective distortion, and several points in 3D space are required to compute the correcting transform.
+
+In practice the errors from camera misalignment have been negligible and **two-point calibration is sufficient**, so that is what the UI uses. However the `.r49` format accepts a list of **3D coordinate points** (relative to an arbitrary but fixed origin) so full calibration remains possible later without another format change.
+
+Other errors, such as camera barrel distortion, are ignored.
+
+#### Reference points
+
+Calibration is a **list of points, each carrying both coordinates** — where it is in the image, and where it is on the layout:
+
+```jsonc
+calibration: {
+  points: [
+    { px: { x, y }, world: { x, y, z } },   // px = image pixels, world = mm
+    ...
+  ]
+}
+```
+
+`world` is relative to an **arbitrary origin that is the same for every point in the layout**; the orientation of that frame is arbitrary too. A flat layout is implicit and accepted — in practice every point shares one `z`.
+
+A point carries no `id` and no `name`. Nothing references an individual point, so identity buys nothing at the two-to-four points a real calibration has; both are additive later if perspective correction ever wants them. The v3 `size_mm` field is gone — the distance it encoded is implied by the world coordinates.
+
+**DPT is a single least-squares scale over equal-height pairs:**
+
+```
+pairs = { (i,j) : z_i == z_j }
+s     = Σ(d_px · d_mm) / Σ(d_mm²)   over pairs
+DPT   = s · gauge_mm(scale)
+```
+
+Only pairs at equal `z` enter the fit. Under a pinhole camera, two points at different heights sit at different depths, so their pixel separation mixes scale with depth; including such a pair biases DPT silently, and worse the taller the feature. This is the "two points at the same height" rule above, generalised to N points.
+
+At N = 2 the single pair reduces the fit to `d_px / d_mm`, which is exactly what `getDPT()` computes today — so importing a v3 archive changes no existing DPT. The `d_mm²` weighting favours long baselines automatically, which is the right bias: click error is a fixed number of pixels, so short baselines are proportionally noisier. When no equal-`z` pair exists, DPT is `null` — uncalibrated. Points out of the reference plane are stored but **inert**: they provision perspective correction without implementing it.
+
+A v3 `{p0, p1, size_mm}` imports as two points at `world (0,0,0)` and `(0, size_mm, 0)`. Nothing is lost; a measured distance *is* a pair of positions in a frame you chose.
+
+**Minimum viable calibration is two points with a nonzero separation** — precisely "DPT resolves". Because car width is derived from DPT rather than stored, an uncalibrated archive cannot render a label at all, so the editor opens in calibration mode with the labeling tools **disabled and the reason stated**. The translucent width rectangle is the only feedback that tells a user whether their two clicks actually cover the car; labeling without it produces a corpus nobody can trust. A `DPT` below the threshold warns persistently but **never blocks** — the fixture corpus lives there.
+
+Points are placed with a tool **distinct from the sensor tool** and visually unmistakable from it: click a pixel, then enter the x/y/z millimetre coordinate. A point renders as a crosshair labelled with its world coordinate. With more than two points the editor shows the **fit residual**, so a mis-typed coordinate is visible rather than silently absorbed into the scale.
+
+#### Image Alignment
+
+For pixel data to map to the same layout location, the camera position must not change across images or during classification. **For now we assume this holds.** Workarounds — aligning images on structural details such as track and landscape features, fiducial markers, or simply *detecting* drift and refusing to classify — are tracked in [issue #12](https://github.com/iot49/rails49/issues/12). Note the current failure mode is silent: nothing records the camera pose and nothing notices when it changes. Frame-to-frame change detection is a plausible implementation of the drift check; see [Secondary uses of change detection](#secondary-uses-of-change-detection).
+
+> Measured: within an archive the camera *is* static. `lighting.r49` has a track marker at (202, 591) in image-0 and (202, 592) in image-1. Calibration is also **shared verbatim across archives** — the three `cars *` archives carry byte-identical calibration — which may be a data-entry error rather than a genuinely identical rig. [Issue #6](https://github.com/iot49/rails49/issues/6) closed this as **not worth provisioning against**: those archives are disposable UI fixtures, so v4 records no calibration provenance (no authoring-image reference, no per-point names, no content fingerprints). The general case — a stale calibration failing silently — is camera drift, and belongs to [issue #12](https://github.com/iot49/rails49/issues/12).
+
+### Location Data: Cars and Sensors
+
+The `.r49` format and UI editor store and edit **two** distinct kinds of geometry in pixel coordinates. They differ in scope and in whether the model ever sees them:
+
+| | Geometry | Scope | Trained on? | Provenance? |
+|---|---|---|---|---|
+| **Cars** | Two points along the car's centerline | Per **image** | **Yes** — the detector's only class | **Yes** |
+| **Sensors** | Single point | Per **layout** | **No** — an output specification | No |
+
+1. **Cars.** Cars are straight and of standard width, so a car is fully described by **two points** along its centerline; width is derived rather than stored. The constant is `layout.standard_width` = **3000 mm prototype**, chosen as the **widest real prototype** (SBB RAm TEE I) rather than a typical one: width is what makes a sensor register, so an over-wide box biases toward `occupied`, which is the direction [Occupancy Output](#occupancy-output) deliberately errs in. Because width in pixels is `DPT × standard_width / standard_gauge`, the scale ratio cancels — **a car is 2.09 track-widths wide in every scale**, and no scale lookup is needed. Trains are sequences of cars where the end of one coincides with the start of the next — so **couplings need not be labeled or detected**, they are derivable from abutting car endpoints. Each car carries [provenance](#provenance-is-required-not-optional).
+
+2. **Sensors** (block detectors). Points where occupancy must be reported when running trains. These are an *output specification*, not training data: they say where the deployed system must answer, and they never enter a loss function. What they answer *with* is [Occupancy Output](#occupancy-output). They remain **points**, not spans: a span would match a prototype block more closely, but L0 carries full car pose so block semantics stay derivable later, whereas authoring intervals is real UI for a consumer not yet observable. Sensors carry **no** provenance — no model can propose where a human wants an answer, so the field would be permanently `human` and therefore noise.
+
+#### Track is not stored, and that is a deliberate deferral
+
+**There was a third geometry — track, as per-layout splines — and it is not in v4.** Settled in [issue #13](https://github.com/iot49/rails49/issues/13).
+
+Track turned out to have **no live-path consumer**. It is not a detector class and never enters a loss; [Occupancy Output](#occupancy-output) tests a point against the detector's oriented boxes and explicitly rejects associating detections with a spline; and its remaining use — generating empty-track CNN crops — is dormant because only the detector ships. That left one live use, snapping cars to the centerline while authoring.
+
+Decisively, **track is fully retrofittable**: it is layout-scoped, the camera is fixed within an archive, and the images persist, so splines can be authored into an existing archive at any later date **without invalidating a single car label**. That is the exact inverse of provenance, which cannot be recovered after the fact — and it is why one is deferred and the other is provisioned now.
+
+So cars are authored as two free clicks on the visible car ends. Dropping the snap may even *help* label quality: the user can see the actual car in the photograph, whereas a snap projects onto a spline that may itself be slightly off, and the detector's orientation output comes from the car's true axis.
+
+**What this costs, stated plainly:** the derived empty-track training crops described in [issue #4](https://github.com/iot49/rails49/issues/4) are unobtainable while track is deferred. That is owed back only if the ResNet is revived.
+
+Track authoring returns as a **fresh effort**, not a resumption — see the closed [issue #14](https://github.com/iot49/rails49/issues/14), which records the questions (spline creation, control-point editing, Catmull-Rom versus Bezier, turnouts, whether track carries topology) that remain genuinely open.
+
+#### Labeling completeness
+
+Every image used for detector training must have **all** of its cars labeled. An object present but unlabeled is treated as background by the loss, so partial labeling actively teaches the detector that cars are background. This cannot be scoped per class — the loss is shared across a whole image.
+
+Each image therefore carries a **completeness flag**, `labeled_complete`; only complete images are exported for training. Incomplete images remain useful for authoring and review. That per-image geometry does get skipped in practice is already on record: `cars 0-10.r49` has 32 track markers on image-0 and **zero** on its other ten images.
+
+**`labeled_complete` means exactly one thing: a human asserts that no car in this image is unlabeled.** It is an assertion about *absence*, which is why it cannot be replaced by anything per-label — see [Provenance](#provenance-is-required-not-optional). **Accepting model proposals never sets it**, however many are accepted; marking an image complete stays a separate deliberate act. Scanning for what the model **missed** is a different act from judging what it proposed, and only the first can back this flag.
+
+An image marked complete with **zero** car labels is legitimate, not a gap — it is an all-background sample.
+
+### Labeling Workflow
+
+The editor guides a specific order, because the order is what keeps a training set honest:
+
+1. **Calibrate** — two points minimum.
+2. **Label all cars** — per image.
+
+Sensors can be placed at any time.
+
+> The workflow was three stages until [issue #13](https://github.com/iot49/rails49/issues/13) removed track from v4. Stage 2 was *label all track*, and it is gone along with the snap that depended on it.
+
+**Stages are gated on existence, never on completion.** Calibration gates car labeling, because car width is derived from DPT and the width rectangle is the only feedback that a label actually covers what it claims. Every stage stays re-enterable, and nothing can verify that *all* cars have been labeled, so nothing pretends to — the flow is encouraged by ordering, and the one honest claim of exhaustiveness is the human's, recorded as `labeled_complete`.
+
+A **car-free image** is no longer a required convention. It was worth having on three grounds — track was authored on it, it was the cleanest source of empty-track CNN crops, and it is a valid complete image with zero cars. The first is gone with track and the second is dormant, so only the third survives: a car-free image makes a useful all-background sample, and nothing more is claimed for it.
+
+#### Authoring cars, and the trains they form
+
+A car is **two free clicks on the visible car ends** — the straight chord between them, along the car's own centerline. There is no snapping, because there is no stored track to snap to.
+
+A train is authored as a **chain of clicks**: the first click starts a car, and every click after it is simultaneously the end of the current car and the start of the next. **Right-click ends the chain**, and the next click starts a new train. Nothing about the train is stored — it stays derived from coincident endpoints. Chaining simply guarantees that the coincidence is exact.
+
+Because a coupling is where two endpoints coincide, it renders as **one shared handle**: dragging it moves both cars' endpoints together, so a train survives editing. Deleting a single car remains possible as an error-correction path — deleting the middle car of three leaves two derived trains, with no residue.
+
+Dragging edits everything: car endpoints, coupler joints, calibration points, and sensors.
+
+#### Right-click is state-dependent
+
+| State | Right-click |
+| :-- | :-- |
+| Chaining a train | Ends the chain |
+| Idle | Context menu on the object under the cursor |
+
+The context menu carries **delete** and **reclassify**, and it is the reason the editor needs no delete mode at all. It is also where a dotted class taxonomy belongs: `stock › loco › steam` nests as a submenu rather than requiring a persistent picker. A newly created car is `stock`; refinement happens through the menu.
+
+One gesture meaning two things depending on state is a real cost, accepted here because the two states differ by whether a chain is in progress — which is already loudly visible as a rubber band.
+
+#### No copy-forward
+
+Labels are not carried between images. Copying cars across a set where nothing moves was considered and rejected: hand-labeling every image is what keeps provenance and the completeness flag unambiguous.
+
+### Assisted Labeling
+
+Hand-labeling every car in every image is the dominant cost of building a training set. Once a detector exists, the UI should **propose** car labels, which the user then edits, corrects, or rejects. The human remains the author; the model supplies a first draft.
+
+**One model, not two.** An earlier draft anticipated a second, separate model for authoring, because a proposal model would also need to detect **track** in order to suggest the spline layout. Track is no longer stored ([issue #13](https://github.com/iot49/rails49/issues/13)), so that reason is gone: the authoring aid is the production detector itself, same class set and same weights. **Bootstrapping dissolves with it** — the circularity was that a track-proposing model needs track labels to train on, which is what it was meant to produce. Nothing about proposing cars is circular: hand-label enough images, train, then propose.
+
+The provenance and completeness rules below are what keep the aid from quietly degrading the corpus, and they hold regardless of which model does the proposing.
+
+#### Provenance is required, not optional
+
+Accepted proposals that later become training data create a feedback loop: the model trains on its own output and amplifies its own errors, including systematic ones a user is unlikely to catch — a plausible proposal is easy to accept without scrutiny.
+
+Each **car** label therefore records how it came to exist, plus which model proposed it:
+
+| Field | Value |
+|---|---|
+| `provenance` | `human` — drawn by hand |
+| | `proposed` — model-proposed, accepted without modification |
+| | `corrected` — model-proposed, then edited by the user |
+| `proposed_by` | the proposing model's version string (`v1.0.0`-style); **absent** when `provenance` is `human` |
+
+This makes the difference measurable: unedited proposals can be excluded or down-weighted when building a training set, and acceptance rate becomes a quality signal. **Provenance cannot be retrofitted** once a corpus is labeled, which is why it is provisioned before the feature that needs it exists.
+
+Three details that were decided against, and why:
+
+* **`corrected` records no magnitude**, and the original proposal is not retained. Correction data would be **censored**: residuals exist only where the user chose to edit, `proposed` labels have zero residual by construction, and errors nobody noticed leave no residual at all. It would measure "how far the user moved what they moved" while looking exactly like model error. Model error belongs to a held-out evaluation — see [Accuracy](#accuracy).
+* **`proposed_by` is per-label, not per-image.** Re-proposing an image with a newer model leaves the previous run's `corrected` labels in place, so an image-scoped field would be false about some of its own labels — and retraining is precisely the workflow that creates that case.
+* **`corrected` stays distinct from `human`.** A corrected label was *anchored* by a proposal, and anchoring bias is real: a user who nudges is not a user who drew.
+
+#### Provenance cannot cover the error that matters most
+
+Provenance is **per-label**, so there is one thing it structurally cannot express: a car that was **never labeled at all**. A proposal model that misses a car yields an image where every present label is impeccable and a car is silently taught as background — the exact poisoning [Labeling completeness](#labeling-completeness) exists to prevent.
+
+That risk lives in `labeled_complete` and nowhere else, because completeness is an assertion about *absence*. It is also **not computable** from provenance: an image whose labels are all `proposed` is byte-identical whether the user inspected every one and agreed, or clicked accept-all blind. This is why accepting proposals must never set the flag.
+
+### Testing and Demo
+
+Beyond scaling and labeling layouts, the UI also interacts with the classifier:
+
+1. Run the classifier on a still image or video stream from the camera. Testing and demo only; throughput is not critical.
+2. Highlight classification errors and high-loss samples (training or test set) for diagnosis.
+3. Real-time classification, e.g. on a mobile device, uploading results via MQTT to a model railroad controller such as [Rocrail](https://www.rocrail.online/). **Measured and viable** — see the runtime contract below.
+
+#### Live-view runtime contract
+
+Measured in [issue #11](https://github.com/iot49/rails49/issues/11) against the static-INT8 `.ort` under ORT-web 1.26.0 (WASM EP); rig on branch `prototype/yolo-bench` (`ui/bench/`). Median steady-state `session.run()`, 20 timed passes after 3 warmups:
+
+| Device | Threads | 960×544 | 640×384 |
+| :--- | ---: | ---: | ---: |
+| iPhone (iOS 26.5.2, Safari) | 4 | **120.1 ms** | 86.0 ms |
+| iPhone | 1 | 191.3 ms | 103.8 ms |
+| iPad (iOS 26.5.2, Chrome) | 8 | 444.9 ms | 277.9 ms |
+| MacBook i7-7820HQ (Chrome) | 1 | 297.7 ms | 138.5 ms |
+
+Four things an implementer must take from this:
+
+* **The phone is the fastest device measured, not the weakest.** It beats the 2017 laptop by 2.5×. Mobile was the suspected risk and is not one.
+* **"The phone" is not one number — plan against ~450 ms.** The spread across two current iOS devices is **3.7×**. The iPad was slowest despite reporting 8 cores, plausibly thread oversubscription on big.LITTLE.
+* **Create the ORT session once at view mount, never per frame, and tolerate a slow start.** Time to first result is 1.0–4.5 s; session creation alone ranged from **32 ms to 3637 ms** across runs. The 3.4 MB model fetch is minor at 22–574 ms. The loading state must survive several seconds.
+* **Threading is worth ~1.2–1.6×, not the 2–3× once claimed.** That figure came from *native* ORT CPU threading, which scales better than WASM. It requires cross-origin isolation, which production does not currently have — `rails49.org/` has no `_headers` file, so the shipping app runs single-threaded today. iOS *does* support the path (`crossOriginIsolated` and `SharedArrayBuffer` both confirmed on iPhone and iPad once COOP/COEP are served), which is what makes the fix worth taking on mobile rather than desktop only. Tracked as [issue #15](https://github.com/iot49/rails49/issues/15).
+
+The remaining lever is **change-detection frame gating** ([below](#secondary-uses-of-change-detection)). **ROI or tiled inference is not one:** tiling into N regions costs the same convolution work plus N× fixed overhead, and cropping to the model's fixed input merely upsamples the region for no saving — that is SAHI, an accuracy technique for low-DPT imagery that multiplies latency by tile count. Cropping only saves time by genuinely discarding layout.
+
+> These figures measure `session.run()` alone — no camera capture, no pre- or post-processing. Input was random; the NMS-free head emits a constant 300 slots regardless of content, so latency is content-independent. Quote medians, not p95: spread is dominated by scheduler and thermal noise on every device.
+
+### Secondary uses of change detection
+
+Rejecting change detection as an occupancy classifier does not reject the technique. Its liabilities are all consequences of having to answer "is a train here?" — a question it cannot latch onto correctly. For jobs where the wrong answer costs a warning or a wasted frame rather than a collision, it is cheap and appropriate. Three such uses, in descending order of value:
+
+1. **Camera-drift detection.** Compare the structural content of the current frame against the frame the calibration was authored on, and *refuse to classify* when they disagree. This is occupancy-agnostic, so it has no latch problem, and it converts [Image Alignment](#image-alignment)'s currently silent failure into a loud one. This is the strongest use and belongs in [issue #12](https://github.com/iot49/rails49/issues/12); a change-based drift check is a candidate implementation of the "detecting drift and refusing to classify" workaround already named there.
+
+2. **Re-classification gating.** In live view, skip inference on frames where nothing changed. Purely a compute optimisation — a false negative costs a stale frame, never a wrong occupancy report. Relevant to [Testing and Demo](#testing-and-demo) item 3, where mobile hardware is the constraint.
+
+3. **Change proposes, CNN disposes.** Use change detection to nominate candidate regions and the CNN to decide each one. This is sound, and is the architecture the background-subtraction literature converged on — but it is **Option 2 or 3 with a cheap front end, not Option 1**: it still requires the CNN, and it does not lift the DPT > 20 requirement, because the CNN is still what decides.
+
+Items 1 and 2 are not scheduled work. They should be raised as feature requests when the surrounding work is picked up — item 1 folded into issue #12, item 2 as its own request against the live view. Item 3 is a possible future optimisation of Options 2/3 and is not specified here.
+
+> **Licensing, should EX-SensorCAM code ever be reused.** EX-SensorCAM is **GPL-3.0**, not AGPL-3.0. GPLv3 §13 explicitly permits combination with an AGPLv3 work, so incorporating it into rails49 is permitted — but it is a distinct licence and must be recorded as one.
+
+### Description
+
+The `.r49` file carries additional information — layout title, owner, camera model (automatically detected?), scale. The UI provides means to view and edit it.
+
+## Format
+
+The `.r49` manifest is versioned. The current shipped version is 3; the model described above requires **version 4**, a breaking change: point markers are replaced by the two geometries above, and no automated migration is possible — a point carries neither extent nor orientation. Settled in [issue #8](https://github.com/iot49/rails49/issues/8).
+
+### The v4 manifest
+
+```jsonc
+{
+  "version": 4,
+  "layout": {
+    "name": "…", "description": "…", "contact": "…",      // all optional
+    "scale": "HO",
+    "calibration": { "points": [ { "px":    { "x": 0, "y": 0 },
+                                   "world": { "x": 0, "y": 0, "z": 0 } } ] },  // mm
+    "sensors": [ { "id": "<snowflake>", "x": 0, "y": 0, "name": "…" } ]        // name optional
+  },
+  "camera": { "resolution": { "width": 0, "height": 0 }, "model": "…" },
+  "images": [
+    {
+      "filename": "…",
+      "labeled_complete": false,
+      "labels": [
+        { "id": "<snowflake>", "class": "stock",
+          "p0": { "x": 0, "y": 0 }, "p1": { "x": 0, "y": 0 },
+          "provenance": "human" },
+        { "id": "<snowflake>", "class": "stock.loco.steam",
+          "p0": { "x": 0, "y": 0 }, "p1": { "x": 0, "y": 0 },
+          "provenance": "corrected", "proposed_by": "v1.0.0" }
+      ]
+    }
+  ]
+}
+```
+
+Encoding rules, each with its reason:
+
+* **Collections are arrays of self-describing objects carrying `id`**, not records keyed by id. v3 keys the label dict by identity, so a marker is *anonymous* once it leaves its collection — but [Occupancy Output](#occupancy-output) makes `id` the thing consumers key on, and the training exporter, the provenance audit, and any "which label produced this crop" trace all pass single labels around. Uniqueness costs one validation per collection, which is the price of that. `id` is a `make_id` snowflake; sensor ids and label ids are separate namespaces and are never compared.
+* **`provenance` is a discriminated union, with no default.** `proposed_by` is required on `proposed`/`corrected` and forbidden on `human`, enforced by the type rather than a runtime check. A default of `human` is specifically rejected: a forgotten field would launder model output as human authorship, which is the exact feedback loop [Provenance](#provenance-is-required-not-optional) exists to make measurable. `proposed_by` is a free-form non-empty string — no semver pattern, since it identifies a model and a future detector may be versioned differently.
+* **`class` is a plain string at the format layer**, *not* validated against the vocabulary at parse time. Conformance is a visible warning in the editor and a **fatal error in the training exporter**, which is where a mis-mapped class silently corrupts a model. A format that refuses to open files because someone pruned `config.yaml` would punish config edits.
+* **`calibration` is always present, with `points` defaulting to `[]`.** "Uncalibrated" is a real state the editor handles, and an empty list expresses it without every consumer null-checking the parent. `getDPT()` returns `null` when no equal-`z` pair exists, covering the empty and single-point cases with one rule.
+* **`labeled_complete` defaults to `false`**, always. "A human asserts no car is unlabeled" is a claim no default and no conversion can make on a human's behalf.
+
+### Migration is a one-time conversion, not a feature
+
+**No v3 code exists in v4.** `ManifestDataSchema` is `version: 4` only, and loading anything else fails on the version number alone. The six archives in `dataset/r49/` are converted **once** by a throwaway script, which then goes away.
+
+This is safe because all six are tracked binaries: the originals stay recoverable from git history indefinitely, so converting in place is not a one-way door. The conversion keeps images, `camera`, `layout.scale`/`name`/`description`/`contact`, and calibration (v3's `{p0, p1, size_mm}` becomes two points at `world (0,0,0)` and `(0, size_mm, 0)`). It drops all 1195 point markers and sets `labeled_complete: false` on all 46 images, leaving six valid v4 archives with zero labels, ready for hand-relabeling.
+
+`camera.resolution` is retained because [Output encoding](#output-encoding) defines L0 coordinates in that frame.
+
+### Parameters live in `config.yaml`
+
+```yaml
+layout:
+  standard_gauge: 1435.0      # prototype mm
+  standard_width: 3000.0      # prototype mm — widest real stock (SBB RAm TEE I)
+  scale_to_ratio: { G: 25, O: 48, S: 64, HO: 87, T: 120, N: 160, Z: 220 }
+  min_dpt: 20                 # warns persistently, never blocks
+
+detector:
+  input: [960, 544]           # 640x384 is a live fallback, not a closed door
+  confidence_threshold: 0.25  # placeholder — needs held-out recall
+  classes: ["stock"]          # YOLO class index order — append-only
+  vocabulary:
+    stock: {}                 # width_mm is an optional per-class override
+```
+
+`vocabulary` is the authoring taxonomy — what the context menu offers and what a label's `class` must match. `classes` **is** the YOLO class list, verbatim and index-ordered. A label maps to the longest entry of `classes` that is a segment-prefix of its class, so `stock` matches `stock.loco.steam` but never `stockyard`; the same rule resolves an overriding `width_mm`. Adding a subtype to `classes` therefore re-maps every already-labeled car of that subtype with **no relabeling**.
+
+> ⚠️ **`classes` is append-only.** A list position *is* a YOLO class index, so reordering or deleting an entry invalidates trained weights while the file still validates. It is the one config edit that can break a model with nothing noticing.
+
+The `stock.` root is required rather than cosmetic: a new car is `stock` and refinements must roll up to it, so an unrooted class would match no entry and be dropped from the export — the unlabeled-car-as-background failure [Labeling completeness](#labeling-completeness) exists to prevent. The root never appears in the UI; the context menu renders its children.
+
+**`config.yaml` is authored; every other representation is generated and verified.** Exports assert against it and abort on mismatch, and nothing writes a vocabulary back — which is why `classifier.labels` was deleted rather than corrected, being a key nothing could check. TypeScript reaches these values through a **generated, committed** `lib/config` package emitted by `pnpm config:generate`, with a staleness check in `bin/test.sh`; `lib/r49` derives `STANDARD_GAUGE`, `Scale2Number`, and its scale enum from it instead of hardcoding all three. Python keeps reading `config.yaml` directly.
+
+The detector runs entirely in the browser via ONNX Runtime; the application is fully client-side with no backend.
+
+## Deriving Training Data
+
+Settled in [issue #4](https://github.com/iot49/rails49/issues/4); full working in `docs/research/issue-4-label-derivation.md` on branch `research/label-derivation`.
+
+**Endpoint labels are the single source of truth.** Every model input is *derived* from them by deterministic rule — nothing is hand-authored twice, and no second annotation format is maintained by hand. A relabel therefore regenerates every downstream artifact.
+
+### YOLO annotations, for the detector
+
+* **Only `labeled_complete` images are exported.** This is the one hard gate. An image containing an unlabeled car teaches the detector that cars are background, and the loss is shared across the whole image so it cannot be scoped per class. Ultralytics states the same requirement directly — *"All instances of all classes in all images must be labeled. Partial labeling will not work."* — and two peer-reviewed studies of sparse-annotation degradation agree.
+* **Class index** is the position in `detector.classes` of the longest entry that is a segment-prefix of the label's `class`, as described under [Parameters](#parameters-live-in-configyaml). A label matching no entry is a **fatal export error**, never a silent drop — a dropped car is exactly the unlabeled-car-as-background failure above.
+* **Geometry** is the oriented box: centre and orientation from the `p0`–`p1` chord, length from its magnitude, width from `DPT × standard_width / standard_gauge`. Normalisation into the detector's input frame is generated, not stored.
+
+### CNN crops, for the classifier
+
+Retained because the ResNet stays retrainable, though nothing loads it today.
+
+* **Fixed stride along the span**, in canonical 20-DPT pixels, endpoint-inclusive and deterministic: `s = crop_size / 2 = 48`.
+* **Crops stay axis-aligned** regardless of span orientation. At inference the classifier only ever receives a query point — a `layout.sensors` entry — never an orientation, so a rotated training crop would not match what it is asked at runtime.
+* **Crop labels come from every span intersecting the crop**, not from the span that generated it. This proviso is load-bearing rather than an aside: it is the mechanism by which no occlusion rule is needed anywhere in the format.
+* Projects **~2718 crops** against 959 today.
+
+### v4 cannot produce a trainable CNN dataset, and that is known
+
+Established in [issue #8](https://github.com/iot49/rails49/issues/8). v4 stores **only car spans**, so every derivable crop centre lies on a car and every crop earns the same tag. The vocabulary does not shrink from three tags to two — it collapses to **one, degenerate, with no negatives at all**. This is why `classifier.labels` was deleted from `config.yaml` rather than corrected.
+
+The route back is **sampling background crops as verified negatives**: `labeled_complete` asserts no car is unlabeled, which makes any crop centre not intersecting a span a *verified* negative rather than a presumed one. That changes the negative distribution and therefore invalidates any gate built on the old one, so it is an experiment to run rather than a schema question to answer — and it stays dormant while the ResNet does. Until it happens, the CNN derivation above is a specification with no corpus to run on.
+
+## Out of Scope, and Known Gaps
+
+Two different things, kept apart deliberately: the first list is **ruled out** and will not be built here; the second is **in scope but unresolved**, and an implementer will meet it.
+
+### Ruled out
+
+| | Why |
+| :--- | :--- |
+| **The autoalign transform** — homography estimation, drift detection, re-alignment triggers | The calibration *data model* is specified; the algorithm is a separate effort. Points off the reference plane are stored but inert, which provisions it without implementing it. |
+| **Track geometry, and the spline authoring it implies** | No live-path consumer, and **fully retrofittable** without invalidating a single car label. See [Track is not stored](#track-is-not-stored-and-that-is-a-deliberate-deferral) and the closed [issue #14](https://github.com/iot49/rails49/issues/14). |
+| **Populating car subtypes** — `stock.loco.steam` and friends | The mechanism is provisioned and additive by design; no subtype is labeled here. Adding one is a `config.yaml` line plus a retrain, with **zero relabeling**. |
+| **Calibration provenance** — authoring-image references, per-point names, content fingerprints | The general case is camera drift, already [issue #12](https://github.com/iot49/rails49/issues/12). Settled in [issue #6](https://github.com/iot49/rails49/issues/6). |
+| **Coupling as a class or a field** | Derivable from L0 as two box endpoints coinciding. A 96 px crop cannot see the relationship between two cars that defines a coupler, which is why hand-placed coupling markers never worked. |
+| **A second model in the live path** | One detector, one ORT session, one vocabulary. The CNN stays retrainable and unloaded. |
+
+### In scope, still unresolved
+
+* **How any accuracy claim gets measured.** There is no held-out protocol for either model, and the [v4 conversion retires](#accuracy) the only automated gate there is. The detector's `confidence_threshold` cannot be set without held-out recall, so its config value is a placeholder. A real protocol waits on the fresh higher-DPT corpus.
+* **An independent second observer.** [A total miss stays invisible](#confidence) to any single-model scheme. The candidates — a CNN verifier over the same points, or change detection — are neither specified nor worth building before the detector has numbers.
+* **The proposal interaction.** [Assisted Labeling](#assisted-labeling) settles provenance and completeness but not the UX: whether proposing is per-image or per-archive, whether proposals hold a distinct *pending* visual state, whether an accept-all affordance should exist at all given that it must never set `labeled_complete`, and how a wrong proposal is rejected without residue. Fully retrofittable, and designing it against unknown accuracy is what the format's own restraint principle warns against.
+* **Undo/redo.** Never discussed, and the editor is full of destructive edits — delete from a context menu, a coupler drag that moves two cars, chained creation. Whether there is a history at all, and whether it spans images, is unspecified.
+* **L2: event and transition semantics.** Rocrail-style enter/in sensors fire on *transitions*; L1 is per-frame state. Converting one to the other needs debouncing and hysteresis, which is exactly where a phantom becomes a spurious "train entered block" a controller acts on. Deferred until a real controller is in the loop.
+* **Block-span occupancy.** Retrofittable for free from L0, but a named interval on track presupposes track — so it would have to bring spline authoring back with it.
+* **Whether the live view renders L0 boxes, L1 sensor states, or both by default.** Both are available, and [the output frame](#output-encoding) means boxes draw with no transform. A presentation choice, not an architectural one.
+
+---
+
+*Design decisions, open questions, and the research behind them are tracked on the wayfinder map: [iot49/rails49#2](https://github.com/iot49/rails49/issues/2).*

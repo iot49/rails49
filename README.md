@@ -14,6 +14,10 @@ The application is offered as a static webapp served at https://rails49.org/. Wh
 
 ## 🤝 Contributing
 
+See [SPEC.md](SPEC.md) for what the system is meant to do and why — the requirements,
+the `.r49` format, and the reasoning behind the design. Much of it is the target rather
+than a description of what ships today.
+
 See [CLAUDE.md](CLAUDE.md) for the repository layout, development commands, and
 the technology stack, and [lib/CLAUDE.md](lib/CLAUDE.md) for the interface
 convention the shared TypeScript libraries follow.

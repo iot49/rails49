@@ -6,6 +6,8 @@ Computer vision suite for model railroaders: camera-based track occupancy detect
 
 **Safety note (from README):** the classifier does sometimes miss rolling stock or report phantom trains. Nothing here should be presented as a safety interlock.
 
+**`SPEC.md` at the root is the requirements document for the whole project** — the `.r49` v4 format, the occupancy output contract, labeling UX, training-data derivation, and the reasoning behind each. It describes the **target**, and much of it is unbuilt: the shipped code is manifest v3 with point markers and no detector. Where SPEC and the code disagree, that is the migration, not a bug to fix. This file describes what exists and how to build it; SPEC describes what it is for.
+
 ## Commands
 
 Run from the repo root unless noted. pnpm workspace + `uv` for Python.

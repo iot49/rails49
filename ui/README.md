@@ -5,8 +5,9 @@ Web app for configuring track occupancy detection, plus a live view for real-tim
 Everything runs client-side: `.r49` archives are opened and saved through the file picker, and
 classification runs in the browser via ONNX Runtime. There is no backend.
 
-* **`SPEC.md`** — what the app is *for*, and the requirements it is working toward. Much of it is not
-  built yet; treat it as the target, not a description.
+* **`../SPEC.md`** — what the system is *for*, and the requirements it is working toward. Covers the
+  whole project, not just this package. Much of it is not built yet; treat it as the target, not a
+  description.
 * **`CLAUDE.md`** — build, test, and deploy mechanics, and the invariants an edit can break.
 * **This file** — the component reference: what exists today, and each component's interface.
 
