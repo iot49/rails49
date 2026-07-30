@@ -6,6 +6,23 @@ published. `ui/` and `dataset/` are the only consumers.
 * `r49` : `.r49` archive parser and serializer, manifest schema, scale geometry
 * `uid` : Snowflake-style unique id generator
 * `classifier` : ONNX Runtime image classifier (browser and node targets)
+* `config` : **generated** from `config.yaml` — layout and detector constants
+
+## `config` is generated, and committed
+
+`lib/config/src/` is emitted by `pnpm config:generate` (`bin/generate_config.py`)
+and **must not be hand-edited** — edit `config.yaml` and regenerate. It is
+committed rather than gitignored so a fresh clone typechecks before anyone runs
+a generator, and `bin/test.sh` regenerates into a temp tree and diffs, so a
+`config.yaml` edit without a regenerate fails the full check.
+
+The interface convention below holds for it too: the generator emits `index.ts`
+as a header of explicit named exports with a "Withheld" note, and the values
+with their TSDoc in a sibling `generated.ts`. Both carry a DO-NOT-EDIT banner.
+If you need a new value exported, add it to the generator's
+`render_generated_ts` and `render_index_ts` — not to the output.
+
+Python keeps reading `config.yaml` directly and must not consume this package.
 
 ## The interface convention
 
