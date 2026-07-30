@@ -76,11 +76,13 @@ Lit + Shoelace + Vite. Per-component contracts are documented at length in `ui/R
 
 ### Model files and releases
 
-The model files are gitignored; only `classifier/resnet/models/version.txt` is tracked. Publishing a retrained model means bumping `version.txt`, creating a matching GitHub Release, and uploading `model_int8.ort` + `config.json` as assets. `bin/test.sh` downloads them from that release when `CI=true`; locally it warns and skips the classification regression test instead.
+The model files are gitignored; only `classifier/resnet/models/version.txt` is tracked. Publishing a retrained model means bumping `version.txt`, creating a matching GitHub Release, and uploading `model_int8.ort` + `config.json` as assets. **`bin/test.sh` does not download them and asserts no accuracy figure** — it runs identically on a clean clone with no model present.
 
-**`model_int8.ort` (11 MB) is the model that ships, not `model.ort` (45 MB)** — Cloudflare Pages rejects files over 25 MiB. The quantized model scores 99.58% on the regression set against the full model's 99.69%, i.e. one extra error out of 963; the test gate is 99.5%, so there is under one sample of headroom. Retraining that regresses even slightly will fail CI.
+> **There is no automated model gate.** The marker-driven regression test and its 99.5% threshold were retired with the v4 conversion (issue #17), because v4 deletes the point markers they iterated and the number was a reproducibility check, never a generalization estimate. Nothing currently checks that a model rebuild matches the published one. A real held-out protocol waits on a fresh higher-DPT corpus — see `SPEC.md` § Accuracy. Do not plug the gap with a substitute gate.
 
-Which model ships is named in four places, and they must agree: the static-copy target in `ui/vite.config.ts`, the `_classifier.load()` calls in `rr-live-view.ts` and `rr-editor-view.ts`, `MODEL_FILE` in `bin/test.sh`, and the path in `lib/classifier/tests/regression.test.ts`.
+**`model_int8.ort` (11 MB) is the model that ships, not `model.ort` (45 MB)** — Cloudflare Pages rejects files over 25 MiB.
+
+Which model ships is named in three places, and they must agree: the static-copy target in `ui/vite.config.ts` and the `_classifier.load()` calls in `rr-live-view.ts` and `rr-editor-view.ts`.
 
 `bin/deploy.sh` still strips `*.wasm` (26 MB, also over the limit) — those load from the jsDelivr CDN in production, selected by the `wasmPaths` branch in the two view components. The script now aborts if anything in the deploy directory still exceeds 25 MiB.
 

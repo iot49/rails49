@@ -18,7 +18,7 @@ Train the model and export it to cross-platform runtime formats.
 * **Action**: Run all cells in `TRAIN.ipynb` to train a ResNet-18 model on the prepared dataset, evaluate its metrics, and export the trained model into optimized ONNX/ORT formats saved in the [models/](models) folder — full precision (`model.ort`, ~45 MB) and quantized (`model_int8.ort`, ~11 MB), plus `config.json`.
 
 ### 3. Model Deployment
-**`model_int8.ort` is the model that ships.** Cloudflare Pages rejects files over 25 MiB, which the full-precision `model.ort` exceeds. The quantized model fits, and costs about one additional misclassification across the regression set (99.58% vs 99.69%). If you change which model ships, update all four of: `ui/vite.config.ts` (the static-copy target), the `_classifier.load()` calls in `rr-live-view.ts` and `rr-editor-view.ts`, `MODEL_FILE` in `bin/test.sh`, and the path in `lib/classifier/tests/regression.test.ts`.
+**`model_int8.ort` is the model that ships.** Cloudflare Pages rejects files over 25 MiB, which the full-precision `model.ort` exceeds. If you change which model ships, update all three of: `ui/vite.config.ts` (the static-copy target) and the `_classifier.load()` calls in `rr-live-view.ts` and `rr-editor-view.ts`.
 
 * **Frontend Web UI**: The build copies `model_int8.ort` and `config.json` into the web bundle for client-side ONNX runtime execution. See the [Web UI Guide](../ui/README.md) for details.
 * **Action**: Run `bin/deploy.sh` from the repository root to build the UI and publish it to Cloudflare Pages. It aborts if any file would exceed the 25 MiB limit.
@@ -29,7 +29,7 @@ Because model files exceed GitHub's file size limit, they are not checked into G
 2. Create a GitHub Release matching that version tag (e.g., `v1.0.1`).
 3. Upload `model_int8.ort` and `config.json` as assets to that GitHub Release.
 
-`bin/test.sh` reads `version.txt` and downloads those assets when running in CI, so the classification regression test always runs against the released model.
+Publishing is unaffected by the retirement of the accuracy gate, but **nothing downloads these assets at test time any more and no test asserts an accuracy figure** — `bin/test.sh` runs identically with no model present. See the root `CLAUDE.md` § Model files and releases.
 
 > **⚠️ TODO:** Automate this process using a script (e.g., using `gh` CLI) to automatically package, version, tag, and upload the models.
 
