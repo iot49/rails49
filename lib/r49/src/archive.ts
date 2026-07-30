@@ -1,5 +1,10 @@
 import JSZip from 'jszip';
-import { ManifestDataSchema, type ManifestData, type Image } from './manifest.schema.ts';
+import {
+  ManifestDataSchema,
+  assertManifestVersion,
+  type ManifestData,
+  type Image,
+} from './manifest.schema.ts';
 
 export class R49Archive {
   private zip: JSZip;
@@ -11,11 +16,11 @@ export class R49Archive {
 
   /**
    * Loads an .r49 archive from binary data and validates its manifest against
-   * the v3 schema.
+   * the v4 schema.
    *
    * @param data Raw archive bytes, in any form the host platform produces.
    * @throws If the data is empty, is not a readable zip, lacks manifest.json,
-   *         or the manifest fails v3 validation.
+   *         carries a version other than 4, or fails v4 validation.
    */
   static async load(data: Buffer | Blob | ArrayBuffer | Uint8Array): Promise<R49Archive> {
     const size = (data as any).byteLength ?? (data as any).size ?? 0;
@@ -33,10 +38,13 @@ export class R49Archive {
   }
 
   /**
-   * Re-reads manifest.json from the archive and validates it against the v3
+   * Re-reads manifest.json from the archive and validates it against the v4
    * schema, replacing any in-memory manifest.
    *
-   * @throws If manifest.json is absent or fails validation.
+   * The version is checked first and on its own, so a v3 archive fails with a
+   * message naming the version rather than with a list of shape mismatches.
+   *
+   * @throws If manifest.json is absent, is not version 4, or fails validation.
    */
   async readAndValidateManifest(): Promise<ManifestData> {
     const manifestFile = this.zip.file('manifest.json');
@@ -45,6 +53,7 @@ export class R49Archive {
     }
     const content = await manifestFile.async('string');
     const json = JSON.parse(content);
+    assertManifestVersion(json);
     this.manifest = ManifestDataSchema.parse(json);
     return this.manifest;
   }
@@ -72,11 +81,12 @@ export class R49Archive {
   }
 
   /**
-   * Replaces the manifest, validating it against the v3 schema first.
+   * Replaces the manifest, validating it against the v4 schema first.
    *
-   * @throws If the supplied data fails validation.
+   * @throws If the supplied data is not version 4, or fails validation.
    */
   setManifest(data: ManifestData): void {
+    assertManifestVersion(data);
     this.manifest = ManifestDataSchema.parse(data);
   }
 
@@ -93,15 +103,16 @@ export class R49Archive {
 
   /**
    * Adds an image to the archive and, if a manifest is loaded, appends a
-   * matching unlabelled entry. Adding an existing filename overwrites the
-   * bytes and leaves the manifest entry (and its labels) intact.
+   * matching entry with no labels and `labeled_complete: false` — nothing may
+   * assert completeness on a human's behalf. Adding an existing filename
+   * overwrites the bytes and leaves the manifest entry (and its labels) intact.
    */
   async addImage(filename: string, data: Uint8Array | Buffer | Blob | ArrayBuffer): Promise<void> {
     this.zip.file(filename, data);
     if (this.manifest) {
       const exists = this.manifest.images.some((img: Image) => img.filename === filename);
       if (!exists) {
-        this.manifest.images.push({ filename, labels: {} });
+        this.manifest.images.push({ filename, labeled_complete: false, labels: [] });
       }
     }
   }

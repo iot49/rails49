@@ -6,7 +6,9 @@ Computer vision suite for model railroaders: camera-based track occupancy detect
 
 **Safety note (from README):** the classifier does sometimes miss rolling stock or report phantom trains. Nothing here should be presented as a safety interlock.
 
-**`SPEC.md` at the root is the requirements document for the whole project** — the `.r49` v4 format, the occupancy output contract, labeling UX, training-data derivation, and the reasoning behind each. It describes the **target**, and much of it is unbuilt: the shipped code is manifest v3 with point markers and no detector. Where SPEC and the code disagree, that is the migration, not a bug to fix. This file describes what exists and how to build it; SPEC describes what it is for.
+**`SPEC.md` at the root is the requirements document for the whole project** — the `.r49` v4 format, the occupancy output contract, labeling UX, training-data derivation, and the reasoning behind each. It describes the **target**, and parts of it are still unbuilt. Where SPEC and the code disagree, that is the migration, not a bug to fix. This file describes what exists and how to build it; SPEC describes what it is for.
+
+**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. What remains ahead of the code: **the v4 editor** (car and sensor authoring, the calibration-point tool, the completeness affordance) and **the detector** (nothing trains, exports, or runs YOLO yet; `detector.*` in `config.yaml` is values only). See `ui/CLAUDE.md` for the editor's reduced state.
 
 ## Commands
 
@@ -61,7 +63,7 @@ classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
 
 `lib/config` is committed precisely so a fresh clone typechecks before anyone runs a generator. **Never hand-edit either output** — edit `config.yaml` and regenerate. `bin/test.sh` regenerates `lib/config` into a temp tree and diffs, so editing `config.yaml` without regenerating fails the full check with the command to run rather than surfacing at runtime.
 
-The package exists to end a duplication: `STANDARD_GAUGE` and the scale→ratio table live in both `config.yaml` and `@occupancy/r49`'s `manifest.schema.ts`, with nothing checking that they match. Wiring `r49` to consume `lib/config` instead is the schema ticket's job (#21). Python keeps reading `config.yaml` directly and does not consume `lib/config`.
+`@occupancy/r49` derives `STANDARD_GAUGE`, the scale→ratio table, and its scale enum from `lib/config` rather than declaring any of them. That is the point of the package: those constants used to exist in both `config.yaml` and `manifest.schema.ts` with nothing checking that they matched. Python keeps reading `config.yaml` directly and does not consume `lib/config`.
 
 > ⚠️ **`detector.classes` is append-only.** A list position *is* a YOLO class index, so reordering or deleting an entry invalidates trained weights while the file still validates — the one config edit that can break a model with nothing noticing. The generator preserves its order exactly and must keep doing so.
 
@@ -71,7 +73,8 @@ The package exists to end a duplication: `STANDARD_GAUGE` and the scale→ratio 
 
 `pnpm-workspace.yaml` covers `lib/*`, `ui`, `dataset`. The `lib/*` packages are consumed **as TypeScript source** — nothing under `lib/` is built or published.
 
-* `@occupancy/r49` — `.r49` archive parser/serializer (zip of `manifest.json` + images), zod-validated v3 manifest schema, scale geometry (`getGauge`, `getDPT`)
+* `@occupancy/r49` — `.r49` archive parser/serializer (zip of `manifest.json` + images), zod-validated **v4-only** manifest schema, scale geometry (`getDPT`). Loading a v3 archive fails on the version number alone: there is no compatibility shim, because a point marker carries neither extent nor orientation and so cannot be migrated. Its gauge, scale ratios and scale enum come from `@occupancy/config`.
+* `@occupancy/config` — **generated** from `config.yaml`, committed. Layout and detector constants.
 * `@occupancy/uid` — Snowflake-style id generator
 * `@occupancy/classifier` — ONNX Runtime classifier; **three entry points**, and the split is load-bearing: `.` exports only `ClassifierConfig`, `./browser` exports `BrowserClassifier`, `./node` exports `NodeClassifier`. This is what keeps `onnxruntime-node` and `sharp` out of the browser bundle. Shared preprocessing math lives in the unexported `BaseClassifier`.
 

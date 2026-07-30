@@ -158,49 +158,49 @@ export class RRLiveView extends LitElement {
     }
     this._needsCalibration = false;
 
-    // In live view, we usually classify based on the first image's labels
-    // or a specialized "live" marker set. For now, use markers from image[0].
+    // Classify the layout's sensors — the points where occupancy must be
+    // reported. They are per layout rather than per image, so placing one
+    // answers for every frame the camera takes, and they are exactly the query
+    // point the classifier's interface wants. (v3 used image[0]'s point
+    // markers as a stand-in template; v4 has no point markers, and sensors are
+    // what that stand-in was approximating.)
     const sourceWidth = (source as HTMLVideoElement).videoWidth || (source as HTMLImageElement).naturalWidth;
     const sourceHeight = (source as HTMLVideoElement).videoHeight || (source as HTMLImageElement).naturalHeight;
     const resolution = manifest.camera.resolution || { width: 1920, height: 1080 };
     const resWidth = resolution.width;
     const resHeight = resolution.height;
 
-    const templateImage = manifest.images[0];
-    if (templateImage) {
-      const newMarkers: MarkerData[] = [];
-      const markersToClassify = Object.entries(templateImage.labels);
-      
-      const loopStart = performance.now();
-      for (const [id, m] of markersToClassify) {
-        // Scale coordinates from resolution to video natural size
-        const scaledMarker = {
-          ...m,
-          x: m.x * (sourceWidth / resWidth),
-          y: m.y * (sourceHeight / resHeight)
-        };
+    const sensors = manifest.layout.sensors;
+    const newMarkers: MarkerData[] = [];
 
-        const results = await this._classifier.classify(source, scaledMarker, dpt);
-        
-        // Pick the "best" label for the icon (prioritize train > coupling > track)
-        const priority = ['train', 'coupling', 'track'];
-        const type = priority.find(p => results.includes(p)) || results[0] || 'other';
+    const loopStart = performance.now();
+    for (const sensor of sensors) {
+      // Scale coordinates from the manifest resolution to the live frame size
+      const scaledPoint = {
+        x: sensor.x * (sourceWidth / resWidth),
+        y: sensor.y * (sourceHeight / resHeight)
+      };
 
-        newMarkers.push({
-          id,
-          x: m.x,
-          y: m.y,
-          type: type as any,
-          status: null
-        });
-      }
-      const loopEnd = performance.now();
-      if (markersToClassify.length > 0) {
-        this._sampleTime = (loopEnd - loopStart) / markersToClassify.length;
-      }
+      const results = await this._classifier.classify(source, scaledPoint, dpt);
 
-      this._markers = newMarkers;
+      // Pick the "best" label for the icon (prioritize train > coupling > track)
+      const priority = ['train', 'coupling', 'track'];
+      const type = priority.find(p => results.includes(p)) || results[0] || 'other';
+
+      newMarkers.push({
+        id: sensor.id,
+        x: sensor.x,
+        y: sensor.y,
+        type: type as any,
+        status: null
+      });
     }
+    const loopEnd = performance.now();
+    if (sensors.length > 0) {
+      this._sampleTime = (loopEnd - loopStart) / sensors.length;
+    }
+
+    this._markers = newMarkers;
 
     this._latency = performance.now() - startTime;
 

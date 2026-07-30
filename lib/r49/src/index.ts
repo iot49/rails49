@@ -8,19 +8,32 @@
 
 //── Archive I/O ──────────────────────────────────────────────────────────────
 // Read and write .r49 layout archives (a zip of manifest.json + images).
-// Manifests are validated against the v3 schema on load; invalid input throws.
+// Manifests are validated against the v4 schema on load; invalid input throws.
+// There is no v3 path: loading anything else fails on the version number.
 export { R49Archive } from './archive.ts';
 
-//── Manifest types (v3) ──────────────────────────────────────────────────────
+//── Manifest types (v4) ──────────────────────────────────────────────────────
 // The shape of a parsed manifest, as returned by R49Archive.getManifest().
+//
+// Two geometries, differing in scope and in whether a model ever sees them:
+// a CarLabel is two points along a car's centerline, per image, trained on,
+// and carries provenance; a Sensor is a single query point, per layout, never
+// trained on, and carries none.
 export type {
   ManifestData,
   Layout,
   Camera,
   Image,
-  Marker,
+  CarLabel,
+  Provenance,
+  Sensor,
+  Calibration,
+  CalibrationPoint,
   Point,
+  WorldPoint,
 } from './manifest.schema.ts';
+
+export { MANIFEST_VERSION } from './manifest.schema.ts';
 
 //── Scale geometry ───────────────────────────────────────────────────────────
 // Consumers work with scale names and pixel-domain measurements only — the
@@ -38,9 +51,15 @@ export {
 // could not be replaced without a breaking change. Validation is an
 // implementation detail — callers get validated data or an exception.
 //
-// Withheld: STANDARD_GAUGE and Scale2Number, the prototype-domain constants,
-// and getGaugeMM (prototype gauge / scale ratio), the function built from
-// them. Nothing outside this package needs a physical model-domain gauge in
-// mm — only the pixel-domain getDPT() and the scale names in VALID_SCALES.
-// Exposing the prototype domain would invite gauge arithmetic to be
-// reimplemented downstream (which is exactly what lib/classifier used to do).
+// Withheld: STANDARD_GAUGE, SCALE_TO_RATIO and getGaugeMM, the prototype- and
+// model-domain gauge constants. Nothing outside this package needs a physical
+// gauge in mm — only the pixel-domain getDPT() and the scale names in
+// VALID_SCALES. Exposing the prototype domain would invite gauge arithmetic to
+// be reimplemented downstream (which is exactly what lib/classifier used to
+// do). The first two are no longer ours to re-export in any case: they are
+// generated into @occupancy/config from config.yaml, which is where anything
+// that genuinely needs them should read them.
+//
+// Withheld: assertManifestVersion. It is the version guard R49Archive applies
+// before parsing, not a public predicate — callers that want to know whether
+// bytes are loadable should try to load them.

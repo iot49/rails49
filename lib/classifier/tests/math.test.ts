@@ -14,8 +14,8 @@ class TestClassifier extends BaseClassifier {
 
 function makeManifest(overrides: Partial<ManifestData['layout']>): ManifestData {
   return {
-    version: 3,
-    layout: { scale: 'N', ...overrides },
+    version: 4,
+    layout: { scale: 'N', calibration: { points: [] }, sensors: [], ...overrides },
     camera: { resolution: { width: 1920, height: 1080 } },
     images: [],
   };
@@ -25,16 +25,17 @@ describe('BaseClassifier', () => {
   it('calculates DPT correctly', () => {
     const manifest = makeManifest({
       calibration: {
-        p0: { x: 0, y: 0 },
-        p1: { x: 100, y: 0 },
-        size_mm: 100
+        points: [
+          { px: { x: 0, y: 0 }, world: { x: 0, y: 0, z: 0 } },
+          { px: { x: 100, y: 0 }, world: { x: 100, y: 0, z: 0 } },
+        ],
       },
     });
     // Gauge for N is 8.96875mm. 100 pixels / 100 mm = 1 px/mm. 1 px/mm * 8.96875mm = 8.96875 DPT.
     expect(BaseClassifier.calculateDpt(manifest)).toBeCloseTo(8.96875);
   });
 
-  it('throws when calibration is missing', () => {
+  it('throws when no calibration pair resolves a scale', () => {
     const manifest = makeManifest({});
     expect(() => BaseClassifier.calculateDpt(manifest)).toThrow();
   });

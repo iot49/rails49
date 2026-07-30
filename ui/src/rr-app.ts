@@ -57,10 +57,13 @@ export class RRApp extends LitElement {
   private _onFileNew() {
     this._archive = new R49Archive();
     this._archive.setManifest({
-      version: 3,
+      version: 4,
       layout: {
         name: 'New Layout',
-        scale: 'N'
+        scale: 'N',
+        // Uncalibrated is a real state, expressed as an empty point list.
+        calibration: { points: [] },
+        sensors: []
       },
       camera: {
         resolution: { width: 1920, height: 1080 }

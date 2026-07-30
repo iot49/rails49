@@ -53,11 +53,11 @@ describe('rr-editor-view', () => {
     // Create a dummy archive
     archive = new R49Archive();
     archive.setManifest({
-      version: 3,
-      layout: { name: 'Test Layout', scale: 'N' },
+      version: 4,
+      layout: { name: 'Test Layout', scale: 'N', calibration: { points: [] }, sensors: [] },
       camera: { resolution: { width: 100, height: 100 } },
       images: [
-        { filename: 'img1.jpg', labels: {} }
+        { filename: 'img1.jpg', labeled_complete: false, labels: [] }
       ]
     });
 
@@ -103,9 +103,10 @@ describe('rr-editor-view', () => {
     it('reports the DPT when calibration resolves', async () => {
       // 100 px over 10 mm in N scale (gauge 1435/160 mm) => 10 px/mm * 8.97 mm
       archive.getManifest().layout.calibration = {
-        p0: { x: 0, y: 0 },
-        p1: { x: 100, y: 0 },
-        size_mm: 10,
+        points: [
+          { px: { x: 0, y: 0 }, world: { x: 0, y: 0, z: 0 } },
+          { px: { x: 100, y: 0 }, world: { x: 10, y: 0, z: 0 } },
+        ],
       };
 
       const el = await fixture<RREditorView>(html`

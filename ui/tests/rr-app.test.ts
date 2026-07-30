@@ -39,8 +39,8 @@ describe('rr-app', () => {
   beforeEach(() => {
     archive = new R49Archive();
     archive.setManifest({
-      version: 3,
-      layout: { name: 'Test', scale: 'N' },
+      version: 4,
+      layout: { name: 'Test', scale: 'N', calibration: { points: [] }, sensors: [] },
       camera: { resolution: { width: 1920, height: 1080 } },
       images: []
     });
