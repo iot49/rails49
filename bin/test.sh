@@ -54,19 +54,16 @@ pnpm -r typecheck
 echo "🧪 Running TypeScript tests..."
 pnpm test
 
-# Run Python linting and formatting if python environment is available
-if command -v uv &>/dev/null; then
-  echo "🐍 Running Python checks..."
-  # Resolve the environment first; gracefully skip if deps (e.g. onnxruntime) are
-  # incompatible with the current platform (macOS x86_64 is not supported by recent
-  # onnxruntime wheels). All other failures are still fatal.
-  if ! (cd classifier/resnet && uv sync --quiet 2>/dev/null); then
-    echo "⚠️  Python environment could not be resolved on this platform. Skipping Python checks."
-  else
-    (cd classifier/resnet && uv run ruff check . && uv run black --check . && uv run pyright)
-  fi
+# Run Python linting and formatting. uv is guaranteed present: the lib/config
+# gate above already hard-failed without it.
+echo "🐍 Running Python checks..."
+# Resolve the environment first; gracefully skip if deps (e.g. onnxruntime) are
+# incompatible with the current platform (macOS x86_64 is not supported by recent
+# onnxruntime wheels). All other failures are still fatal.
+if ! (cd classifier/resnet && uv sync --quiet 2>/dev/null); then
+  echo "⚠️  Python environment could not be resolved on this platform. Skipping Python checks."
 else
-  echo "⚠️  uv command not found. Skipping Python checks."
+  (cd classifier/resnet && uv run ruff check . && uv run black --check . && uv run pyright)
 fi
 
 echo "🎉 All checks passed successfully!"

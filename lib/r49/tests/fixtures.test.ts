@@ -80,11 +80,15 @@ describe('dataset/r49 fixtures', () => {
       expect(points[1].world.y).toBeGreaterThan(0);
     });
 
-    it('keeps camera resolution, scale, and every image', async () => {
+    it('keeps camera resolution, scale, layout metadata, and every image', async () => {
       const manifest = (await load(name)).getManifest();
       expect(manifest.camera.resolution).toEqual({ width: 1920, height: 1080 });
       expect(manifest.layout.scale).toBe('HO');
-      expect(manifest.layout.name).toBeTruthy();
+      expect(manifest.layout.name).toBe(name.replace(/\.r49$/, ''));
+      // The v3 originals carried `description: null` and `contact: null`; the
+      // lossless v4 image of "no value" is an absent key, not an invented string.
+      expect(manifest.layout.description).toBeUndefined();
+      expect(manifest.layout.contact).toBeUndefined();
       expect(manifest.images).toHaveLength(EXPECTED_IMAGES[name]);
     });
 
