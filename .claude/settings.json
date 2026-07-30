@@ -1,8 +1,24 @@
 {
   "permissions": {
     "allow": [
+      "Bash(bin/test.sh)",
+      "Bash(bin/test.sh *)",
       "Bash(pnpm test)",
-      "Bash(pnpm typecheck)"
+      "Bash(pnpm test *)",
+      "Bash(pnpm typecheck)",
+      "Bash(pnpm -r typecheck)",
+      "Bash(pnpm -r typecheck *)",
+      "Bash(pnpm install *)",
+      "Bash(pnpm --filter @occupancy/ui typecheck)",
+      "Bash(pnpm --filter @occupancy/ui test)",
+      "Bash(pnpm --filter @occupancy/ui build)",
+      "Bash(pnpm --filter @occupancy/ui dev)",
+      "Bash(pnpm --filter @occupancy/classifier test)",
+      "Bash(python3 bin/generate_config.py)",
+      "Bash(gh api repos/iot49/*)",
+      "Bash(gh issue *)",
+      "Bash(gh pr *)",
+      "Bash(gh label list *)"
     ]
   }
 }
