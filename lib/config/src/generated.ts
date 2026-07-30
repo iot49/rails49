@@ -49,9 +49,8 @@ export const DETECTOR_INPUT = [960, 544] as const;
 /**
  * Single confidence threshold for decoding detections.
  *
- * Thresholding is decoding, not filtering: the export is `end2end: True`
- * with a fixed 300-slot output buffer emitted every frame, mostly padding.
- * The value is a placeholder until held-out recall can set it.
+ * A placeholder until held-out recall can set it. Nothing reads it yet;
+ * how the eventual detector export applies it is that export's to decide.
  */
 export const DETECTOR_CONFIDENCE_THRESHOLD = 0.25;
 

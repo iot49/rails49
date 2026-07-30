@@ -4,13 +4,17 @@ import type { R49Archive } from '@occupancy/r49';
 import { getDPT } from '@occupancy/r49';
 import { BrowserClassifier as Classifier } from '@occupancy/classifier/browser';
 import { getCameraStream } from './capture.js';
-import type { MarkerData } from './marker.js';
+import type { MarkerData, MarkerType } from './marker.js';
 import * as ort from 'onnxruntime-web';
 import './rr-viewer.js';
 import './rr-stats-bar.js';
 
 declare const __RAILS_DOMAIN__: string;
 import type { RrViewer } from './rr-viewer.js';
+
+function toMarkerType(label: string | undefined): MarkerType {
+  return label === 'track' || label === 'train' || label === 'coupling' ? label : 'other';
+}
 
 /**
  * Live view component that handles camera stream and classification loop.
@@ -190,15 +194,17 @@ export class RRLiveView extends LitElement {
 
       const results = await this._classifier.classify(source, scaledPoint, dpt);
 
-      // Pick the "best" label for the icon (prioritize train > coupling > track)
-      const priority = ['train', 'coupling', 'track'];
-      const type = priority.find(p => results.includes(p)) || results[0] || 'other';
+      // Pick the "best" label for the icon (prioritize train > coupling > track).
+      // The classifier's vocabulary is open-ended strings; anything outside the
+      // marker glyph set renders as 'other'.
+      const priority: readonly MarkerType[] = ['train', 'coupling', 'track'];
+      const type = priority.find(p => results.includes(p)) ?? toMarkerType(results[0]);
 
       newMarkers.push({
         id: sensor.id,
         x: sensor.x,
         y: sensor.y,
-        type: type as any,
+        type,
         status: null
       });
     }

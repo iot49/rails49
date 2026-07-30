@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { VALID_SCALES } from '@occupancy/r49';
+import type { Layout } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
@@ -11,7 +12,10 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
-import type { SlDialog } from '@shoelace-style/shoelace';
+import type { SlDialog, SlInput, SlSelect } from '@shoelace-style/shoelace';
+
+/** The subset of `Layout` this dialog edits — the archive's other layout fields never pass through here. */
+type LayoutFields = Pick<Layout, 'name' | 'scale' | 'description' | 'contact'>;
 
 /**
  * Dialog for editing layout metadata.
@@ -25,12 +29,7 @@ import type { SlDialog } from '@shoelace-style/shoelace';
  */
 @customElement('rr-settings-dialog')
 export class RRSettingsDialog extends LitElement {
-  @property({ type: Object }) layout: {
-    name?: string;
-    scale: string;
-    description?: string;
-    contact?: string;
-  } = { scale: 'N' };
+  @property({ type: Object }) layout: LayoutFields = { scale: 'N' };
 
   @query('sl-dialog') private _dialog!: SlDialog;
 
@@ -92,7 +91,7 @@ export class RRSettingsDialog extends LitElement {
     this._dialog.hide();
   }
 
-  private _onLayoutChange(field: string, value: any) {
+  private _onLayoutChange<K extends keyof LayoutFields>(field: K, value: LayoutFields[K]) {
     this.dispatchEvent(new CustomEvent('rr-layout-change', {
       detail: { layout: { [field]: value } },
       bubbles: true,
@@ -111,13 +110,17 @@ export class RRSettingsDialog extends LitElement {
               <div class="label">Name</div>
               <sl-input 
                 value=${this.layout?.name || ''} 
-                @sl-input=${(e: any) => this._onLayoutChange('name', e.target.value)}
+                @sl-input=${(e: Event) => this._onLayoutChange('name', (e.target as SlInput).value)}
               ></sl-input>
 
               <div class="label">Scale</div>
               <sl-select 
                 value=${this.layout?.scale || 'N'} 
-                @sl-change=${(e: any) => this._onLayoutChange('scale', e.target.value)}
+                @sl-change=${(e: Event) => {
+                  const value = (e.target as SlSelect).value;
+                  const scale = VALID_SCALES.find((s) => s === value);
+                  if (scale !== undefined) this._onLayoutChange('scale', scale);
+                }}
               >
                 ${VALID_SCALES.map(s => html`
                   <sl-option value=${s}>${s}</sl-option>
@@ -128,14 +131,14 @@ export class RRSettingsDialog extends LitElement {
               <sl-input
                 id="layout-description"
                 value=${this.layout?.description || ''}
-                @sl-input=${(e: any) => this._onLayoutChange('description', e.target.value)}
+                @sl-input=${(e: Event) => this._onLayoutChange('description', (e.target as SlInput).value)}
               ></sl-input>
 
               <div class="label">Contact</div>
               <sl-input
                 id="layout-contact"
                 value=${this.layout?.contact || ''}
-                @sl-input=${(e: any) => this._onLayoutChange('contact', e.target.value)}
+                @sl-input=${(e: Event) => this._onLayoutChange('contact', (e.target as SlInput).value)}
               ></sl-input>
             </div>
           </sl-tab-panel>

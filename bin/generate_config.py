@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import sys
+from typing import NoReturn
 
 import yaml
 
@@ -32,7 +33,7 @@ BANNER = """// GENERATED FILE — DO NOT EDIT.
 """
 
 
-def fail(message: str) -> "None":
+def fail(message: str) -> NoReturn:
     print(f"❌ {message}")
     sys.exit(1)
 
@@ -98,6 +99,12 @@ def render_generated_ts(config: dict) -> str:
     scale_names = list(scale_to_ratio.keys())
     scale_union = " | ".join(json.dumps(name) for name in scale_names)
 
+    # Doc prose that quotes a value must compute it from the config, so it can
+    # never disagree with the constant it sits on.
+    width_in_gauges = f"{standard_width / standard_gauge:.2f}"
+    example_scale = "HO" if "HO" in scale_to_ratio else scale_names[0]
+    example_ratio = f"{scale_to_ratio[example_scale]:g}"
+
     parts = [
         BANNER,
         "//── Layout geometry ─────────────────────────────────────────────────────────",
@@ -110,7 +117,7 @@ def render_generated_ts(config: dict) -> str:
             "",
             "Car width is derived from this rather than stored per label. Because",
             "width in pixels is `DPT * STANDARD_WIDTH / STANDARD_GAUGE`, the scale",
-            "ratio cancels: a car is the same 2.09 track-widths wide in every scale.",
+            f"ratio cancels: a car is the same {width_in_gauges} track-widths wide in every scale.",
         ),
         f"export const STANDARD_WIDTH = {ts_literal(standard_width)};",
         "",
@@ -124,7 +131,7 @@ def render_generated_ts(config: dict) -> str:
         f"export type Scale = {scale_union};",
         "",
         doc(
-            "Scale name to reduction ratio (HO is 1:87). Model-domain gauge is",
+            f"Scale name to reduction ratio ({example_scale} is 1:{example_ratio}). Model-domain gauge is",
             "`STANDARD_GAUGE / SCALE_TO_RATIO[scale]`.",
         ),
         f"export const SCALE_TO_RATIO = {ts_literal(scale_to_ratio)} as const;",
@@ -145,9 +152,8 @@ def render_generated_ts(config: dict) -> str:
         doc(
             "Single confidence threshold for decoding detections.",
             "",
-            "Thresholding is decoding, not filtering: the export is `end2end: True`",
-            "with a fixed 300-slot output buffer emitted every frame, mostly padding.",
-            "The value is a placeholder until held-out recall can set it.",
+            "A placeholder until held-out recall can set it. Nothing reads it yet;",
+            "how the eventual detector export applies it is that export's to decide.",
         ),
         f"export const DETECTOR_CONFIDENCE_THRESHOLD = {ts_literal(confidence_threshold)};",
         "",
