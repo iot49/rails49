@@ -67,7 +67,7 @@ classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
 Lit + Shoelace + Vite. Per-component contracts are documented at length in `ui/README.md`; the load-bearing points:
 
 * All custom elements are prefixed `rr-` (railroad). Non-element modules use plain camelCase filenames (`marker.ts`, `capture.ts`).
-* `rr-viewer` is shared by both the editor and live views — same component, `src` (image) in one, `stream` (video) in the other. Its `<img>`/`<video>` use `object-fit: contain` matched to the SVG's `preserveAspectRatio="xMidYMid meet"`, so the SVG viewBox maps 1:1 to image pixel coordinates and marker placement is identical in both modes.
+* `rr-viewer` is shared by both the editor and live views — same component, `src` (image) in one, `stream` (video) in the other. Its `<img>`/`<video>` use `object-fit: contain` matched to the SVG's `preserveAspectRatio="xMidYMid meet"`, so the SVG viewBox maps 1:1 to image pixel coordinates and marker placement is identical in both modes. It is **read-only**: the editor was reduced to v4-supportable surfaces in #19 and authors no geometry, so nothing places or drags anything. See `ui/CLAUDE.md`.
 * `marker.ts` is a module, not a custom element, because custom elements break the SVG namespace inside `<svg>`. Its three exports (`renderMarker`, `markerDefs`, `markerStyles`) must be used together.
 * The app is entirely client-side: layouts are opened and saved as `.r49` files through the file picker, and inference runs in the browser via ONNX Runtime's WASM backend. There is no backend — don't reintroduce one without discussion.
 * `__RAILS_DOMAIN__` is injected at build time by `ui/vite.config.ts`, read from `config.json` (falling back to `config.yaml`, then `rails49.org`). It is used only to recognize the deployed site, which switches the ORT WASM assets over to the jsDelivr CDN because `bin/deploy.sh` strips them from the bundle.
@@ -81,7 +81,7 @@ The model files are gitignored; only `classifier/resnet/models/version.txt` is t
 
 **`model_int8.ort` (11 MB) is the model that ships, not `model.ort` (45 MB)** — Cloudflare Pages rejects files over 25 MiB.
 
-Which model ships is named in three places, and they must agree: the static-copy target in `ui/vite.config.ts` and the `_classifier.load()` calls in `rr-live-view.ts` and `rr-editor-view.ts`.
+Which model ships is named in two places, and they must agree: the static-copy target in `ui/vite.config.ts` and the `_classifier.load()` call in `rr-live-view.ts`. The editor no longer loads a classifier (#19).
 
 `bin/deploy.sh` still strips `*.wasm` (26 MB, also over the limit) — those load from the jsDelivr CDN in production, selected by the `wasmPaths` branch in the two view components. The script now aborts if anything in the deploy directory still exceeds 25 MiB.
 

@@ -14,14 +14,23 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { SlDialog } from '@shoelace-style/shoelace';
 
 /**
- * Dialog for configuring layout settings and selecting classifiers.
- * 
- * @fires rr-layout-change - When a layout field (name, scale) changes. Detail: { layout: Partial<Layout> }
- * @fires rr-classifier-change - When a classifier model is selected. Detail: { modelUrl: string, configUrl?: string }
+ * Dialog for editing layout metadata.
+ *
+ * The "Ref Size (mm)" input was removed with the v4 reduction (#19): v4's
+ * calibration is a list of points each carrying its own world coordinate, so
+ * the single `size_mm` distance it wrote no longer exists. Calibration
+ * authoring returns with the editor spec.
+ *
+ * @fires rr-layout-change - When a layout field (name, scale, description, contact) changes. Detail: { layout: Partial<Layout> }
  */
 @customElement('rr-settings-dialog')
 export class RRSettingsDialog extends LitElement {
-  @property({ type: Object }) layout: { name?: string; scale: string; calibration?: any } = { scale: 'N' };
+  @property({ type: Object }) layout: {
+    name?: string;
+    scale: string;
+    description?: string;
+    contact?: string;
+  } = { scale: 'N' };
 
   @query('sl-dialog') private _dialog!: SlDialog;
 
@@ -91,16 +100,6 @@ export class RRSettingsDialog extends LitElement {
     }));
   }
 
-  private _onCalibrationSizeChange(size_mm: number) {
-    const cal = this.layout?.calibration || {
-      p0: { x: 100, y: 100 },
-      p1: { x: 200, y: 100 },
-    };
-    cal.size_mm = size_mm;
-    this._onLayoutChange('calibration', cal);
-  }
-
-
   render() {
     return html`
       <sl-dialog label="Settings" style="--width: 500px;">
@@ -125,11 +124,18 @@ export class RRSettingsDialog extends LitElement {
                 `)}
               </sl-select>
 
-              <div class="label">Ref Size (mm)</div>
-              <sl-input 
-                type="number"
-                value=${this.layout?.calibration?.size_mm || ''} 
-                @sl-change=${(e: any) => this._onCalibrationSizeChange(Number(e.target.value))}
+              <div class="label">Description</div>
+              <sl-input
+                id="layout-description"
+                value=${this.layout?.description || ''}
+                @sl-input=${(e: any) => this._onLayoutChange('description', e.target.value)}
+              ></sl-input>
+
+              <div class="label">Contact</div>
+              <sl-input
+                id="layout-contact"
+                value=${this.layout?.contact || ''}
+                @sl-input=${(e: any) => this._onLayoutChange('contact', e.target.value)}
               ></sl-input>
             </div>
           </sl-tab-panel>

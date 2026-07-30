@@ -95,10 +95,6 @@ export function markerDefs(): SVGTemplateResult {
         </g>
       </symbol>
 
-      <symbol id="drag-handle" viewBox="-12 -12 24 24">
-        <circle r="5" fill="coral" />
-        <circle r="6" fill="transparent" style="cursor: pointer;" />
-      </symbol>
     </defs>
   `;
 }
@@ -106,20 +102,6 @@ export function markerDefs(): SVGTemplateResult {
 // ---------------------------------------------------------------------------
 // renderMarker — call once per marker inside the host <svg>
 // ---------------------------------------------------------------------------
-
-/* 
-ASK:
-Explain
-1. why do width, height need to be specified? what is the value of size?
-2. why transform and not just x=marker.x, y=marker.y? this would a simpler and less error prone.
-```
-      transform="translate(${marker.x}, ${marker.y})"
-      width="${size}"
-      height="${size}"
-      x="${-size / 2}"
-      y="${-size / 2}"
-```
-*/
 
 export function renderMarker(marker: MarkerData, size: number): SVGTemplateResult {
   const status = marker.status ?? null;

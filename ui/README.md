@@ -40,17 +40,26 @@ Non-element modules use plain camelCase filenames with no prefix.
 ```
 rr-app                          ← shell: owns the archive and the view mode
 ├── rr-header                   ← app bar: status slot, view toggle, settings gear
-│   └── rr-settings-dialog      ← layout settings (sl-dialog)
-├── rr-editor-view              ← editor mode; owns its own classifier
-│   ├── rr-toolbar              ← vertical icon bar (label tools, file ops)
-│   ├── rr-viewer               ← SHARED: media + SVG overlay + markers
+│   └── rr-settings-dialog      ← layout metadata (sl-dialog)
+├── rr-editor-view              ← editor mode; images + DPT readout, authors nothing
+│   ├── rr-toolbar              ← vertical icon bar (file ops only)
+│   ├── rr-viewer               ← SHARED: media + read-only SVG overlay
 │   │   └── marker.ts           ← module, not an element
 │   └── rr-thumbnail-bar        ← horizontal image selector strip
-└── rr-live-view                ← live mode; owns its own classifier
+└── rr-live-view                ← live mode; owns the classifier
     ├── rr-stats-bar            ← FPS / marker-count overlay
     └── rr-viewer               ← SAME component, video source instead of img
         └── marker.ts
 ```
+
+> **The editor authors no geometry.** Point-marker placement and two-point
+> calibration dragging were removed in the v4 reduction ([#19]); v4 stores
+> neither. Car authoring (chain-clicked two-point spans), sensor placement, and
+> the calibration-point tool are specified in `../SPEC.md` § Labeling Workflow
+> and are a separate effort. What the editor does today is open an archive,
+> manage its images, edit layout metadata, and report DPT.
+>
+> [#19]: https://github.com/iot49/rails49/issues/19
 
 ## State and data flow
 
@@ -65,11 +74,12 @@ rr-app ─────────── rr-editor-view ────────
 ```
 
 * **`rr-app` owns:** the archive, the view mode, the status string, and file new/open/save.
-* **`rr-editor-view` owns:** the current image index, the active tool, blob URLs for the images, and
-  per-marker classification results. It mutates the archive in place.
-* **`rr-live-view` owns:** the camera stream and the classification loop. It never mutates the archive.
-* **The classifier is not shared.** `rr-editor-view` and `rr-live-view` each construct their own
-  `BrowserClassifier` and load the model independently.
+* **`rr-editor-view` owns:** the current image index and blob URLs for the images. It mutates the
+  archive only through image add/remove/reorder.
+* **`rr-live-view` owns:** the camera stream, the classifier, and the classification loop. It never
+  mutates the archive.
+* **Only the live view loads a classifier.** The editor's use of it was displaying a per-marker
+  prediction, and there are no markers to predict for.
 
 Lit does not observe mutations *inside* `R49Archive`, so handlers that edit the manifest in place
 call `this.requestUpdate()` explicitly.
@@ -89,9 +99,10 @@ Starts with no archive loaded.
 
 * `rr-file-new` builds an empty v3 manifest — layout `'New Layout'`, scale `N`, resolution 1920×1080.
 * `rr-file-open` reads a `.r49` through a file input and `R49Archive.load()`.
-* `rr-file-save` **validates calibration first** and aborts with a toast if it fails: `calibration`
-  must exist, `p0`/`p1` must be present, non-NaN, and distinct, and `size_mm` must be a positive
-  number. Only then does it `export()` and download.
+* `rr-file-save` `export()`s and downloads. **It does not validate calibration.** The v3 check read
+  `{p0, p1, size_mm}` structurally, which v4 has not — calibration is a list of points that
+  legitimately starts empty, so "uncalibrated" is a state the editor reports rather than an error to
+  refuse a save over.
 
 Feedback is a Shoelace `sl-alert` toast (`_notify`), not `alert()`.
 
@@ -117,17 +128,19 @@ Top app bar. Renders the view toggle, the status slot, and the settings gear; ho
 
 ### `rr-settings-dialog`
 
-Layout settings, in an `sl-dialog` with a single "Layout" tab: name, scale (from `VALID_SCALES`), and
-reference size in mm.
+Layout metadata, in an `sl-dialog` with a single "Layout" tab: name, scale (from `VALID_SCALES`),
+description, and contact.
 
 | Property | Type | Description |
 |---|---|---|
-| `layout` | `{ name?, scale, calibration? }` | Current layout; defaults to scale `N` |
+| `layout` | `{ name?, scale, description?, contact? }` | Current layout; defaults to scale `N` |
 
 **Methods:** `show()`, `hide()`.
 
 **Emits:** `rr-layout-change` with `{ layout: Partial<Layout> }` — one changed field per event.
-Editing the reference size synthesizes a default `p0`/`p1` if the layout has no calibration yet.
+
+The "Ref Size (mm)" input is gone: it wrote v3's single `size_mm`, and v4's calibration points each
+carry their own world coordinate instead.
 
 Classifier selection is **not implemented**: there is no classifier tab, and the
 `rr-classifier-change` event named in the source JSDoc is never fired. Classifier config comes from
@@ -137,17 +150,13 @@ Classifier selection is **not implemented**: there is no classifier tab, and the
 
 ### `rr-toolbar`
 
-Vertical tool palette for the editor.
+Vertical palette for the editor. **File actions only** — no properties.
 
-| Property | Type | Description |
-|---|---|---|
-| `activeTool` | `string \| null` | Highlights the matching button |
-| `disabled` | `boolean` | Disables the label tools; currently never set by `rr-editor-view` |
+**Emits:** `rr-file-new`, `rr-file-open`, `rr-file-save`.
 
-**Tool IDs**, which `rr-editor-view` and `rr-viewer` both switch on: `track`, `train`, `coupling`,
-`other`, `delete`, `calibrate`. The first four double as marker types.
-
-**Emits:** `rr-tool-select` `{ tool: string }`, `rr-file-new`, `rr-file-open`, `rr-file-save`.
+The v3 labeling tools (`track`, `train`, `coupling`, `other`, `delete`, `calibrate`) and the
+`rr-tool-select` event they fired are gone, along with `activeTool` and `disabled`. Car, sensor and
+calibration-point tools return with the editor spec.
 
 ---
 
@@ -167,23 +176,21 @@ Horizontal strip of image thumbnails, with drag-and-drop reordering.
 
 ### `rr-viewer` ⭐ shared by both views
 
-Displays media — image or video — under an SVG marker overlay.
+Displays media — image or video — under a **read-only** SVG marker overlay.
 
 | Property | Type | Description |
 |---|---|---|
 | `src` | `string \| null` | Image URL (editor mode) |
 | `stream` | `MediaStream \| null` | Video stream (live mode) |
 | `markers` | `MarkerData[]` | Markers to draw |
-| `calibration` | `CalibrationData \| null` | `{ p0, p1, size_mm }`; draws the dashed line and two drag handles |
-| `interactive` | `boolean` | Enables click-to-place, drag, and delete |
-| `activeTool` | `string \| null` | Decides what a click means |
 | `resolution` | `{ width, height }` | Native media resolution → the SVG viewBox |
 
-**Emits** (only when `interactive`): `rr-marker-add` `{ x, y, type }`, `rr-marker-move` `{ id, x, y }`,
-`rr-marker-delete` `{ id }`, `rr-calibration-move` `{ id: 'p0' | 'p1', x, y }`.
+**Emits:** nothing.
 
-Clicks add a marker only on empty background, and only when `activeTool` is a marker type — `delete`
-and `calibrate` are excluded. With `delete` active, clicking a marker removes it.
+**It authors nothing.** `interactive`, `activeTool`, `calibration`, the pointer handlers, and the
+four events they fired (`rr-marker-add`, `rr-marker-move`, `rr-marker-delete`,
+`rr-calibration-move`) were all removed in the v4 reduction — v4 has neither point markers nor a
+draggable `{p0, p1}` pair. The editor spec's tools will reintroduce a `screenToSvg()` of their own.
 
 **Methods:** `getVideoElement()`, `getImageElement()` — `rr-live-view` uses these to feed the
 classifier the live frame source.
@@ -195,8 +202,7 @@ either mode. Changing one half of that pair silently misplaces every marker.
 
 **Scaling.** A `ResizeObserver` recomputes
 `symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, keeping markers a constant
-*screen* size at any zoom or window size. Pointer positions convert through `screenToSvg()`
-(`createSVGPoint` + inverse `getScreenCTM`).
+*screen* size at any zoom or window size.
 
 ---
 
@@ -212,8 +218,8 @@ module boundary is the encapsulation.
 | `markerDefs()` | `() => SVGTemplateResult` | The `<defs>` block; must appear once inside the host `<svg>` before any marker |
 | `markerStyles` | `CSSResult` | Validation-rect colors and stroke behavior; must go in the host's `static styles` |
 
-Symbols defined: `track`, `train`, `coupling`, `other`, and `drag-handle` (used for calibration
-points). Each is a 24×24 viewBox centered on (0,0), so `<use transform="translate(x,y)">` places it
+Symbols defined: `track`, `train`, `coupling`, `other`. (`drag-handle` went with calibration
+dragging.) Each is a 24×24 viewBox centered on (0,0), so `<use transform="translate(x,y)">` places it
 centered without manual offsets. An unrecognized `type` falls back to `other`.
 
 **`MarkerData`**
@@ -230,20 +236,20 @@ centered without manual offsets. An unrecognized `type` falls back to `other`.
 
 ### `rr-editor-view`
 
-Orchestrates the editor and mutates the archive.
+Orchestrates the editor: images and a DPT readout.
 
 | Property | Type |
 |---|---|
 | `archive` | `R49Archive \| null` |
 
 * Creates blob URLs for every image in the manifest, revoking the previous set on reload.
-* Marker CRUD writes directly into `manifest.images[i].labels`, keyed by a `make_id()` id.
-* Selecting the `calibrate` tool seeds a default `p0`/`p1`/`size_mm` if the layout has none, and
-  passes `calibration` to `rr-viewer` for as long as that tool stays active.
 * Image add (camera or file), delete, and reorder go through the corresponding `R49Archive` methods.
-* **Classification.** On archive load, image change, or any marker edit, it classifies every marker
-  on the current image and sets each marker's `status` to `match` or `mismatch`. If `getDPT()`
-  returns null the layout is uncalibrated: it shows a banner and marks everything `pending`.
+  These are its **only** mutations of the archive.
+* **DPT readout** (`.dpt-bar`). Shows `getDPT()` to one decimal, or "Not calibrated" with a warning
+  style when it returns `null` — a real v4 state, reported rather than blocked on.
+* **It authors no geometry and loads no classifier.** Marker CRUD, the calibration seeding, and the
+  per-marker classification display all went with the v4 reduction. See the note at the top of this
+  file.
 
 ---
 
@@ -260,7 +266,7 @@ Camera stream with a real-time classification overlay.
 * **Markers come from `manifest.images[0]`** — the first image acts as the template for where to
   classify. Coordinates are scaled from the manifest resolution to the live frame's natural size.
 * Each marker's icon is the highest-priority returned label, ordered train > coupling > track.
-* Requires calibration for the same reason as the editor; shows a banner when `getDPT()` is null.
+* Shows a banner and classifies nothing when `getDPT()` is null, since crop scaling needs it.
 * Releases the classifier and stops all camera tracks on disconnect.
 
 ---
