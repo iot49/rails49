@@ -11,7 +11,7 @@ without discussion.**
 
 | File | What it is | Trust it for |
 | :--- | :--- | :--- |
-| `../SPEC.md` | Requirements and rationale for the **whole project**, not just `ui/` — the **target**, much of it unbuilt (manifest v4, car pairs, assisted labeling, provenance) | *why*, and what to build next |
+| `../SPEC.md` | Requirements and rationale for the **whole project**, not just `ui/` — the **target**. Its § Format is now built (manifest v4, car spans, sensors, provenance); the v4 **editor** and the **detector** are not. | *why*, and what to build next |
 | `README.md` | Per-component contracts: properties, events, hierarchy — describes only what is built | the shape of existing components |
 | `src/` | What actually ships | ground truth |
 
@@ -64,8 +64,11 @@ so the viewBox maps 1:1 onto image pixel coordinates and a marker lands in the s
 modes. Changing either half of that pair silently misplaces every marker.
 
 `symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, recomputed by a `ResizeObserver`,
-keeps markers a constant *screen* size. Pointer coordinates go through `screenToSvg()`
-(`createSVGPoint` + inverse `getScreenCTM`) — never subtract `getBoundingClientRect()` by hand.
+keeps markers a constant *screen* size.
+
+The viewer is **read-only** and has no pointer handling at all — `screenToSvg()` went with the v4
+reduction. When the editor spec reintroduces clicking, convert pointer coordinates with
+`createSVGPoint` + inverse `getScreenCTM`; never subtract `getBoundingClientRect()` by hand.
 
 ### `marker.ts` is a module, not an element
 
@@ -108,9 +111,9 @@ those rather than hardcoding new colors.
 * Strongly typed TypeScript. Avoid `any`. The `as any` casts that exist (Shoelace `toast()`, blob
   construction, loosely typed manifest reads) are debt, not precedent — don't add more, and prefer a
   narrow local interface or a type guard over widening.
-* Styles belong in the component's `static styles`. A handful of inline `style=` attributes survive
-  in `rr-editor-view`, `rr-live-view`, and `rr-settings-dialog`; new code doesn't add to them.
-  Shoelace part/custom-property overrides (`style="--width: 500px"`) are the accepted exception.
+* Styles belong in the component's `static styles`. Inline `style=` attributes survive in
+  `rr-live-view` and `rr-settings-dialog`; new code doesn't add to them. Shoelace
+  part/custom-property overrides (`style="--width: 500px"`) are the accepted exception.
 * Compose from small elements. All custom elements are `rr-<noun>[-<qualifier>]`; non-element modules
   use plain camelCase filenames (`marker.ts`, `capture.ts`). Add the `HTMLElementTagNameMap`
   declaration block at the bottom of every element file.
@@ -128,7 +131,8 @@ Vitest in **jsdom**, `@open-wc/testing` fixtures, `tests/<module>.test.ts` mirro
 What jsdom means in practice:
 
 * **It does not lay out or paint.** `getBoundingClientRect()` is all zeros and SVG geometry
-  (`createSVGPoint`, `getScreenCTM`) is absent — `tests/rr-viewer.test.ts` stubs them per test.
+  (`createSVGPoint`, `getScreenCTM`) is absent. Nothing needs stubbing today because the viewer is
+  read-only; editor-spec work that reintroduces pointer handling will need per-test stubs again.
   Assert DOM structure, attributes, computed values, and emitted events. Do not claim a test verifies
   visual appearance; it cannot.
 * Camera (`getUserMedia`), ONNX sessions, and `PointerEvent` are mocked or polyfilled per test file.

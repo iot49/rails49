@@ -233,6 +233,12 @@ centered without manual offsets. An unrecognized `type` falls back to `other`.
 | `status?` | `'match' \| 'mismatch' \| 'pending' \| null` | Validation ring: green / red / orange. Omit or `null` for no ring |
 | `detectedLabels?` | `string[]` | What the classifier returned; shown as the `<title>` tooltip |
 
+> **`status` and `detectedLabels` currently have no producer.** The editor set them to show per-marker
+> classification results, and that went with the v4 reduction; `rr-live-view` passes `status: null`.
+> The rendering is kept rather than deleted because sensor state and L0 boxes will both want a
+> per-marker visual — but until something sets them, the validation ring and the tooltip do not
+> appear. Don't read the table above as describing live behaviour.
+
 ---
 
 ### `rr-editor-view`
@@ -264,11 +270,14 @@ Camera stream with a real-time classification overlay.
 
 * Opens the camera via `getCameraStream()` and runs a `requestAnimationFrame` loop, skipping frames
   until the video reports usable dimensions.
-* **Markers come from `manifest.layout.sensors`** — the points where occupancy must be reported.
-  They are per layout, so placing one answers for every frame, and a sensor *is* the query point the
-  classifier's interface takes. (v3 used image[0]'s point markers as a stand-in; sensors are what
-  that stand-in was approximating.) Coordinates are scaled from the manifest resolution to the live
-  frame's natural size.
+* **Markers come from `manifest.layout.sensors`**, which are per layout, so placing one answers for
+  every frame. (v3 used image[0]'s point markers as a stand-in; sensors are what it approximated.)
+  Coordinates are scaled from the manifest resolution to the live frame's natural size.
+* ⚠️ **This is the demo path, not the occupancy contract.** `../SPEC.md` § Testing and Demo sanctions
+  running the classifier over a camera stream for testing and demo. It is *not* L1: § Occupancy
+  Output specifies per-sensor state as a **pure function of L0**, the detector's oriented boxes, and
+  says outright that "L1 never calls a second model". Nothing here emits `occupied`/`clear`/
+  `unknown`, and nothing here should start to.
 * Each marker's icon is the highest-priority returned label, ordered train > coupling > track.
 * Shows a banner and classifies nothing when `getDPT()` is null, since crop scaling needs it.
 * Releases the classifier and stops all camera tracks on disconnect.

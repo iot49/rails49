@@ -158,12 +158,19 @@ export class RRLiveView extends LitElement {
     }
     this._needsCalibration = false;
 
-    // Classify the layout's sensors — the points where occupancy must be
-    // reported. They are per layout rather than per image, so placing one
-    // answers for every frame the camera takes, and they are exactly the query
-    // point the classifier's interface wants. (v3 used image[0]'s point
-    // markers as a stand-in template; v4 has no point markers, and sensors are
-    // what that stand-in was approximating.)
+    // Run the CNN at each sensor point. v3 classified image[0]'s point markers
+    // as a stand-in; v4 has none, and sensors are the only per-layout point
+    // list, so they are what that stand-in was approximating.
+    //
+    // ⚠️  This is SPEC § Testing and Demo item 1 — "run the classifier on a
+    // still image or video stream from the camera. Testing and demo only." It
+    // is **not** the occupancy contract, and must not grow into it:
+    // SPEC § Occupancy Output specifies L1 as a *pure function of L0*, the
+    // detector's oriented boxes, and states plainly that "L1 never calls a
+    // second model". Nothing here emits occupied/clear/unknown, and nothing
+    // here should start to. When the detector lands, per-sensor state comes
+    // from a point-in-oriented-box test over its output and this path either
+    // goes away or stays an explicitly-labelled demo.
     const sourceWidth = (source as HTMLVideoElement).videoWidth || (source as HTMLImageElement).naturalWidth;
     const sourceHeight = (source as HTMLVideoElement).videoHeight || (source as HTMLImageElement).naturalHeight;
     const resolution = manifest.camera.resolution || { width: 1920, height: 1080 };

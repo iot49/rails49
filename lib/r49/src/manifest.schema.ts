@@ -190,7 +190,14 @@ const LayoutSchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
   contact: z.string().optional(),
-  scale: ScaleSchema.default('N'),
+  /**
+   * Required, with **no default**. v3 defaulted this to `'N'`, which is not
+   * safe here: `DPT = s · gauge_mm(scale)`, so a silently-assumed scale
+   * reports a DPT wrong by the ratio between the two scales — up to 8.8×
+   * between Z and G. SPEC § The v4 manifest names only two defaults,
+   * `points: []` and `labeled_complete: false`, and this is not one of them.
+   */
+  scale: ScaleSchema,
   calibration: CalibrationSchema,
   /** Per **layout**, not per image: placing one answers for every frame. */
   sensors: z.array(SensorSchema).refine(sensorIds.check, sensorIds.message).default([]),
