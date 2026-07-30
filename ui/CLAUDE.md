@@ -11,11 +11,11 @@ without discussion.**
 
 | File | What it is | Trust it for |
 | :--- | :--- | :--- |
-| `SPEC.md` | Requirements and rationale — the **target**, much of it unbuilt (manifest v4, track splines, car pairs, assisted labeling, provenance) | *why*, and what to build next |
+| `SPEC.md` | Requirements and rationale — the **target**, much of it unbuilt (manifest v4, car pairs, assisted labeling, provenance) | *why*, and what to build next |
 | `README.md` | Per-component contracts: properties, events, hierarchy — describes only what is built | the shape of existing components |
 | `src/` | What actually ships (manifest **v3**, point markers only) | ground truth |
 
-SPEC targets manifest v4 — track splines, car pairs, provenance — while `rr-app._onFileNew()` writes
+SPEC targets manifest v4 — car pairs, provenance, no track geometry — while `rr-app._onFileNew()` writes
 `version: 3`. That migration is a breaking change that has not started, so don't "fix" the code to
 match SPEC. Where README and the code disagree, the code wins and README is the thing to correct:
 **a change to a component's properties or events belongs in README in the same commit.**
