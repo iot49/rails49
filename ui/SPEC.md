@@ -17,7 +17,7 @@ A classifier is used to establish track occupancy. Solutions include:
 2. **CNN.** A ResNet or MobileNet recognizing the presence or absence of a train at a specific location. Block detection only. This is what ships today.
 3. **Object detector.** A detector such as YOLO that finds the location and orientation of every railroad car on the layout. This gives the most complete information.
 
-Options 2 and 3 are complementary rather than exclusive: the detector answers "where is every car", the CNN answers "is this specific point occupied". Both are fed from the same labels (see [Location Data](#location-data-track-cars-sensors)).
+**Option 3 is what the live path uses; option 2 is retained but not loaded.** The two are fed from the same labels (see [Location Data](#location-data-track-cars-sensors)), and the CNN answers a genuinely different question — "is this specific point occupied" versus "where is every car" — but [Occupancy Output](#occupancy-output) makes the per-sensor answer a pure geometric consequence of the detector's boxes, which leaves the CNN with no consumer in the live view. So only the detector ships: one model in the bundle, one ORT session, one vocabulary. The classifier package, `TRAIN.ipynb`, and the derived-crop pipeline all survive, so the ResNet stays retrainable and can be revived if the detector disappoints. Proving the detector happens offline through `pnpm --filter dataset online-diagnostics`, not by running both models live. Settled in [issue #7](https://github.com/iot49/rails49/issues/7).
 
 ### Image change is not a candidate for occupancy
 
@@ -44,6 +44,81 @@ Classifiers can be trained per layout, so only modest generalization is needed �
 > ⚠️ **The currently reported 99.58% is not a generalization estimate.** The regression test iterates every marker in every archive, so roughly 770 of its 963 samples were seen during training. It is a *reproducibility* check — does this `.ort` still behave like the published one — not a held-out measurement. Any >99.9% target needs a held-out evaluation that does not yet exist. See issue #4. *More testing and formal assessment is required with newly trained classifiers or detectors.*
 
 **Safety:** nothing here may be presented as a safety interlock. The classifier does sometimes miss rolling stock and report phantom trains.
+
+## Occupancy Output
+
+Settled in [issue #7](https://github.com/iot49/rails49/issues/7). The system reports **two layers and no more**:
+
+| | What it is | Source |
+| :--- | :--- | :--- |
+| **L0** | Every detected car: pose, class, confidence — exactly as the detector emitted it | the model |
+| **L1** | Per-sensor state: `occupied` / `clear` / `unknown` | pure geometry over L0 |
+
+**L1 never calls a second model.** It is a pure function of L0, so it cannot contradict the boxes drawn beside it, it needs no second inference, and it costs the same whether a layout has three sensors or three hundred — the detector runs once per frame regardless. There is consequently no disagreement rule to specify.
+
+Everything above L1 — event and transition semantics (Rocrail's enter/in sensors fire on *transitions*, not per-frame state) and block-span occupancy — is deliberately unspecified. L0 carries full car pose, so those remain computable later from archives recorded today.
+
+### The occupancy test
+
+A sensor is `occupied` when a detection's oriented box **strictly contains** its point. No tolerance epsilon: any value would be unvalidatable, the lateral direction already carries ~1.4 m prototype of slack from the derived width, and at a coupler the two boxes abut on a shared endpoint so a point between coupled cars is already inside one of them. A real gap between uncoupled cars should read `clear`, and an epsilon would manufacture a phantom there.
+
+The box tested is **width-normalized**: centre, orientation and length come from the detector, but the DPT-derived per-class constant **replaces the predicted width**. Width is not observed data — it is a per-class constant with no per-label override (see [Location Data](#location-data-track-cars-sensors)), so every training label carries the same width and the model's width output is a fit to a constant. Its deviation is pure error, and directional: at DPT 20 in HO a car is ~39 px wide, so a centreline sensor sits ~19 px inside the boundary; an under-predicted 25 px width cuts that to ~12 px and can flip a covered sensor to `clear`. Substituting the constant only ever widens an under-predicted box, which is the safe direction. **L0 still reports the raw predicted box** — normalization belongs to L1's geometry, not to the detector's output.
+
+> ⚠️ **Known limitation: long cars on tight curves.** The box's long axis is the chord between the car's endpoints, but track bows off that chord by the sagitta `L²/8R`. Once that exceeds the half-width (16.1 mm in HO), a sensor near the car's **midpoint** falls outside the box. The ends still register, so a long car crossing a sensor reads occupied → clear → occupied.
+>
+> | Car length (prototype) | Fails below radius |
+> | :--- | :--- |
+> | 40–50 ft freight | ~9" — never in practice |
+> | 69 ft | 18" |
+> | 80 ft | 24" |
+> | 85 ft passenger / autorack | **27"** |
+>
+> Accepted rather than fixed: first tests are short cars on straight track. **The mitigation is a constant, not code** — inflate the class width in `config.yaml`. Covering an 85 ft car on an 18" radius needs a half-width ≥ 24.2 mm, i.e. ~48 mm against the prototype's 32 mm (~1.5×).
+>
+> The alternative — projecting onto the track spline and testing arc-length overlap — was rejected. Cost was never the objection (~8,000 distance evaluations, tens of µs against 377,000 µs of inference). It trades this *bounded, quantified* failure for an unbounded one: "nearest spline" is ambiguous exactly where layouts are densest — parallel sidings (~60 px apart at DPT 20), turnouts, yard ladders — and a mis-association reports the **wrong track** occupied, at a rate nothing can bound.
+
+### The vocabulary
+
+| State | When |
+| :--- | :--- |
+| `occupied` | any detection above the threshold covers the point — **including low-confidence ones** |
+| `clear` | no detection covers the point |
+| `unknown` | the system **cannot answer**: sensor outside the frame, DPT unresolved, model not loaded, or camera drift detected ([issue #12](https://github.com/iot49/rails49/issues/12)) |
+
+**`unknown` is never a confidence outcome.** It means "I was unable to look", not "I looked and I'm unsure" — which is what keeps it genuinely distinct from `clear`.
+
+**Errors are biased toward `occupied`, deliberately.** A missed car costs a collision; a phantom costs "why do trains never go there". This matches prototype practice: real track circuits are wired so that a failure shows occupied. Every case where the model *did* look and saw something therefore resolves to `occupied`, which is why no "unsure" confidence band exists.
+
+The bias reduces the *consequence* of the worse error. It does not make this a safety interlock; the constraint above stands unchanged.
+
+**Accepted consequence:** a persistent phantom `occupied` is worse than cosmetic. A permanently blocked block is never entered and never cleared, so it can **deadlock a controller's schedule**. Weighed against a collision and accepted.
+
+### Confidence
+
+Every L0 detection carries its confidence, and an `occupied` L1 state carries the confidence of the covering detection (the maximum, where several overlap).
+
+**`clear` carries no confidence — absent, not `0.0` and not `1.0`.** `occupied` is evidenced by a specific detection; `clear` is the *absence* of evidence, and nothing scored it. `0.0` would read as "definitely not occupied" and `1.0` as "definitely clear"; both claim a measurement that was never made. This matters because the system's two error modes are asymmetric in *inspectability*: a phantom arrives with a confidence a consumer can threshold, while **a miss arrives as a confident-looking `clear` with nothing behind it**. Leaving that confidence absent is the only encoding that does not hide the distinction.
+
+A **single** confidence threshold, a named constant in `config.yaml` alongside `crop_size` and the DPT threshold. Two properties of it:
+
+* **Thresholding is decoding, not filtering.** The detector's export is `end2end: True` with output `[1, 300, 7]` — a fixed 300-slot buffer emitted every frame, mostly padding. There is no version of L0 that skips the threshold.
+* **It has a floor above zero.** At 0 you accept 300 phantom cars blanketing the frame, so every sensor reads `occupied` on every frame and the system reports nothing at all. The value must sit low but above the padding noise, and it can only be found by measuring recall against a held-out split — which does not yet exist for either model (see [Accuracy](#accuracy)).
+
+The fail-safe bias lives in **L1**. L0 stays raw, so a consumer wanting a stricter reading can re-threshold the same frame's data without fighting the default.
+
+> ⚠️ **A total miss stays invisible.** No single-model scheme makes it detectable. Two thresholds do not; nor does adding a track class — a missed car with confidently-detected track under it is a *confident false clear*, worse than an unevidenced one, and the two failure modes are correlated so it is not an independent check. Only a genuinely independent second observer would close this: a CNN verifier over the same points, or [change detection](#secondary-uses-of-change-detection). Neither is specified, and neither is worth building before the detector has held-out numbers.
+
+### Output encoding
+
+L0 detections are reported in **`camera.resolution` pixel coordinates**: centre `{x, y}`, length px, width px, orientation in **radians from the +x axis**, plus class and confidence.
+
+That frame is chosen because it is the only stable one. The model's input resolution (960×544) is selected by geometry and changes on re-export; the video's natural size varies per device and camera; normalized 0…1 coordinates sever the link to DPT, which is px/mm. `camera.resolution` is the frame sensors, labels, and calibration are *already* authored in — so the point-in-box test needs no conversion, the SVG viewBox maps 1:1 onto it so boxes draw over the video with no transform, and any length converts to millimetres with one DPT multiply. No millimetre field is stored; it is one multiply away.
+
+**Off-track detections pass through untouched.** A sensor sits on track by construction, so a box far from any track contains no sensor and cannot change any L1 verdict — there is nothing to protect. Filtering would need the spline association rejected above, would make L0 not raw, and would destroy real information: a box around a car sitting in the scenery tells a human something (a false positive, a derailment, a hand over the layout, or a car on unlabeled track) that a suppressed box does not. Confidence, not geometry, is the right filter for junk — a spurious detection is characteristically low-confidence, whereas a genuine car on unlabeled track is confident and should survive.
+
+**Sensor identity: consumers key on `id`; `name` is optional passthrough, absent when unset and never auto-generated.** ids survive edits; names are free text, are not unique, and a controller mapping keyed on one breaks the moment someone renames it. An auto-generated "Sensor 3" is worse than none — indistinguishable from a name a human chose, and it silently stops matching as sensors are added and removed. The optional `name` exists for Rocrail and for humans who cannot remember hex strings; the UI displays the `id` as fallback. No uniqueness is enforced.
+
+**Couplings are not reported.** They are derivable from L0 — two detected box endpoints coinciding — and adding a field or a class for them would restate what the geometry already says.
 
 ## Features
 
@@ -130,7 +205,7 @@ The `.r49` format and UI editor store and edit three distinct kinds of geometry 
 
 2. **Cars.** Cars are straight and of standard width (2.8 m prototype), so a car is fully described by **two points** over the center of a track segment; width is derived from the scale rather than stored. Trains are sequences of cars where the end of one coincides with the start of the next — so **couplings need not be labeled or detected**, they are derivable from abutting car endpoints.
 
-3. **Sensors** (block detectors). Points where occupancy must be reported when running trains. These are an *output specification*, not training data: they say where the deployed system must answer, and they never enter a loss function.
+3. **Sensors** (block detectors). Points where occupancy must be reported when running trains. These are an *output specification*, not training data: they say where the deployed system must answer, and they never enter a loss function. What they answer *with* is [Occupancy Output](#occupancy-output). They remain **points**, not spans: a span would match a prototype block more closely, but L0 carries full car pose so block semantics stay derivable later, whereas authoring intervals along splines is real UI for a consumer not yet observable.
 
 #### Labeling completeness
 
