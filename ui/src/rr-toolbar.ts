@@ -1,21 +1,35 @@
 import { LitElement, html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, property } from 'lit/decorators.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 /**
  * Vertical tool palette for the editor.
  *
- * Currently file actions only. The v3 labeling tools — the four marker-type
+ * File actions and undo/redo. The v3 labeling tools — the four marker-type
  * modes, delete, and the two-point calibrate mode — were removed with the v4
  * reduction (#19): v4 has no point markers, and its calibration is a list of
  * world-coordinate points rather than a draggable pair. The car, sensor and
  * calibration-point tools that replace them belong to the editor spec.
  *
+ * The undo buttons are not a duplicate of the keyboard shortcuts in `rr-app`.
+ * Their disabled state is the only honest signal that the stack has a bottom —
+ * otherwise "nothing happened" is indistinguishable from an edit applied to an
+ * image the user is not looking at — and touch devices have no Cmd+Z at all.
+ *
  * @fires rr-file-new - When the new file button is clicked.
  * @fires rr-file-open - When the open file button is clicked.
  * @fires rr-file-save - When the save file button is clicked.
+ * @fires rr-undo - When the undo button is clicked.
+ * @fires rr-redo - When the redo button is clicked.
  */
 @customElement('rr-toolbar')
 export class RRToolbar extends LitElement {
+  @property({ type: Boolean }) canUndo = false;
+  @property({ type: Boolean }) canRedo = false;
+  /** Phrase for the tooltip: "Undo delete image". Null when nothing to undo. */
+  @property({ attribute: false }) undoLabel: string | null = null;
+  @property({ attribute: false }) redoLabel: string | null = null;
 
   static styles = css`
     :host {
@@ -54,6 +68,15 @@ export class RRToolbar extends LitElement {
       transform: scale(1.1);
     }
 
+    sl-icon-button[disabled] {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    sl-icon-button[disabled]:hover {
+      transform: none;
+    }
+
     sl-icon-button::part(base) {
       color: white;
     }
@@ -85,6 +108,20 @@ export class RRToolbar extends LitElement {
     }));
   }
 
+  private _onUndo() {
+    this.dispatchEvent(new CustomEvent('rr-undo', {
+      bubbles: true,
+      composed: true
+    }));
+  }
+
+  private _onRedo() {
+    this.dispatchEvent(new CustomEvent('rr-redo', {
+      bubbles: true,
+      composed: true
+    }));
+  }
+
   render() {
     return html`
       <div class="tool-group">
@@ -109,6 +146,26 @@ export class RRToolbar extends LitElement {
             id="file-save"
             name="floppy"
             @click=${this._onFileSave}
+          ></sl-icon-button>
+        </sl-tooltip>
+      </div>
+
+      <div class="tool-group">
+        <sl-tooltip content=${this.undoLabel ? `Undo ${this.undoLabel}` : 'Nothing to undo'}>
+          <sl-icon-button
+            id="edit-undo"
+            name="arrow-counterclockwise"
+            ?disabled=${!this.canUndo}
+            @click=${this._onUndo}
+          ></sl-icon-button>
+        </sl-tooltip>
+
+        <sl-tooltip content=${this.redoLabel ? `Redo ${this.redoLabel}` : 'Nothing to redo'}>
+          <sl-icon-button
+            id="edit-redo"
+            name="arrow-clockwise"
+            ?disabled=${!this.canRedo}
+            @click=${this._onRedo}
           ></sl-icon-button>
         </sl-tooltip>
       </div>

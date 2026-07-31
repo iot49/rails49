@@ -47,8 +47,37 @@ describe('rr-toolbar', () => {
   it('emits rr-file-save when save button is clicked', async () => {
     const el = await fixture<RRToolbar>(html`<rr-toolbar></rr-toolbar>`);
     const saveBtn = el.shadowRoot!.querySelector<HTMLButtonElement>('#file-save')!;
-    
+
     setTimeout(() => saveBtn.click());
     await oneEvent(el, 'rr-file-save');
+  });
+
+  // The disabled state is the point of having buttons at all: it is the only
+  // signal that distinguishes "the stack is empty" from "the undo landed on an
+  // image you are not looking at". Keys alone cannot say that.
+  it('disables undo and redo when there is no history', async () => {
+    const el = await fixture<RRToolbar>(html`<rr-toolbar></rr-toolbar>`);
+    expect(el.shadowRoot!.querySelector('#edit-undo')!.hasAttribute('disabled')).to.be.true;
+    expect(el.shadowRoot!.querySelector('#edit-redo')!.hasAttribute('disabled')).to.be.true;
+  });
+
+  it('names the edit it would reverse', async () => {
+    const el = await fixture<RRToolbar>(
+      html`<rr-toolbar .canUndo=${true} .undoLabel=${'delete image'}></rr-toolbar>`
+    );
+    const tooltip = el.shadowRoot!.querySelector('#edit-undo')!.closest('sl-tooltip')!;
+    expect(tooltip.getAttribute('content')).to.equal('Undo delete image');
+  });
+
+  it('emits rr-undo and rr-redo when enabled', async () => {
+    const el = await fixture<RRToolbar>(
+      html`<rr-toolbar .canUndo=${true} .canRedo=${true}></rr-toolbar>`
+    );
+
+    setTimeout(() => el.shadowRoot!.querySelector<HTMLButtonElement>('#edit-undo')!.click());
+    await oneEvent(el, 'rr-undo');
+
+    setTimeout(() => el.shadowRoot!.querySelector<HTMLButtonElement>('#edit-redo')!.click());
+    await oneEvent(el, 'rr-redo');
   });
 });

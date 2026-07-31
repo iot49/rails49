@@ -56,6 +56,30 @@ Lit does not observe mutations *inside* `R49Archive`, so handlers that edit the 
 call `this.requestUpdate()` (as `rr-app._onLayoutChange` does). Prefer replacing the object where
 practical; call `requestUpdate()` where not.
 
+### Every manifest mutation goes through `history.record`
+
+`rr-app` owns one `EditHistory` (`src/history.ts`) and passes it down. **Any code that changes
+`ManifestData` must run inside `history.record(label, target, mutate)`** — including the image
+handlers in `rr-editor-view`, which mutate the archive without going through `rr-app` at all.
+
+Nothing enforces this. A component that reaches into `.archive` directly still typechecks, still
+renders, and leaves a stack that is *wrong* rather than merely short: undo then reverses the edit
+before it, which is worse than having no undo, because the binding has taught the user to trust it.
+
+Two rules follow from entries being scoped snapshots:
+
+* **Declare the subtree you actually touch** (`layout`, one `image`, or the `images` array).
+  Mis-declaring it is the only class of bug this design admits, and `tests/history.test.ts` fuzzes a
+  round-trip specifically to catch it.
+* **Key on label `id`, never on object identity.** Applying a snapshot replaces objects wholesale.
+
+An edit that *removes* images must pass `options.retain` with their filenames — the bytes are gone
+from the zip by the time the entry could look for them. Additions are captured automatically.
+
+`SPEC.md` § Undo and redo carries the reasoning, including the parts the editor spec still has to
+build: per-gesture drag commits and the chain interception that makes a live chain a wall Cmd+Z
+cannot cross.
+
 ### `rr-viewer` is shared, and that is load-bearing
 
 The same component backs the editor (`src` → `<img>`) and the live view (`stream` → `<video>`).

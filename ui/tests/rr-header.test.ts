@@ -97,13 +97,16 @@ describe('rr-settings-dialog', () => {
     expect(el).to.be.instanceOf(RRSettingsDialog);
   });
 
-  it('emits rr-layout-change when name is edited', async () => {
+  // sl-change, not sl-input: text fields commit on blur or Enter so that an
+  // edit is one undo entry rather than one per keystroke. See history.ts.
+  it('emits rr-layout-change when name is committed', async () => {
     const el = await fixture<RRSettingsDialog>(html`<rr-settings-dialog></rr-settings-dialog>`);
     const nameInput = el.shadowRoot!.querySelector('sl-input')!;
-    
+
     nameInput.value = 'New Layout Name';
-    setTimeout(() => nameInput.dispatchEvent(new CustomEvent('sl-input')));
-    
+    setTimeout(() => nameInput.dispatchEvent(new CustomEvent('sl-change')));
+
+
     const ev = await oneEvent(el, 'rr-layout-change');
     expect(ev.detail.layout.name).to.equal('New Layout Name');
   });
