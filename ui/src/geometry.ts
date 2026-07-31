@@ -238,6 +238,73 @@ export function hitTest(scene: HitScene, at: Point, tolerance: HitTolerance): Hi
     : best.target;
 }
 
+/**
+ * What a drag handle addresses in the manifest.
+ *
+ * Keyed the way the rest of the editor keys — label `id` for a car, sensor `id`,
+ * position for a calibration point, which carries no id because nothing
+ * references one individually. **Never an object reference**: applying a history
+ * snapshot replaces the objects wholesale.
+ */
+export type HandleRef =
+  | { readonly kind: 'calibration'; readonly index: number }
+  | { readonly kind: 'car-end'; readonly id: string; readonly end: 'p0' | 'p1' }
+  | { readonly kind: 'sensor'; readonly id: string };
+
+/** One point a drag moves, and where it sat when the gesture began. */
+export interface DragHandle {
+  readonly ref: HandleRef;
+  /**
+   * Position at pointer-down. Deltas apply to **this**, not to the live value:
+   * accumulating them onto the current position drifts under rounding, and
+   * snapping the object to the pointer instead would discard the grab offset.
+   */
+  readonly from: Point;
+}
+
+/**
+ * The handles a grab moves — one per object, and **more than one for a
+ * coupler**.
+ *
+ * This is where a drag stops being about the thing under the cursor and becomes
+ * a list, which is what lets one history entry cover several objects: a coupler
+ * drag moves both cars' ends by the same delta, and dropping either one would
+ * silently uncouple the train. A handle whose object is not in the scene is
+ * dropped rather than faked.
+ */
+export function dragHandles(hit: HitTarget, scene: HitScene): readonly DragHandle[] {
+  switch (hit.kind) {
+    case 'calibration': {
+      const point = scene.calibrationPoints[hit.index];
+      return point ? [{ ref: { kind: 'calibration', index: hit.index }, from: point.px }] : [];
+    }
+    case 'sensor': {
+      const found = scene.sensors.find((s) => s.id === hit.id);
+      return found ? [{ ref: { kind: 'sensor', id: hit.id }, from: { x: found.x, y: found.y } }] : [];
+    }
+    case 'car-endpoint':
+    case 'coupler': {
+      const handles: DragHandle[] = [];
+      for (const end of hit.ends) {
+        const label = scene.cars.find((c) => c.id === end.id);
+        if (label) handles.push({ ref: { kind: 'car-end', ...end }, from: label[end.end] });
+      }
+      return handles;
+    }
+  }
+}
+
+/**
+ * Where a handle lands for a given drag delta, in whole image pixels.
+ *
+ * Rounded because a handle names a pixel, and applied to `from` so every handle
+ * in one gesture takes the identical translation — which is what keeps a
+ * coupler's two ends on the *same* pixel, and a coupling is exact coincidence.
+ */
+export function dragTo(handle: DragHandle, delta: Point): Point {
+  return { x: Math.round(handle.from.x + delta.x), y: Math.round(handle.from.y + delta.y) };
+}
+
 /** Every car end sitting exactly on `at`, in scene order. */
 function coincidentEnds(cars: readonly CarLabel[], at: Point): CarEnd[] {
   const ends: CarEnd[] = [];

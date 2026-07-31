@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CalibrationPoint, CarLabel, Sensor } from '@occupancy/r49';
 import { STANDARD_GAUGE, STANDARD_WIDTH } from '@occupancy/config';
-import { carWidthPx, carCorners, hitTest, isClick } from '../src/geometry.js';
+import { carWidthPx, carCorners, dragHandles, dragTo, hitTest, isClick } from '../src/geometry.js';
 import type { HitScene, HitTolerance } from '../src/geometry.js';
 
 function car(id: string, p0: { x: number; y: number }, p1: { x: number; y: number }): CarLabel {
@@ -236,6 +236,98 @@ describe('hitTest', () => {
         id: 's1',
       });
     });
+  });
+});
+
+describe('dragHandles', () => {
+  const scene: HitScene = {
+    cars: [
+      car('c1', { x: 100, y: 100 }, { x: 200, y: 100 }),
+      car('c2', { x: 200, y: 100 }, { x: 300, y: 100 }),
+    ],
+    sensors: [sensor('s1', 400, 400)],
+    calibrationPoints: [calibrationPoint(10, 20), calibrationPoint(600, 600)],
+  };
+
+  it('gives a calibration point one handle, anchored where it is now', () => {
+    expect(dragHandles({ kind: 'calibration', index: 1 }, scene)).to.deep.equal([
+      { ref: { kind: 'calibration', index: 1 }, from: { x: 600, y: 600 } },
+    ]);
+  });
+
+  it('gives a sensor one handle', () => {
+    expect(dragHandles({ kind: 'sensor', id: 's1' }, scene)).to.deep.equal([
+      { ref: { kind: 'sensor', id: 's1' }, from: { x: 400, y: 400 } },
+    ]);
+  });
+
+  it('gives a free car end one handle, at the end that was grabbed', () => {
+    const hit = { kind: 'car-endpoint', ends: [{ id: 'c1', end: 'p0' }] } as const;
+    expect(dragHandles(hit, scene)).to.deep.equal([
+      { ref: { kind: 'car-end', id: 'c1', end: 'p0' }, from: { x: 100, y: 100 } },
+    ]);
+  });
+
+  it('gives a coupler one handle per end, which is how one entry covers two cars', () => {
+    const hit = {
+      kind: 'coupler',
+      ends: [
+        { id: 'c1', end: 'p1' },
+        { id: 'c2', end: 'p0' },
+      ],
+    } as const;
+    expect(dragHandles(hit, scene)).to.deep.equal([
+      { ref: { kind: 'car-end', id: 'c1', end: 'p1' }, from: { x: 200, y: 100 } },
+      { ref: { kind: 'car-end', id: 'c2', end: 'p0' }, from: { x: 200, y: 100 } },
+    ]);
+  });
+
+  it('drops a handle the scene no longer holds', () => {
+    expect(dragHandles({ kind: 'sensor', id: 'gone' }, scene)).to.deep.equal([]);
+    expect(dragHandles({ kind: 'calibration', index: 9 }, scene)).to.deep.equal([]);
+  });
+});
+
+describe('dragTo', () => {
+  const handle = { ref: { kind: 'calibration', index: 0 }, from: { x: 100, y: 50 } } as const;
+
+  it('applies the delta to where the handle started, so the grab offset survives', () => {
+    // Measured from the press, not snapped to the pointer: grabbing a point
+    // three pixels off-center must not teleport it under the cursor.
+    expect(dragTo(handle, { x: 40, y: -10 })).to.deep.equal({ x: 140, y: 40 });
+  });
+
+  it('rounds, because a dragged handle names a pixel', () => {
+    expect(dragTo(handle, { x: 0.4, y: 0.6 })).to.deep.equal({ x: 100, y: 51 });
+  });
+
+  it('is the identity at zero delta, so a drag home restores the exact pixel', () => {
+    expect(dragTo(handle, { x: 0, y: 0 })).to.deep.equal(handle.from);
+  });
+
+  it('keeps a coupler coincident: one delta lands every end on the same pixel', () => {
+    const coupler = dragHandles(
+      {
+        kind: 'coupler',
+        ends: [
+          { id: 'c1', end: 'p1' },
+          { id: 'c2', end: 'p0' },
+        ],
+      },
+      {
+        cars: [
+          car('c1', { x: 100, y: 100 }, { x: 200, y: 100 }),
+          car('c2', { x: 200, y: 100 }, { x: 300, y: 100 }),
+        ],
+        sensors: [],
+        calibrationPoints: [],
+      }
+    );
+    const delta = { x: 17.5, y: -3.2 };
+    const moved = coupler.map(h => dragTo(h, delta));
+    expect(moved).to.have.length(2);
+    // Exact equality, because that is what makes them still a coupling.
+    expect(moved[0]).to.deep.equal(moved[1]);
   });
 });
 

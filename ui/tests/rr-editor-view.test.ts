@@ -169,16 +169,13 @@ describe('rr-editor-view', () => {
       await el.updateComplete;
     }
 
-    /** A press and a release at different pixels: a drag. */
-    async function dragFrom(
-      el: RREditorView,
-      from: Point,
-      to: Point,
-      imagePxPerScreenPx = 1
-    ) {
-      gesture(el, 'rr-pointer-down', from, imagePxPerScreenPx);
-      gesture(el, 'rr-pointer-move', to, imagePxPerScreenPx);
-      gesture(el, 'rr-pointer-up', to, imagePxPerScreenPx);
+    /** A press, a run of moves, and a release. One gesture, one pointerId. */
+    async function drag(el: RREditorView, path: readonly Point[], imagePxPerScreenPx = 1) {
+      gesture(el, 'rr-pointer-down', path[0], imagePxPerScreenPx);
+      for (const point of path.slice(1)) {
+        gesture(el, 'rr-pointer-move', point, imagePxPerScreenPx);
+      }
+      gesture(el, 'rr-pointer-up', path[path.length - 1], imagePxPerScreenPx);
       await flush();
       await el.updateComplete;
     }
@@ -323,7 +320,7 @@ describe('rr-editor-view', () => {
       const el = await mount();
       const show = stubDialog(el);
 
-      await dragFrom(el, { x: 100, y: 100 }, { x: 400, y: 250 });
+      await drag(el, [{ x: 100, y: 100 }, { x: 400, y: 250 }]);
 
       expect(show).not.toHaveBeenCalled();
       expect(points()).to.have.length(0);
@@ -339,6 +336,248 @@ describe('rr-editor-view', () => {
       await commit(el, { x: 0, y: 0, z: 0 });
 
       expect(points()[0].px).to.deep.equal({ x: 300, y: 200 });
+    });
+
+    describe('dragging', () => {
+      /** One calibration point, at a round pixel. */
+      function seed(...pixels: readonly Point[]) {
+        archive.getManifest().layout.calibration.points = pixels.map((px, i) => ({
+          px,
+          world: { x: i * 10, y: 0, z: 0 },
+        }));
+      }
+
+      it('moves the point that was grabbed, keeping the grab offset', async () => {
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+        const show = stubDialog(el);
+
+        // Pressed three pixels off-center: the point must translate by the
+        // delta, not teleport under the cursor.
+        await drag(el, [
+          { x: 103, y: 102 },
+          { x: 150, y: 150 },
+          { x: 203, y: 202 },
+        ]);
+
+        expect(points()[0].px).to.deep.equal({ x: 200, y: 200 });
+        expect(show).not.toHaveBeenCalled();
+      });
+
+      it('records exactly one entry however many move events fired', async () => {
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        const path: Point[] = [{ x: 100, y: 100 }];
+        for (let i = 1; i <= 200; i++) path.push({ x: 100 + i, y: 100 });
+        await drag(el, path);
+
+        expect(points()[0].px).to.deep.equal({ x: 300, y: 100 });
+        expect(history.size).to.equal(1);
+        expect(history.undoLabel).to.contain('calibration');
+      });
+
+      it('undo returns the point to where the drag began, and redo reapplies it', async () => {
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        await drag(el, [
+          { x: 100, y: 100 },
+          { x: 400, y: 250 },
+        ]);
+        expect(points()[0].px).to.deep.equal({ x: 400, y: 250 });
+
+        const entry = await history.undo();
+        expect(entry!.target).to.deep.equal({ kind: 'layout' });
+        expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+
+        await history.redo();
+        expect(points()[0].px).to.deep.equal({ x: 400, y: 250 });
+      });
+
+      it('records nothing for a drag returned to its origin', async () => {
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+        const show = stubDialog(el);
+
+        await drag(el, [
+          { x: 100, y: 100 },
+          { x: 400, y: 250 },
+          { x: 100, y: 100 },
+        ]);
+
+        expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+        expect(history.size).to.equal(0);
+        expect(history.isDirty).to.be.false;
+        // And it is still a drag, not a click: the dialog must not open on a
+        // gesture the user spent moving something.
+        expect(show).not.toHaveBeenCalled();
+      });
+
+      it('commits a drag that leaves the viewer, since the pointer is captured', async () => {
+        // The capture lives in `rr-viewer`; what the editor owes it is not
+        // bailing on coordinates outside the image. The overlay covers the
+        // letterbox and a captured drag reports past the element entirely.
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        await drag(el, [
+          { x: 100, y: 100 },
+          { x: -400, y: -300 },
+        ]);
+
+        expect(points()[0].px).to.deep.equal({ x: -400, y: -300 });
+        expect(history.size).to.equal(1);
+      });
+
+      it('restores the point and records nothing when the browser cancels', async () => {
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1);
+        gesture(el, 'rr-pointer-move', { x: 400, y: 250 }, 1);
+        gesture(el, 'rr-pointer-cancel', { x: 400, y: 250 }, 1);
+        await flush();
+        await el.updateComplete;
+
+        expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+        expect(history.size).to.equal(0);
+      });
+
+      it('ignores a second finger arriving mid-drag', async () => {
+        seed({ x: 100, y: 100 }, { x: 500, y: 500 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1, 1);
+        gesture(el, 'rr-pointer-down', { x: 500, y: 500 }, 1, 2);
+        gesture(el, 'rr-pointer-move', { x: 600, y: 600 }, 1, 2);
+        gesture(el, 'rr-pointer-up', { x: 600, y: 600 }, 1, 2);
+        gesture(el, 'rr-pointer-move', { x: 140, y: 130 }, 1, 1);
+        gesture(el, 'rr-pointer-up', { x: 140, y: 130 }, 1, 1);
+        await flush();
+        await el.updateComplete;
+
+        // The second finger moved nothing, and the first still committed once.
+        expect(points()[1].px).to.deep.equal({ x: 500, y: 500 });
+        expect(points()[0].px).to.deep.equal({ x: 140, y: 130 });
+        expect(history.size).to.equal(1);
+      });
+
+      it('restores a cancelled drag with no history attached at all', async () => {
+        // The restore is by handle, not by snapshot, precisely so it does not
+        // depend on a stack being there.
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1);
+        gesture(el, 'rr-pointer-move', { x: 400, y: 250 }, 1);
+        gesture(el, 'rr-pointer-cancel', { x: 400, y: 250 }, 1);
+        await flush();
+        await el.updateComplete;
+
+        expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+      });
+
+      it('closes a gesture whose end never arrived, rather than wedging on it', async () => {
+        // `rr-viewer` emits nothing when it has no transform to convert with, so
+        // an up can go missing. A press on the same pointerId cannot be a second
+        // finger — a pointer does not go down twice — so it ends the stale one,
+        // which keeps both the editor and undo responsive.
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1);
+        gesture(el, 'rr-pointer-move', { x: 300, y: 300 }, 1);
+        await flush();
+        // No pointer-up: the gesture is left open.
+
+        await drag(el, [{ x: 300, y: 300 }, { x: 350, y: 350 }]);
+
+        expect(points()[0].px).to.deep.equal({ x: 350, y: 350 });
+        // One entry for the abandoned gesture, one for the drag that followed.
+        expect(history.size).to.equal(2);
+        expect(await history.undo()).to.not.be.null;
+      });
+
+      it('closes an open gesture when the element goes away', async () => {
+        // `rr-app` replaces this element on the view toggle. An entry left open
+        // there would refuse every undo for the rest of the session.
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1);
+        gesture(el, 'rr-pointer-move', { x: 300, y: 300 }, 1);
+        await flush();
+        el.remove();
+        await flush();
+
+        expect(history.size).to.equal(1);
+        expect(await history.undo()).to.not.be.null;
+        expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+      });
+
+      it('moves nothing when the drag starts on empty image', async () => {
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+        const show = stubDialog(el);
+
+        await drag(el, [
+          { x: 600, y: 600 },
+          { x: 700, y: 700 },
+        ]);
+
+        expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+        expect(history.size).to.equal(0);
+        expect(show).not.toHaveBeenCalled();
+      });
+
+      it('takes the DPT readout with it', async () => {
+        // 100 px over 10 mm, then 200 px over the same 10 mm: the scale doubles
+        // under the drag, live, without a save or a reopen.
+        seed({ x: 0, y: 0 }, { x: 100, y: 0 });
+        const el = await mount();
+        const bar = () => el.shadowRoot!.querySelector('.dpt-bar')!.textContent!;
+        expect(bar()).to.contain('DPT 89.7');
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 0 }, 1);
+        gesture(el, 'rr-pointer-move', { x: 200, y: 0 }, 1);
+        await flush();
+        await el.updateComplete;
+
+        // Mid-gesture, before the pointer is even released.
+        expect(bar()).to.contain('DPT 179.4');
+      });
+
+      it('still opens the dialog for a click on a point', async () => {
+        // The click path is unchanged: a press and a release inside the slop
+        // edits, and only a gesture that actually moved suppresses that.
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+        const show = stubDialog(el);
+
+        await clickAt(el, { x: 102, y: 101 });
+
+        expect(show).toHaveBeenCalledWith({ x: 0, y: 0, z: 0 }, { mode: 'edit' });
+        expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+      });
     });
 
     it('drops an edit whose point moved underneath the open dialog', async () => {
