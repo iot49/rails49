@@ -90,9 +90,34 @@ modes. Changing either half of that pair silently misplaces every marker.
 `symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, recomputed by a `ResizeObserver`,
 keeps markers a constant *screen* size.
 
-The viewer is **read-only** and has no pointer handling at all — `screenToSvg()` went with the v4
-reduction. When the editor spec reintroduces clicking, convert pointer coordinates with
-`createSVGPoint` + inverse `getScreenCTM`; never subtract `getBoundingClientRect()` by hand.
+The viewer **reports pointer gestures and authors nothing**. It emits `rr-pointer-down`/`-move`/
+`-up`/`-cancel`/`-contextmenu` with coordinates already converted to **image pixels**, so no consumer
+ever handles screen coordinates and none can convert them wrongly. The conversion uses
+`createSVGPoint` + inverse `getScreenCTM`; **never subtract `getBoundingClientRect()` by hand** — the
+rect ignores the letterbox, so the hand-rolled version is right only while the viewport happens to
+match the image's aspect ratio. The same matrix yields `imagePxPerScreenPx`, which is what turns a
+grab radius in screen pixels into one in image pixels.
+
+The v3 machinery that *mutated* — marker add/move/delete, the draggable `{p0, p1}` pair — went with
+the v4 reduction and does not come back. Deciding what a gesture means is the editor's job; the
+arithmetic it needs is in `geometry.ts`.
+
+### `geometry.ts` holds the arithmetic, because a component cannot be tested
+
+Car width from DPT, a span's oriented rectangle, and hit-testing live in a pure module. jsdom does
+not lay out or paint, so anything left inside a Lit element is untestable until `@web/test-runner` is
+stood up — which nothing has done. Put new editor geometry here, not in the component that happens to
+need it first.
+
+Three rules it encodes, each of which is wrong somewhere if reimplemented:
+
+* **No scale lookup.** The ratio cancels out of `DPT × STANDARD_WIDTH / STANDARD_GAUGE`, so a car is
+  2.09 track-widths wide in every scale. Both constants come from `@occupancy/config`.
+* **Tolerances are screen pixels**, converted with the viewer's `imagePxPerScreenPx`. A grab radius
+  belongs to the mouse, not to the photograph.
+* **A coupler is exact coincidence.** Nothing about a coupling is stored; it is car ends at the
+  identical pixel, which chaining and the shared handle guarantee. A proximity test would fuse cars
+  the user placed separately.
 
 ### `marker.ts` is a module, not an element
 
@@ -155,10 +180,12 @@ Vitest in **jsdom**, `@open-wc/testing` fixtures, `tests/<module>.test.ts` mirro
 What jsdom means in practice:
 
 * **It does not lay out or paint.** `getBoundingClientRect()` is all zeros and SVG geometry
-  (`createSVGPoint`, `getScreenCTM`) is absent. Nothing needs stubbing today because the viewer is
-  read-only; editor-spec work that reintroduces pointer handling will need per-test stubs again.
-  Assert DOM structure, attributes, computed values, and emitted events. Do not claim a test verifies
-  visual appearance; it cannot.
+  (`createSVGPoint`, `getScreenCTM`) is absent, so `tests/rr-viewer.test.ts` stubs both per test —
+  a scale plus an offset, standing in for a letterboxed viewport — and polyfills `PointerEvent` as a
+  `MouseEvent` carrying a `pointerId`. This is why the arithmetic lives in `geometry.ts`: what the
+  stub proves is that the viewer converts through the transform it is given, not that the transform
+  is right. Assert DOM structure, attributes, computed values, and emitted events. Do not claim a
+  test verifies visual appearance; it cannot.
 * Camera (`getUserMedia`), ONNX sessions, and `PointerEvent` are mocked or polyfilled per test file.
 
 Real in-browser coverage — visual regression and genuine pointer interaction — is a stated goal but

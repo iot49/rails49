@@ -15,6 +15,7 @@
   "dependencies": {
     "@lit/reactive-element": "^2.1.2",
     "@occupancy/classifier": "workspace:*",
+    "@occupancy/config": "workspace:*",
     "@occupancy/r49": "workspace:*",
     "@occupancy/uid": "workspace:*",
     "@shoelace-style/shoelace": "^2.20.1",

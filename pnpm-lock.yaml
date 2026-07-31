@@ -110,6 +110,9 @@ importers:
       '@occupancy/classifier':
         specifier: workspace:*
         version: link:../lib/classifier
+      '@occupancy/config':
+        specifier: workspace:*
+        version: link:../lib/config
       '@occupancy/r49':
         specifier: workspace:*
         version: link:../lib/r49
