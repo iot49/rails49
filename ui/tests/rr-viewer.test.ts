@@ -166,6 +166,57 @@ describe('rr-viewer', () => {
       `);
       expect(el.shadowRoot!.querySelector('.sensor')).to.not.exist;
     });
+
+    /** The diamond's width in image pixels, off the rendered polygon. */
+    function diamondSpan(el: RrViewer): number {
+      const xs = el
+        .shadowRoot!.querySelector('.sensor polygon')!
+        .getAttribute('points')!
+        .split(' ')
+        .map(pair => Number(pair.split(',')[0]));
+      return Math.max(...xs) - Math.min(...xs);
+    }
+
+    it('draws a sensor one track width across, which is DPT', async () => {
+      // A world size, not a screen one: the sensor shrinks with the photograph
+      // exactly as the cars around it do, so the two are comparable.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .sensors=${sensors} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+      expect(diamondSpan(el)).to.equal(90);
+
+      el.dpt = 20;
+      await el.updateComplete;
+      expect(diamondSpan(el)).to.equal(20);
+    });
+
+    it('falls back to the screen size when no DPT resolves', async () => {
+      // An archive can carry sensors and no calibration — deleting a
+      // calibration point is allowed at any time — and they must stay visible
+      // and grabbable rather than vanish at a size nothing can compute.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .sensors=${sensors} .dpt=${null} .resolution=${resolution}></rr-viewer>
+      `);
+      expect(diamondSpan(el)).to.be.greaterThan(0);
+      expect(el.shadowRoot!.querySelectorAll('.sensor').length).to.equal(2);
+    });
+
+    it('leaves the label alone when the DPT changes', async () => {
+      // The name is annotation about the sensor, not a measurement of it: a
+      // label scaled to the track is illegible at the DPT 18-19 the fixture
+      // corpus sits at.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .sensors=${sensors} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+      const fontSize = el.shadowRoot!.querySelector('.sensor text')!.getAttribute('font-size');
+
+      el.dpt = 18;
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.sensor text')!.getAttribute('font-size')).to.equal(
+        fontSize
+      );
+    });
   });
 
   // The viewer reports pointer gestures but still authors nothing: v3's marker

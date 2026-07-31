@@ -11,6 +11,7 @@ import {
   hitTest,
   isClick,
   placeLabel,
+  trackWidthPx,
 } from '../src/geometry.js';
 import type { HitScene, HitTolerance } from '../src/geometry.js';
 
@@ -30,6 +31,23 @@ const emptyScene: HitScene = { cars: [], sensors: [], calibrationPoints: [] };
 
 /** 10 image pixels of grab radius: 5 screen px at 2 image px per screen px. */
 const tolerance: HitTolerance = { screenPx: 5, imagePxPerScreenPx: 2 };
+
+describe('trackWidthPx', () => {
+  it('is DPT itself, because DPT is the gauge in image pixels', () => {
+    // `getDPT` returns px_per_mm * gauge_mm, so the number already *is* the
+    // track measured in the image's pixels. The function names the identity.
+    for (const dpt of [1, 18.4, 20, 137]) {
+      expect(trackWidthPx(dpt)).to.equal(dpt);
+    }
+  });
+
+  it('is what a car width is 2.09 of', () => {
+    // A sensor is one of these across and a car is 2.09, so the two are
+    // comparable on the photograph — which is the point of drawing either at a
+    // world size rather than a screen one.
+    expect(carWidthPx(20) / trackWidthPx(20)).to.be.closeTo(2.0906, 1e-4);
+  });
+});
 
 describe('carWidthPx', () => {
   it('is DPT x STANDARD_WIDTH / STANDARD_GAUGE', () => {

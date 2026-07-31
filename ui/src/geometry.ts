@@ -19,6 +19,29 @@ import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
  */
 
 /**
+ * Track width in image pixels — which **is** DPT, and this function exists to
+ * say so once.
+ *
+ * `DPT = px_per_mm × gauge_mm` (`@occupancy/r49`'s `getDPT`), so the number
+ * already is the track gauge measured in the image's own pixels. Callers that
+ * need to draw something a track wide would otherwise pass `dpt` around with a
+ * comment claiming the identity, and the identity would be re-derived, or
+ * doubted, at every call site.
+ *
+ * A **sensor** is drawn at this diameter: it is a point on the track, and the
+ * only honest sense of how big it is comes from the track it sits on. It is
+ * therefore a **world** size and not a screen one — it shrinks with the
+ * photograph's scale, exactly as the cars around it do, which is what makes a
+ * sensor's footprint comparable to a car's.
+ *
+ * Callers hold a DPT that may be `null` on an uncalibrated archive and must
+ * resolve that first, as {@link carWidthPx} says.
+ */
+export function trackWidthPx(dpt: number): number {
+  return dpt;
+}
+
+/**
  * Car width in image pixels, derived from DPT rather than stored per label.
  *
  * `DPT * STANDARD_WIDTH / STANDARD_GAUGE` — the scale ratio cancels, so a car
@@ -27,6 +50,10 @@ import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
  * `@occupancy/config`, whose authored home is `config.yaml`; reimplementing the
  * gauge arithmetic here is exactly the duplication `lib/classifier` used to
  * carry.
+ *
+ * The same world-size argument as {@link trackWidthPx}, one multiply along: a
+ * car is drawn 2.09 track widths across, so a sensor and the car covering it
+ * are directly comparable on the photograph.
  *
  * `STANDARD_WIDTH` is the widest real prototype rather than a typical one, so
  * the rectangle errs wide — the direction occupancy output deliberately errs in.

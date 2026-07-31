@@ -156,10 +156,15 @@ not lay out or paint, so anything left inside a Lit element is untestable until 
 stood up — which nothing has done. Put new editor geometry here, not in the component that happens to
 need it first.
 
-Three rules it encodes, each of which is wrong somewhere if reimplemented:
+Four rules it encodes, each of which is wrong somewhere if reimplemented:
 
 * **No scale lookup.** The ratio cancels out of `DPT × STANDARD_WIDTH / STANDARD_GAUGE`, so a car is
   2.09 track-widths wide in every scale. Both constants come from `@occupancy/config`.
+* **Objects are drawn at world sizes; annotations at screen sizes.** A sensor is one track width
+  across (`trackWidthPx`, which *is* DPT, since `getDPT` returns px/mm × gauge_mm) and a car will be
+  2.09, so both shrink with the photograph and a sensor's footprint is comparable to a car's. Labels,
+  crosshairs and markers stay constant on screen — they annotate the image rather than measure it.
+  `rr-viewer` holds both: `dpt` for the world sizes, `symbolSize` for the screen ones.
 * **Tolerances are screen pixels**, converted with the viewer's `imagePxPerScreenPx`. A grab radius
   belongs to the mouse, not to the photograph.
 * **A coupler is exact coincidence.** Nothing about a coupling is stored; it is car ends at the

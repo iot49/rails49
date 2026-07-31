@@ -1127,6 +1127,7 @@ export class RREditorView extends LitElement {
               .resolution=${manifest.camera.resolution}
               .calibrationPoints=${manifest.layout.calibration.points}
               .sensors=${manifest.layout.sensors}
+              .dpt=${getDPT(manifest)}
               @rr-pointer-down=${this._onViewerPointerDown}
               @rr-pointer-move=${this._onViewerPointerMove}
               @rr-pointer-up=${this._onViewerPointerUp}

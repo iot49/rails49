@@ -79,32 +79,66 @@ export const sensorMarkerStyles: CSSResult = css`
  * go. A blank or whitespace-only name is treated as no name — it identifies
  * nothing, and showing it would leave the symbol looking unlabelled.
  */
+/**
+ * Smallest the centre dot is drawn, in image pixels.
+ *
+ * The diamond is a world size and can be genuinely tiny — a track at DPT 18 is
+ * 18 image pixels across, and less on a wider frame — but the dot names the
+ * pixel the sensor *is*, which has to stay findable at any scale. A stroke
+ * would not do: the diamond's outline is already non-scaling, and two
+ * non-scaling strokes at a small size merge into a blob.
+ */
+const MIN_CORE_RADIUS_PX = 1.5;
+
 export function sensorLabelText(sensor: Sensor): string {
   const name = sensor.name?.trim();
   return name ? name : sensor.id;
 }
 
 /**
+ * How big to draw a sensor, in image pixels — **two independent sizes, and the
+ * split is the point.**
+ *
+ * The diamond is a **world** size: one track width across (`geometry.ts`'s
+ * `trackWidthPx`), so it shrinks with the photograph and a sensor's footprint
+ * is directly comparable to the cars around it. The label is a **screen** size,
+ * held constant by the viewer's `symbolSize`: it is annotation about the
+ * sensor, not a measurement of it, and a name scaled to the track would be
+ * illegible at the DPT 18–19 the fixture corpus sits at.
+ */
+export interface SensorSymbolSize {
+  /** Diameter of the diamond, corner to corner — one track width. */
+  readonly diameterPx: number;
+  /** Label font size, constant on screen at any zoom. */
+  readonly labelPx: number;
+}
+
+/**
  * A sensor as a ringed diamond labelled with its name or id.
  *
  * @param sensor The sensor, in image pixels.
- * @param size Symbol size in **image pixels**, which the viewer recomputes from
- *   the viewport so the diamond stays a constant size on screen.
+ * @param size The diamond's diameter and the label's font size, both in image
+ *   pixels and deliberately unrelated — see {@link SensorSymbolSize}.
  * @param frame The image's bounds, `rr-viewer`'s `resolution`. Only the label
  *   reads it, to flip inwards at an edge instead of being clipped; the diamond
  *   is drawn on its pixel wherever that pixel is.
  */
-export function renderSensor(sensor: Sensor, size: number, frame: FrameSize): SVGTemplateResult {
+export function renderSensor(
+  sensor: Sensor,
+  size: SensorSymbolSize,
+  frame: FrameSize
+): SVGTemplateResult {
   const { x, y } = sensor;
-  const arm = size / 2;
-  const core = size * 0.12;
+  const arm = size.diameterPx / 2;
+  // The core marks the exact pixel and must stay visible when the track is a
+  // few pixels across, so it is a floor rather than a fraction of the diamond.
+  const core = Math.max(size.diameterPx * 0.12, MIN_CORE_RADIUS_PX);
 
   const label = sensorLabelText(sensor);
-  const fontSize = size * 0.42;
-  // Up and to the right when there is room, flipped inwards at the top or
-  // right edge — the same rule the crosshair's label follows, because the
-  // decision belongs to the frame rather than to the symbol. See `placeLabel`.
-  const placement = placeLabel({ x, y }, label, fontSize, size * 0.29, frame);
+  // The gap follows the label, not the diamond: it separates text from symbol,
+  // and a world-scaled gap would put the name inside a large sensor and a track
+  // away from a small one.
+  const placement = placeLabel({ x, y }, label, size.labelPx, size.labelPx * 0.7, frame);
 
   return svg`
     <g class="sensor" data-sensor-id="${sensor.id}">
@@ -115,7 +149,7 @@ export function renderSensor(sensor: Sensor, size: number, frame: FrameSize): SV
         y="${placement.y}"
         text-anchor="${placement.textAnchor}"
         dominant-baseline="${placement.dominantBaseline}"
-        font-size="${fontSize}"
+        font-size="${size.labelPx}"
       >
         ${label}
       </text>

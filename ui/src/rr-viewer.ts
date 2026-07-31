@@ -4,6 +4,8 @@ import { renderMarker, markerDefs, markerStyles } from './marker.js';
 import type { MarkerData } from './marker.js';
 import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMarker.js';
 import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
+import type { SensorSymbolSize } from './sensorMarker.js';
+import { trackWidthPx } from './geometry.js';
 import type { CalibrationPoint, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
@@ -48,6 +50,15 @@ export const viewerStyles = css`
 `;
 
 const MARKER_SIZE_PX = 36;
+
+/**
+ * Label font size as a fraction of the screen-constant symbol size.
+ *
+ * The calibration crosshair uses the same 0.42 internally, so the two labels
+ * are the same size on screen — they are the same kind of annotation, and a
+ * difference would read as a difference in importance.
+ */
+const LABEL_SIZE_RATIO = 0.42;
 
 /**
  * A pointer gesture, in **image pixel coordinates**.
@@ -115,7 +126,7 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * pixel coordinates. Changing either half misplaces every marker.
  *
  * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `sensors`,
- * `resolution`.
+ * `dpt`, `resolution`.
  *
  * @fires rr-pointer-down - Pointer pressed. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-move - Pointer moved. Detail: {@link ViewerPointerDetail}
@@ -146,6 +157,21 @@ export class RrViewer extends LitElement {
    * pass the same list.
    */
   @property({ attribute: false }) sensors: readonly Sensor[] = [];
+  /**
+   * The layout's DPT, or `null` when calibration does not resolve one.
+   *
+   * The one property here that is neither media nor a thing to draw: it is the
+   * **scale** the world-sized symbols are drawn at. A sensor is one track width
+   * across (`geometry.ts` § `trackWidthPx`) and a car will be 2.09, so both
+   * shrink with the photograph rather than staying a constant size on screen —
+   * which is what makes a sensor's footprint comparable to the cars around it.
+   *
+   * `null` is a real state, not an error: an archive can carry sensors and no
+   * calibration, since deleting a calibration point is allowed at any time. The
+   * symbols then fall back to `symbolSize`, so they stay visible and grabbable
+   * instead of vanishing at a size nothing can compute.
+   */
+  @property({ attribute: false }) dpt: number | null = null;
   @property({ type: Object }) resolution = { width: 1920, height: 1080 };
 
   @state() private symbolSize = MARKER_SIZE_PX;
@@ -280,6 +306,21 @@ export class RrViewer extends LitElement {
     if (svg?.hasPointerCapture?.(pointerId)) svg.releasePointerCapture(pointerId);
   }
 
+  /**
+   * The two sizes a sensor is drawn at: a world diameter and a screen label.
+   *
+   * Assembled here because this is the only place both numbers exist — `dpt`
+   * comes down as a property and `symbolSize` is measured off the viewport.
+   * With no DPT the diamond falls back to the screen size, which is what keeps
+   * the sensors of an uncalibrated archive on screen and grabbable.
+   */
+  private sensorSize(): SensorSymbolSize {
+    return {
+      diameterPx: this.dpt === null ? this.symbolSize : trackWidthPx(this.dpt),
+      labelPx: this.symbolSize * LABEL_SIZE_RATIO,
+    };
+  }
+
   render() {
     return html`
       <div class="viewport">
@@ -305,7 +346,7 @@ export class RrViewer extends LitElement {
             renderCalibrationPoint(p, i, this.symbolSize, this.resolution)
           )}
 
-          ${this.sensors.map(s => renderSensor(s, this.symbolSize, this.resolution))}
+          ${this.sensors.map(s => renderSensor(s, this.sensorSize(), this.resolution))}
         </svg>
       </div>
     `;

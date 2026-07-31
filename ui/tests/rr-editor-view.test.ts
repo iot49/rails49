@@ -1089,6 +1089,21 @@ describe('rr-editor-view', () => {
       expect(el.shadowRoot!.querySelector('rr-viewer')!.sensors).to.deep.equal(sensors());
     });
 
+    it('hands the viewer the DPT, which is what sizes a sensor', async () => {
+      // A sensor is drawn one track width across, and a track width in image
+      // pixels *is* DPT — so the viewer needs the number, not just the points.
+      const el = await mountWithSensorTool();
+      const viewer = el.shadowRoot!.querySelector('rr-viewer')!;
+      expect(viewer.dpt).to.equal(getDPT(archive.getManifest()));
+
+      // And it follows the calibration live, mid-session.
+      await drag(el, [
+        { x: 100, y: 0 },
+        { x: 200, y: 0 },
+      ]);
+      expect(viewer.dpt).to.equal(getDPT(archive.getManifest()));
+    });
+
     it('asks no dialog on placement — a sensor with no name is complete', async () => {
       const el = await mountWithSensorTool();
       const show = stubSensorDialog(el);

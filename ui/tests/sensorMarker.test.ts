@@ -21,6 +21,15 @@ const sensor = (over: Partial<Sensor> = {}): Sensor => ({
 /** Big enough that the fixture sensor at (100, 200) is nowhere near an edge. */
 const frame = { width: 1920, height: 1080 };
 
+/**
+ * A diamond `diameter` image pixels across, labelled at a fixed screen size.
+ *
+ * The two are independent by design — the diamond is a track width and shrinks
+ * with the photograph, the label is annotation and does not — so the default
+ * here holds the label still while a test varies the diameter.
+ */
+const size = (diameterPx: number, labelPx = 16) => ({ diameterPx, labelPx });
+
 describe('sensorLabelText()', () => {
   it('shows the name when there is one', () => {
     expect(sensorLabelText(sensor({ name: 'Yard throat' }))).toBe('Yard throat');
@@ -39,7 +48,7 @@ describe('sensorLabelText()', () => {
 
 describe('renderSensor()', () => {
   it('draws a diamond centered on the image pixel', () => {
-    const el = renderSvg(renderSensor(sensor(), 40, frame));
+    const el = renderSvg(renderSensor(sensor(), size(40), frame));
     const points = el
       .querySelector('polygon')!
       .getAttribute('points')!
@@ -55,7 +64,7 @@ describe('renderSensor()', () => {
   });
 
   it('marks the exact pixel with a filled core', () => {
-    const el = renderSvg(renderSensor(sensor(), 40, frame));
+    const el = renderSvg(renderSensor(sensor(), size(40), frame));
     const circle = el.querySelector('circle')!;
     expect(Number(circle.getAttribute('cx'))).toBe(100);
     expect(Number(circle.getAttribute('cy'))).toBe(200);
@@ -64,7 +73,7 @@ describe('renderSensor()', () => {
   it('is a different shape from the calibration crosshair', () => {
     // `SPEC.md` § Reference points: a calibration point must be unmistakable
     // from a sensor. Shape, not just colour — the two never share an element.
-    const sensorEl = renderSvg(renderSensor(sensor(), 40, frame));
+    const sensorEl = renderSvg(renderSensor(sensor(), size(40), frame));
     const calibrationEl = renderSvg(
       renderCalibrationPoint({ px: { x: 100, y: 200 }, world: { x: 0, y: 0, z: 0 } }, 0, 40, frame)
     );
@@ -75,7 +84,7 @@ describe('renderSensor()', () => {
     expect(calibrationEl.querySelectorAll('line')).toHaveLength(2);
   });
 
-  it('scales with the symbol size, so the diamond is constant on screen', () => {
+  it('spans exactly the diameter it is given, which is one track width', () => {
     const spanOf = (el: SVGElement) => {
       const xs = el
         .querySelector('polygon')!
@@ -84,23 +93,43 @@ describe('renderSensor()', () => {
         .map(pair => Number(pair.split(',')[0]));
       return Math.max(...xs) - Math.min(...xs);
     };
-    expect(spanOf(renderSvg(renderSensor(sensor(), 80, frame)))).toBe(
-      spanOf(renderSvg(renderSensor(sensor(), 20, frame))) * 4
-    );
+    expect(spanOf(renderSvg(renderSensor(sensor(), size(40), frame)))).toBe(40);
+    expect(spanOf(renderSvg(renderSensor(sensor(), size(18), frame)))).toBe(18);
+  });
+
+  it('sizes the label independently of the diamond', () => {
+    // The diamond is a world size and the label is a screen size: a sensor on a
+    // distant track shrinks, its name does not.
+    const wide = renderSvg(renderSensor(sensor(), size(120, 16), frame));
+    const narrow = renderSvg(renderSensor(sensor(), size(18, 16), frame));
+
+    expect(Number(wide.querySelector('text')!.getAttribute('font-size'))).toBe(16);
+    expect(Number(narrow.querySelector('text')!.getAttribute('font-size'))).toBe(16);
+  });
+
+  it('keeps the core visible when the track is only a few pixels across', () => {
+    // At DPT 18 the diamond is 18 px wide and 12% of it is barely a pixel; the
+    // dot names the pixel the sensor *is*, so it has a floor.
+    const tiny = renderSvg(renderSensor(sensor(), size(4), frame));
+    expect(Number(tiny.querySelector('circle')!.getAttribute('r'))).toBeGreaterThanOrEqual(1.5);
+
+    // Above the floor it is still a fraction of the diamond.
+    const large = renderSvg(renderSensor(sensor(), size(100), frame));
+    expect(Number(large.querySelector('circle')!.getAttribute('r'))).toBe(12);
   });
 
   it('carries its id, which is the handle every gesture refers to', () => {
-    const el = renderSvg(renderSensor(sensor(), 40, frame));
+    const el = renderSvg(renderSensor(sensor(), size(40), frame));
     expect(el.querySelector('[data-sensor-id]')!.getAttribute('data-sensor-id')).toBe('S1abcdefghi');
   });
 
   it('labels the sensor with its name, or its id when unnamed', () => {
     expect(
-      renderSvg(renderSensor(sensor({ name: 'Yard throat' }), 40, frame)).querySelector('text')!
+      renderSvg(renderSensor(sensor({ name: 'Yard throat' }), size(40), frame)).querySelector('text')!
         .textContent
     ).toContain('Yard throat');
     expect(
-      renderSvg(renderSensor(sensor(), 40, frame)).querySelector('text')!.textContent
+      renderSvg(renderSensor(sensor(), size(40), frame)).querySelector('text')!.textContent
     ).toContain('S1abcdefghi');
   });
 
@@ -110,7 +139,7 @@ describe('renderSensor()', () => {
     const textOf = (el: SVGElement) => el.querySelector('text')!;
 
     it('draws up and to the right of a sensor well inside the frame', () => {
-      const text = textOf(renderSvg(renderSensor(sensor(), 40, frame)));
+      const text = textOf(renderSvg(renderSensor(sensor(), size(40), frame)));
       expect(text.getAttribute('text-anchor')).toBe('start');
       expect(text.getAttribute('dominant-baseline')).toBe('text-after-edge');
       expect(Number(text.getAttribute('x'))).toBeGreaterThan(100);
@@ -119,16 +148,16 @@ describe('renderSensor()', () => {
 
     it('flips the label inwards at the right and top edges', () => {
       const right = textOf(
-        renderSvg(renderSensor(sensor({ x: frame.width - 30, y: 500 }), 40, frame))
+        renderSvg(renderSensor(sensor({ x: frame.width - 30, y: 500 }), size(40), frame))
       );
       expect(right.getAttribute('text-anchor')).toBe('end');
 
-      const top = textOf(renderSvg(renderSensor(sensor({ x: 500, y: 4 }), 40, frame)));
+      const top = textOf(renderSvg(renderSensor(sensor({ x: 500, y: 4 }), size(40), frame)));
       expect(top.getAttribute('dominant-baseline')).toBe('text-before-edge');
     });
 
     it('leaves the diamond itself untouched by the flip', () => {
-      const el = renderSvg(renderSensor(sensor({ x: frame.width - 5, y: 5 }), 40, frame));
+      const el = renderSvg(renderSensor(sensor({ x: frame.width - 5, y: 5 }), size(40), frame));
       expect(Number(el.querySelector('circle')!.getAttribute('cx'))).toBe(frame.width - 5);
       expect(Number(el.querySelector('circle')!.getAttribute('cy'))).toBe(5);
     });
