@@ -1185,6 +1185,21 @@ describe('rr-editor-view', () => {
       expect(history.size).to.equal(size);
     });
 
+    it('grabs a sensor anywhere on the symbol it is drawn as', async () => {
+      // The archive calibrates to DPT 89.7, so the diamond is ~90 image px
+      // across — far wider than the pointer's own 14 screen px of reach, and a
+      // symbol you can see but cannot click reads as a bug.
+      const el = await mountWithSensorTool();
+      await clickAt(el, { x: 600, y: 400 });
+      const show = stubSensorDialog(el);
+
+      // 40 px off centre: inside the diamond, outside the pointer radius.
+      await clickAt(el, { x: 640, y: 400 });
+
+      expect(show).toHaveBeenCalledOnce();
+      expect(sensors()).to.have.length(1);
+    });
+
     it('drags a sensor, one entry per gesture, targeting layout', async () => {
       const history = new EditHistory();
       history.attach(archive);

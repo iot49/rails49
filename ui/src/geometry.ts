@@ -42,6 +42,35 @@ export function trackWidthPx(dpt: number): number {
 }
 
 /**
+ * Size of a screen-constant symbol, in **screen** pixels.
+ *
+ * Markers, crosshairs and every label are drawn this big however far the
+ * photograph is zoomed — they annotate the image rather than measure it. It
+ * lives here rather than in `rr-viewer` because the hit-test needs the same
+ * number: a sensor with no DPT is drawn at this size, and what is drawn is what
+ * must be grabbable.
+ */
+export const SYMBOL_SIZE_SCREEN_PX = 36;
+
+/**
+ * The diameter a sensor is **drawn** at, in image pixels — the one place that
+ * decides it.
+ *
+ * Shared by the renderer and the hit-test on purpose. The grab radius is
+ * derived from this same number, so "what I can see" and "what I can grab"
+ * cannot drift apart; two independent copies of the sizing rule is exactly how
+ * a symbol ends up looking bigger than it is clickable.
+ *
+ * One track width when the layout is calibrated. With no DPT it falls back to
+ * the screen-constant size: an archive can carry sensors and no calibration —
+ * deleting a calibration point is allowed at any time — and a symbol sized from
+ * a number that does not exist would vanish.
+ */
+export function sensorDiameterPx(dpt: number | null, imagePxPerScreenPx: number): number {
+  return dpt === null ? SYMBOL_SIZE_SCREEN_PX * imagePxPerScreenPx : trackWidthPx(dpt);
+}
+
+/**
  * Car width in image pixels, derived from DPT rather than stored per label.
  *
  * `DPT * STANDARD_WIDTH / STANDARD_GAUGE` — the scale ratio cancels, so a car
@@ -258,6 +287,15 @@ export interface HitScene {
   readonly sensors: readonly Sensor[];
   /** The layout's calibration points. */
   readonly calibrationPoints: readonly CalibrationPoint[];
+  /**
+   * The layout's DPT, or `null` when calibration resolves none.
+   *
+   * Not an object to hit: it is the **scale the world-sized objects are drawn
+   * at**, and a hit-test that did not know it would grab a sensor at a radius
+   * unrelated to the one on screen. It belongs to the scene rather than to the
+   * tolerance because it describes the layout, not the pointing device.
+   */
+  readonly dpt: number | null;
 }
 
 /**
@@ -282,6 +320,13 @@ export interface HitTolerance {
  * device, and a sensor that grabs at a different distance than a calibration
  * point would feel like a bug. Sized for a fingertip on the phone the labeling
  * is done on, not for a mouse.
+ *
+ * It is a **floor, not a cap**. An object drawn larger than this is grabbable
+ * across what is drawn — see {@link hitTest} — because the visible symbol is
+ * the editor's promise about where the object is, and a symbol wider than its
+ * own hit area breaks that promise the first time a click on it misses. The
+ * floor is what keeps the promise from shrinking below a fingertip when the
+ * object itself is tiny.
  */
 export const DEFAULT_GRAB_RADIUS_SCREEN_PX = 14;
 
@@ -336,30 +381,42 @@ interface Candidate {
  * body of a car is not grabbable, because the only edits a span supports are to
  * its two ends.
  *
+ * **A sensor is grabbable across the whole symbol**, not just at its centre.
+ * Every other target is a point wearing an annotation, so the pointing device's
+ * radius is the whole story; a sensor is a drawn *footprint* one track wide,
+ * and a symbol visibly larger than its own hit area reads as a bug the first
+ * time a click on it misses. Its reach is therefore the larger of the two —
+ * never smaller, so a sensor on a distant track stays as easy to hit as
+ * anything else. Being a circle of the diamond's half-diagonal, it also extends
+ * a little past the diamond's edges, which is the forgiving direction.
+ *
  * Coincidence for couplers is **exact equality**, not a tolerance: chaining and
  * the shared handle both write the identical value to every end they join, so
  * anything that merely looks close is two objects the user placed separately,
  * and fusing them would move geometry they never joined.
  */
 export function hitTest(scene: HitScene, at: Point, tolerance: HitTolerance): HitTarget | null {
-  const reach = tolerance.screenPx * tolerance.imagePxPerScreenPx;
-  const reachSq = reach * reach;
+  const pointerReach = tolerance.screenPx * tolerance.imagePxPerScreenPx;
+  const sensorReach = Math.max(
+    pointerReach,
+    sensorDiameterPx(scene.dpt, tolerance.imagePxPerScreenPx) / 2
+  );
 
   const candidates: Candidate[] = [];
-  const push = (target: CandidateTarget, point: Point) => {
+  const push = (target: CandidateTarget, point: Point, reach: number) => {
     const distanceSq = (point.x - at.x) ** 2 + (point.y - at.y) ** 2;
-    if (distanceSq <= reachSq) candidates.push({ target, at: point, distanceSq });
+    if (distanceSq <= reach * reach) candidates.push({ target, at: point, distanceSq });
   };
 
   for (const label of scene.cars) {
-    push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p0' }] }, label.p0);
-    push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p1' }] }, label.p1);
+    push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p0' }] }, label.p0, pointerReach);
+    push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p1' }] }, label.p1, pointerReach);
   }
   for (const s of scene.sensors) {
-    push({ kind: 'sensor', id: s.id }, { x: s.x, y: s.y });
+    push({ kind: 'sensor', id: s.id }, { x: s.x, y: s.y }, sensorReach);
   }
   scene.calibrationPoints.forEach((p, index) => {
-    push({ kind: 'calibration', index }, p.px);
+    push({ kind: 'calibration', index }, p.px, pointerReach);
   });
 
   let best: Candidate | null = null;

@@ -575,11 +575,14 @@ export class RREditorView extends LitElement {
    * and are grabbable on every frame (`SPEC.md` § Location Data).
    */
   private _scene(): HitScene {
-    const layout = this.archive?.getManifest().layout;
+    const manifest = this.archive?.getManifest();
     return {
       cars: [],
-      sensors: layout?.sensors ?? [],
-      calibrationPoints: layout?.calibration.points ?? [],
+      sensors: manifest?.layout.sensors ?? [],
+      calibrationPoints: manifest?.layout.calibration.points ?? [],
+      // Not a thing to hit: the scale the world-sized objects are drawn at, so
+      // a sensor is grabbable across the symbol the user can actually see.
+      dpt: manifest ? getDPT(manifest) : null,
     };
   }
 

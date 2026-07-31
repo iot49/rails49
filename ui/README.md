@@ -365,6 +365,12 @@ With `dpt` null the diamond falls back to `symbolSize`. An archive can carry sen
 calibration, since a calibration point can be deleted at any time, and a sensor that vanished at a
 size nothing can compute would be unfindable and ungrabbable.
 
+**The measurement happens in `firstUpdated()` as well as in the `ResizeObserver`.** The observer's
+callback defers through `requestAnimationFrame`, and a frame that never arrives — a hidden pane, a
+background tab, an occluded window — used to leave every screen-constant symbol at its initial ratio,
+drawing crosshairs and labels at whatever size the *image* pixels happened to be. jsdom reports every
+rect as zero, so the suite cannot catch that; it was found by measuring a live page.
+
 ---
 
 ### `marker.ts`
@@ -410,17 +416,19 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | Export | Description |
 |---|---|
 | `trackWidthPx(dpt)` | Track width in image pixels — which **is** DPT, since `getDPT` returns px/mm × gauge_mm. A sensor is drawn one of these across |
+| `sensorDiameterPx(dpt, imagePxPerScreenPx)` | The diameter a sensor is **drawn** at: one track width, or the screen-constant size with no DPT. The renderer and the hit-test share it, so what you see is what you can grab |
+| `SYMBOL_SIZE_SCREEN_PX` | Size of a screen-constant symbol (markers, crosshairs, labels), in screen pixels |
 | `carWidthPx(dpt)` | Car width in image pixels: `dpt × STANDARD_WIDTH / STANDARD_GAUGE` — 2.09 track widths |
 | `carCorners(p0, p1, dpt)` | The four corners of the oriented rectangle, in polygon order from the `p0` side |
 | `hitTest(scene, at, tolerance)` | The `HitTarget` under an image-pixel coordinate, or `null` |
-| `HitScene` | `{ cars, sensors, calibrationPoints }` — everything grabbable for one image of one layout |
+| `HitScene` | `{ cars, sensors, calibrationPoints, dpt }` — everything grabbable for one image of one layout, plus the scale the world-sized ones are drawn at |
 | `HitTarget` | `car-endpoint` / `coupler` (both carrying `ends`), `sensor` (`id`), `calibration` (`index`) |
 | `HitTolerance` | `{ screenPx, imagePxPerScreenPx }` |
 | `dragHandles(hit, scene)` | The points a grab moves — **a list**, one per object, and two or more for a coupler |
 | `DragHandle` | `{ ref, from }`: what it addresses, and where it sat at pointer-down |
 | `HandleRef` | `calibration` (`index`), `car-end` (`id`, `end`), `sensor` (`id`) — never an object reference |
 | `dragTo(handle, delta)` | Where that handle lands, in whole image pixels |
-| `DEFAULT_GRAB_RADIUS_SCREEN_PX` | The grab radius every tool uses, in screen pixels — one number, because it describes the pointing device |
+| `DEFAULT_GRAB_RADIUS_SCREEN_PX` | The grab radius every tool uses, in screen pixels — one number, because it describes the pointing device. A **floor**, not a cap: a sensor is grabbable across its whole drawn symbol |
 | `CLICK_SLOP_SCREEN_PX` | How far a pointer may travel between press and release and still be a click. Smaller than the grab radius: this is tremor, not aim |
 | `isClick(from, to, tolerance)` | Whether a finished gesture was a click rather than a drag |
 | `placeLabel(at, text, fontSizePx, offsetPx, frame)` | Where a symbol's label goes so it does not run off the frame — up and to the right, flipped inwards at the top or right edge |

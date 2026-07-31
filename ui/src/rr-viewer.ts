@@ -5,7 +5,7 @@ import type { MarkerData } from './marker.js';
 import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMarker.js';
 import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
 import type { SensorSymbolSize } from './sensorMarker.js';
-import { trackWidthPx } from './geometry.js';
+import { sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
 import type { CalibrationPoint, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
@@ -48,8 +48,6 @@ export const viewerStyles = css`
     touch-action: none;
   }
 `;
-
-const MARKER_SIZE_PX = 36;
 
 /**
  * Label font size as a fraction of the screen-constant symbol size.
@@ -168,13 +166,24 @@ export class RrViewer extends LitElement {
    *
    * `null` is a real state, not an error: an archive can carry sensors and no
    * calibration, since deleting a calibration point is allowed at any time. The
-   * symbols then fall back to `symbolSize`, so they stay visible and grabbable
-   * instead of vanishing at a size nothing can compute.
+   * symbols then fall back to the screen-constant size, so they stay visible
+   * and grabbable instead of vanishing at a size nothing can compute. Both
+   * cases live in `geometry.ts`'s `sensorDiameterPx`, which the editor's
+   * hit-test reads too — what is drawn is what is grabbable.
    */
   @property({ attribute: false }) dpt: number | null = null;
   @property({ type: Object }) resolution = { width: 1920, height: 1080 };
 
-  @state() private symbolSize = MARKER_SIZE_PX;
+  /**
+   * Image pixels per screen pixel, as the viewport currently lays out.
+   *
+   * The state the `ResizeObserver` keeps, rather than `symbolSize` directly:
+   * it is the *conversion*, so both a screen-constant symbol and a world-sized
+   * one derive from one number, and it is the same quantity every pointer event
+   * reports — which is what lets the hit-test size a grab the way the renderer
+   * sized the symbol.
+   */
+  @state() private imagePxPerScreenPx = 1;
 
   @query('svg') private svgElement!: SVGSVGElement;
 
@@ -195,16 +204,39 @@ export class RrViewer extends LitElement {
     this.resizeObserver?.disconnect();
   }
 
+  /**
+   * Measure as soon as there is something laid out to measure.
+   *
+   * The `ResizeObserver` is not enough on its own: its callback defers through
+   * `requestAnimationFrame`, and a frame that never comes — a hidden pane, a
+   * background tab, an occluded window — leaves every screen-constant symbol at
+   * the ratio it was initialised with, so crosshairs and labels render at
+   * whatever size the *image* pixels happen to be. Measuring here costs one
+   * `getBoundingClientRect` at mount and makes the first paint right.
+   */
+  protected firstUpdated() {
+    this.updateSymbolSize();
+  }
+
   private updateSymbolSize() {
     if (!this.svgElement) return;
     const rect = this.svgElement.getBoundingClientRect();
     if (rect.width === 0) return;
 
-    // symbolSize in SVG units = constant_px * (viewBoxWidth / screenWidth)
-    const newSize = MARKER_SIZE_PX * (this.resolution.width / rect.width);
-    if (this.symbolSize !== newSize) {
-      this.symbolSize = newSize;
+    // One image pixel per `rect.width / viewBoxWidth` screen pixels — the same
+    // ratio the pointer events report, taken here from the laid-out box.
+    const ratio = this.resolution.width / rect.width;
+    if (this.imagePxPerScreenPx !== ratio) {
+      this.imagePxPerScreenPx = ratio;
     }
+  }
+
+  /**
+   * A screen-constant symbol, in image pixels: what markers, crosshairs and
+   * every label are drawn at, whatever the zoom.
+   */
+  private get symbolSize(): number {
+    return SYMBOL_SIZE_SCREEN_PX * this.imagePxPerScreenPx;
   }
 
   /**
@@ -316,7 +348,7 @@ export class RrViewer extends LitElement {
    */
   private sensorSize(): SensorSymbolSize {
     return {
-      diameterPx: this.dpt === null ? this.symbolSize : trackWidthPx(this.dpt),
+      diameterPx: sensorDiameterPx(this.dpt, this.imagePxPerScreenPx),
       labelPx: this.symbolSize * LABEL_SIZE_RATIO,
     };
   }

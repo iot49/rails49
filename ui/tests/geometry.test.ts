@@ -11,6 +11,8 @@ import {
   hitTest,
   isClick,
   placeLabel,
+  sensorDiameterPx,
+  SYMBOL_SIZE_SCREEN_PX,
   trackWidthPx,
 } from '../src/geometry.js';
 import type { HitScene, HitTolerance } from '../src/geometry.js';
@@ -27,7 +29,7 @@ function calibrationPoint(x: number, y: number): CalibrationPoint {
   return { px: { x, y }, world: { x: 0, y: 0, z: 0 } };
 }
 
-const emptyScene: HitScene = { cars: [], sensors: [], calibrationPoints: [] };
+const emptyScene: HitScene = { cars: [], sensors: [], calibrationPoints: [], dpt: null };
 
 /** 10 image pixels of grab radius: 5 screen px at 2 image px per screen px. */
 const tolerance: HitTolerance = { screenPx: 5, imagePxPerScreenPx: 2 };
@@ -216,6 +218,8 @@ describe('hitTest', () => {
       cars: [car('c1', { x: 100, y: 100 }, { x: 200, y: 100 })],
       sensors: [sensor('s1', 400, 400)],
       calibrationPoints: [calibrationPoint(0, 0), calibrationPoint(600, 600)],
+      // No DPT: sensors then grab at the pointer radius, like everything else.
+      dpt: null,
     };
 
     it('hits a sensor by its id', () => {
@@ -237,6 +241,8 @@ describe('hitTest', () => {
         cars: [car('c1', { x: 500, y: 500 }, { x: 600, y: 500 })],
         sensors: [sensor('s1', 506, 500)],
         calibrationPoints: [calibrationPoint(502, 500)],
+        // No DPT: sensors then grab at the pointer radius, like everything else.
+        dpt: null,
       };
       expect(hitTest(overlapping, { x: 503, y: 500 }, tolerance)).to.deep.equal({
         kind: 'calibration',
@@ -246,24 +252,93 @@ describe('hitTest', () => {
   });
 
   describe('tolerance', () => {
-    const scene: HitScene = { ...emptyScene, sensors: [sensor('s1', 100, 100)] };
+    // A calibration point, because it is grabbed at the pointer's radius and
+    // nothing else — a sensor's reach also answers to the size it is drawn at.
+    const scene: HitScene = { ...emptyScene, calibrationPoints: [calibrationPoint(100, 100)] };
 
     it('is measured in screen pixels, so a zoomed-out view grabs a wider area', () => {
       const zoomedOut: HitTolerance = { screenPx: 5, imagePxPerScreenPx: 8 };
       // 40 image px of reach at this zoom, 10 at the default.
       expect(hitTest(scene, { x: 130, y: 100 }, zoomedOut)).to.deep.equal({
-        kind: 'sensor',
-        id: 's1',
+        kind: 'calibration',
+        index: 0,
       });
       expect(hitTest(scene, { x: 130, y: 100 }, tolerance)).to.equal(null);
     });
 
     it('hits exactly on the tolerance boundary', () => {
       expect(hitTest(scene, { x: 110, y: 100 }, tolerance)).to.deep.equal({
+        kind: 'calibration',
+        index: 0,
+      });
+    });
+  });
+
+  describe('a sensor is grabbable across the symbol it is drawn as', () => {
+    // A symbol visibly larger than its own hit area reads as a bug the first
+    // time a click on it misses, so the reach follows what is on screen.
+    const at = (dpt: number | null): HitScene => ({
+      ...emptyScene,
+      sensors: [sensor('s1', 100, 100)],
+      dpt,
+    });
+
+    it('grabs anywhere inside a sensor wider than the pointer radius', () => {
+      // DPT 120: the diamond is 120 image px across, so its half-diagonal is 60
+      // — far beyond the 10 image px the pointer alone reaches here.
+      const hit = hitTest(at(120), { x: 150, y: 100 }, tolerance);
+      expect(hit).to.deep.equal({ kind: 'sensor', id: 's1' });
+    });
+
+    it('stops at the symbol\'s edge rather than reaching past it', () => {
+      expect(hitTest(at(120), { x: 161, y: 100 }, tolerance)).to.equal(null);
+    });
+
+    it('never grabs at less than the pointer radius, however small the track', () => {
+      // At DPT 4 the diamond is 4 px across; a fingertip is still a fingertip,
+      // so the sensor stays as easy to hit as anything else on the image.
+      const hit = hitTest(at(4), { x: 108, y: 100 }, tolerance);
+      expect(hit).to.deep.equal({ kind: 'sensor', id: 's1' });
+    });
+
+    it('follows the fallback size when no DPT resolves', () => {
+      // Drawn at the screen-constant size, so grabbable across that instead.
+      expect(hitTest(at(null), { x: 130, y: 100 }, tolerance)).to.deep.equal({
         kind: 'sensor',
         id: 's1',
       });
     });
+
+    it('still loses to a nearer object, so aiming at one beats being big', () => {
+      const crowded: HitScene = {
+        ...emptyScene,
+        sensors: [sensor('s1', 100, 100)],
+        calibrationPoints: [calibrationPoint(140, 100)],
+        dpt: 120,
+      };
+      // Inside the sensor's reach, but the calibration point is nearer.
+      expect(hitTest(crowded, { x: 138, y: 100 }, tolerance)).to.deep.equal({
+        kind: 'calibration',
+        index: 0,
+      });
+    });
+  });
+});
+
+describe('sensorDiameterPx', () => {
+  it('is one track width when the layout is calibrated', () => {
+    expect(sensorDiameterPx(24, 2)).to.equal(trackWidthPx(24));
+  });
+
+  it('falls back to the screen-constant size with no DPT', () => {
+    // An archive can carry sensors and no calibration; the symbol must not
+    // vanish at a size nothing can compute.
+    expect(sensorDiameterPx(null, 2)).to.equal(SYMBOL_SIZE_SCREEN_PX * 2);
+    expect(sensorDiameterPx(null, 0.5)).to.equal(SYMBOL_SIZE_SCREEN_PX * 0.5);
+  });
+
+  it('ignores the zoom once a DPT exists, because the size is a world one', () => {
+    expect(sensorDiameterPx(24, 8)).to.equal(sensorDiameterPx(24, 0.25));
   });
 });
 
@@ -275,6 +350,8 @@ describe('dragHandles', () => {
     ],
     sensors: [sensor('s1', 400, 400)],
     calibrationPoints: [calibrationPoint(10, 20), calibrationPoint(600, 600)],
+    // No DPT: sensors then grab at the pointer radius, like everything else.
+    dpt: null,
   };
 
   it('gives a calibration point one handle, anchored where it is now', () => {
@@ -349,6 +426,7 @@ describe('dragTo', () => {
         ],
         sensors: [],
         calibrationPoints: [],
+        dpt: null,
       }
     );
     const delta = { x: 17.5, y: -3.2 };

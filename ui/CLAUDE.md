@@ -166,7 +166,10 @@ Four rules it encodes, each of which is wrong somewhere if reimplemented:
   crosshairs and markers stay constant on screen — they annotate the image rather than measure it.
   `rr-viewer` holds both: `dpt` for the world sizes, `symbolSize` for the screen ones.
 * **Tolerances are screen pixels**, converted with the viewer's `imagePxPerScreenPx`. A grab radius
-  belongs to the mouse, not to the photograph.
+  belongs to the mouse, not to the photograph — but it is a **floor, not a cap**: an object drawn at
+  a world size is grabbable across the whole symbol, because a symbol wider than its own hit area
+  reads as a bug the first time a click on it misses. `sensorDiameterPx` is shared by the renderer
+  and the hit-test so the two cannot drift apart.
 * **A coupler is exact coincidence.** Nothing about a coupling is stored; it is car ends at the
   identical pixel, which chaining and the shared handle guarantee. A proximity test would fuse cars
   the user placed separately.
