@@ -53,30 +53,91 @@ function getGaugeMM(scale: Scale): number {
  *          cannot answer", not "zero".
  */
 export function getDPT(manifest: ManifestData): number | null {
-  const points = manifest.layout.calibration.points;
+  const scale = fitScale(equalHeightPairs(manifest.layout.calibration.points));
+  if (scale === null) return null;
+  return scale * getGaugeMM(manifest.layout.scale);
+}
 
-  let numerator = 0;
-  let denominator = 0;
+/** One equal-height pair of calibration points, as the two separations the fit sees. */
+interface CalibrationPair {
+  /** Separation in image pixels. */
+  readonly dPx: number;
+  /** Separation on the layout, in mm. */
+  readonly dMm: number;
+}
 
+/**
+ * Every pair of calibration points at equal `z`, reduced to two separations.
+ *
+ * The one place the equal-`z` rule is applied. {@link getDPT} and
+ * {@link getDPTResidual} must select the same pairs or the residual would
+ * describe a fit nobody computed.
+ */
+function equalHeightPairs(points: readonly CalibrationPoint[]): CalibrationPair[] {
+  const pairs: CalibrationPair[] = [];
   for (let i = 0; i < points.length; i++) {
     for (let j = i + 1; j < points.length; j++) {
       const a = points[i];
       const b = points[j];
       if (a.world.z !== b.world.z) continue;
-
-      const dPx = Math.hypot(a.px.x - b.px.x, a.px.y - b.px.y);
-      const dMm = Math.hypot(a.world.x - b.world.x, a.world.y - b.world.y);
-
-      numerator += dPx * dMm;
-      denominator += dMm * dMm;
+      pairs.push({
+        dPx: Math.hypot(a.px.x - b.px.x, a.px.y - b.px.y),
+        dMm: Math.hypot(a.world.x - b.world.x, a.world.y - b.world.y),
+      });
     }
   }
+  return pairs;
+}
 
-  // Zero-separation pairs contribute nothing, so coincident points land here
-  // rather than dividing by zero.
+/**
+ * The least-squares scale in **pixels per millimetre**, before the gauge turns
+ * it into DPT: `Σ(d_px · d_mm) / Σ(d_mm²)`.
+ *
+ * `null` when the denominator is zero — no pair, or every pair zero millimetres
+ * apart. Zero-separation pairs contribute nothing to either sum, so coincident
+ * points land here rather than dividing by zero.
+ */
+function fitScale(pairs: readonly CalibrationPair[]): number | null {
+  let numerator = 0;
+  let denominator = 0;
+  for (const { dPx, dMm } of pairs) {
+    numerator += dPx * dMm;
+    denominator += dMm * dMm;
+  }
   if (denominator === 0) return null;
+  return numerator / denominator;
+}
 
-  return (numerator / denominator) * getGaugeMM(manifest.layout.scale);
+/**
+ * How badly the calibration points disagree with the scale fitted through them:
+ * the RMS of `d_px − s · d_mm` over the same equal-`z` pairs {@link getDPT}
+ * uses, in **image pixels**.
+ *
+ * A mis-typed world coordinate is otherwise absorbed silently into `s`, which
+ * shifts DPT and therefore every derived car width without anything looking
+ * wrong. The residual is what makes it visible, so the editor shows it.
+ *
+ * Pixels rather than a percentage because a click error is a fixed number of
+ * pixels; the number is directly comparable to how precisely a user can hit a
+ * feature. It is a pixel-domain quantity and so does not depend on `layout.scale`.
+ *
+ * @returns The RMS residual, or `null` when fewer than two pairs contribute —
+ *          one pair reproduces itself exactly, so its residual is zero by
+ *          construction and would claim an agreement nothing checked. This is
+ *          "more than two coplanar points", stated in terms of the fit.
+ */
+export function getDPTResidual(manifest: ManifestData): number | null {
+  const pairs = equalHeightPairs(manifest.layout.calibration.points);
+  if (pairs.length < 2) return null;
+
+  const scale = fitScale(pairs);
+  if (scale === null) return null;
+
+  let sumSq = 0;
+  for (const { dPx, dMm } of pairs) {
+    sumSq += (dPx - scale * dMm) ** 2;
+  }
+  return Math.sqrt(sumSq / pairs.length);
 }
 
 /**

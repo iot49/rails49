@@ -101,9 +101,33 @@ describe('rr-viewer', () => {
     expect(el.shadowRoot!.querySelectorAll('use').length).to.equal(2);
   });
 
+  describe('calibration points', () => {
+    const points = [
+      { px: { x: 100, y: 100 }, world: { x: 0, y: 0, z: 0 } },
+      { px: { x: 400, y: 300 }, world: { x: 0, y: 250, z: 0 } },
+    ];
+
+    it('draws one labelled crosshair per point', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .calibrationPoints=${points} .resolution=${resolution}></rr-viewer>
+      `);
+      const drawn = el.shadowRoot!.querySelectorAll('.calibration-point');
+      expect(drawn.length).to.equal(2);
+      expect(drawn[1].querySelector('text')!.textContent).to.contain('0, 250, 0');
+    });
+
+    it('draws none by default, so the live view is unaffected', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelector('.calibration-point')).to.not.exist;
+    });
+  });
+
   // The viewer reports pointer gestures but still authors nothing: v3's marker
   // add/move/delete and its draggable {p0, p1} pair went with the v4 reduction
-  // (#19) and do not come back. Placing anything is the editor's job.
+  // (#19) and do not come back. Placing anything is the editor's job — the
+  // crosshairs above are drawn from a property, never written by the viewer.
   describe('authors nothing', () => {
     it('emits no rr-marker-add when the svg is clicked', async () => {
       const el = await fixture<RrViewer>(html`

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CalibrationPoint, CarLabel, Sensor } from '@occupancy/r49';
 import { STANDARD_GAUGE, STANDARD_WIDTH } from '@occupancy/config';
-import { carWidthPx, carCorners, hitTest } from '../src/geometry.js';
+import { carWidthPx, carCorners, hitTest, isClick } from '../src/geometry.js';
 import type { HitScene, HitTolerance } from '../src/geometry.js';
 
 function car(id: string, p0: { x: number; y: number }, p1: { x: number; y: number }): CarLabel {
@@ -236,5 +236,28 @@ describe('hitTest', () => {
         id: 's1',
       });
     });
+  });
+});
+
+describe('isClick', () => {
+  const slop: HitTolerance = { screenPx: 5, imagePxPerScreenPx: 1 };
+
+  it('accepts a release on the pixel it was pressed on', () => {
+    expect(isClick({ x: 100, y: 100 }, { x: 100, y: 100 }, slop)).to.be.true;
+  });
+
+  it('accepts the tremor inside the slop, and the boundary itself', () => {
+    expect(isClick({ x: 100, y: 100 }, { x: 103, y: 96 }, slop)).to.be.true;
+  });
+
+  it('rejects a release beyond the slop — that is a drag', () => {
+    expect(isClick({ x: 100, y: 100 }, { x: 106, y: 100 }, slop)).to.be.false;
+  });
+
+  it('measures in screen pixels, so the same swipe is a drag at any zoom', () => {
+    const zoomedOut: HitTolerance = { screenPx: 5, imagePxPerScreenPx: 8 };
+    // 30 image px is under 4 screen px zoomed out, and 30 screen px at 1:1.
+    expect(isClick({ x: 100, y: 100 }, { x: 130, y: 100 }, zoomedOut)).to.be.true;
+    expect(isClick({ x: 100, y: 100 }, { x: 130, y: 100 }, slop)).to.be.false;
   });
 });
