@@ -75,6 +75,93 @@ export function carCorners(p0: Point, p1: Point, dpt: number): CarCorners {
   ];
 }
 
+/** The image the editor draws into, in image pixels — `rr-viewer`'s `resolution`. */
+export interface FrameSize {
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Where a symbol's text label goes, as the SVG attributes that place it. */
+export interface LabelPlacement {
+  readonly x: number;
+  readonly y: number;
+  /** `end` means the label runs leftwards from `x` — the right-edge flip. */
+  readonly textAnchor: 'start' | 'end';
+  /** `text-before-edge` means it hangs below `y` — the top-edge flip. */
+  readonly dominantBaseline: 'text-after-edge' | 'text-before-edge';
+}
+
+/**
+ * Advance width per character, as a fraction of the font size.
+ *
+ * Every label the editor draws is monospace (`--sl-font-mono`), where one
+ * character is one advance; 0.6em is the advance of the common monospace faces
+ * and errs slightly wide, which is the safe direction for a flip test.
+ */
+const MONOSPACE_ADVANCE_EM = 0.6;
+
+/**
+ * An **estimate** of a rendered label's width, not a measurement.
+ *
+ * Nothing here measures text: `measureText` and `getBBox` need layout, jsdom
+ * performs none, and a placement rule that depended on them would be untestable
+ * — the reason this module exists at all. So the width is derived from what is
+ * known without laying anything out: the label is monospace and its content is
+ * in hand, so it is character count × advance. Naming it an estimate is the
+ * point — a caller must not treat the number as a box the glyphs are inside.
+ */
+export function estimateLabelWidthPx(text: string, fontSizePx: number): number {
+  return text.length * fontSizePx * MONOSPACE_ADVANCE_EM;
+}
+
+/**
+ * Where to put a symbol's label so it does not run off the frame.
+ *
+ * The preferred placement is **up and to the right** of the point, which is
+ * what every labelled symbol in the editor uses when it has room. Near the
+ * right edge the label flips to the left of the point, near the top it flips
+ * below: it is drawn on the inside, where a clipped label was.
+ *
+ * Only the axis that overflows flips, and it flips **only when the other side
+ * actually fits** — a frame narrower than the label overflows either way, and
+ * flipping there would trade a clipped tail for a clipped head, losing the
+ * leading digits that identify the point.
+ *
+ * Shared rather than inlined in a renderer because the sensor symbol (#31)
+ * carries a name in the same frame against the same edges. Its geometry differs;
+ * this decision does not.
+ *
+ * @param at The symbol's anchor, in image pixels.
+ * @param text The label's exact content — the width estimate reads it.
+ * @param fontSizePx Label font size in image pixels.
+ * @param offsetPx Gap between the anchor and the label, on both axes.
+ * @param frame The image bounds the flip is decided against.
+ */
+export function placeLabel(
+  at: Point,
+  text: string,
+  fontSizePx: number,
+  offsetPx: number,
+  frame: FrameSize
+): LabelPlacement {
+  const width = estimateLabelWidthPx(text, fontSizePx);
+
+  const overflowsRight = at.x + offsetPx + width > frame.width;
+  const flipLeft = overflowsRight && at.x - offsetPx - width >= 0;
+
+  // One line of text sits a font size above the baseline; `text-after-edge` is
+  // close enough to that for a flip test, and errs tall.
+  const overflowsTop = at.y - offsetPx - fontSizePx < 0;
+  const flipDown = overflowsTop && at.y + offsetPx + fontSizePx <= frame.height;
+
+  return {
+    x: flipLeft ? at.x - offsetPx : at.x + offsetPx,
+    y: flipDown ? at.y + offsetPx : at.y - offsetPx,
+    textAnchor: flipLeft ? 'end' : 'start',
+    dominantBaseline: flipDown ? 'text-before-edge' : 'text-after-edge',
+  };
+}
+
 /** One end of one car, keyed by label `id` — never by object identity. */
 export interface CarEnd {
   readonly id: string;

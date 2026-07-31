@@ -288,7 +288,11 @@ export class RrViewer extends LitElement {
 
           ${this.markers.map(m => renderMarker(m, this.symbolSize))}
 
-          ${this.calibrationPoints.map((p, i) => renderCalibrationPoint(p, i, this.symbolSize))}
+          ${this.calibrationPoints.map((p, i) =>
+            // `resolution` is the viewBox, so it is also the frame the label
+            // must stay inside — a point near an edge draws its label inwards.
+            renderCalibrationPoint(p, i, this.symbolSize, this.resolution)
+          )}
         </svg>
       </div>
     `;

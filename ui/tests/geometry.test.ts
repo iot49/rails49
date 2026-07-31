@@ -1,7 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import type { CalibrationPoint, CarLabel, Sensor } from '@occupancy/r49';
 import { STANDARD_GAUGE, STANDARD_WIDTH } from '@occupancy/config';
-import { carWidthPx, carCorners, dragHandles, dragTo, hitTest, isClick } from '../src/geometry.js';
+import {
+  carWidthPx,
+  carCorners,
+  dragHandles,
+  dragTo,
+  estimateLabelWidthPx,
+  hitTest,
+  isClick,
+  placeLabel,
+} from '../src/geometry.js';
 import type { HitScene, HitTolerance } from '../src/geometry.js';
 
 function car(id: string, p0: { x: number; y: number }, p1: { x: number; y: number }): CarLabel {
@@ -351,5 +360,97 @@ describe('isClick', () => {
     // 30 image px is under 4 screen px zoomed out, and 30 screen px at 1:1.
     expect(isClick({ x: 100, y: 100 }, { x: 130, y: 100 }, zoomedOut)).to.be.true;
     expect(isClick({ x: 100, y: 100 }, { x: 130, y: 100 }, slop)).to.be.false;
+  });
+});
+
+describe('estimateLabelWidthPx', () => {
+  it('grows with both the character count and the font size', () => {
+    expect(estimateLabelWidthPx('abcd', 10)).to.equal(estimateLabelWidthPx('ab', 10) * 2);
+    expect(estimateLabelWidthPx('ab', 20)).to.equal(estimateLabelWidthPx('ab', 10) * 2);
+  });
+
+  it('is zero for an empty label', () => {
+    expect(estimateLabelWidthPx('', 20)).to.equal(0);
+  });
+
+  it('stays within a monospace advance of the truth', () => {
+    // The estimate is deliberately not a measurement — jsdom cannot measure —
+    // so what is asserted is that it lands in the plausible band for a
+    // monospace face, between half and a full em per character.
+    const width = estimateLabelWidthPx('0, 250, 0 mm', 16);
+    expect(width).to.be.greaterThan(12 * 16 * 0.5);
+    expect(width).to.be.lessThan(12 * 16 * 1.0);
+  });
+});
+
+describe('placeLabel', () => {
+  const frame = { width: 1920, height: 1080 };
+  const fontSize = 16;
+  const offset = 8;
+  const text = '0, 250, 0 mm';
+
+  it('draws up and to the right of a point comfortably inside the frame', () => {
+    const placed = placeLabel({ x: 500, y: 500 }, text, fontSize, offset, frame);
+    expect(placed).to.deep.equal({
+      x: 508,
+      y: 492,
+      textAnchor: 'start',
+      dominantBaseline: 'text-after-edge',
+    });
+  });
+
+  it('flips to the left of a point whose label would run past the right edge', () => {
+    const near = { x: frame.width - 20, y: 500 };
+    const placed = placeLabel(near, text, fontSize, offset, frame);
+    expect(placed.textAnchor).to.equal('end');
+    expect(placed.x).to.equal(near.x - offset);
+    // Still above: only the axis that overflows flips.
+    expect(placed.dominantBaseline).to.equal('text-after-edge');
+    expect(placed.y).to.equal(500 - offset);
+  });
+
+  it('flips below a point whose label would run past the top edge', () => {
+    const placed = placeLabel({ x: 500, y: 10 }, text, fontSize, offset, frame);
+    expect(placed.dominantBaseline).to.equal('text-before-edge');
+    expect(placed.y).to.equal(10 + offset);
+    expect(placed.textAnchor).to.equal('start');
+    expect(placed.x).to.equal(508);
+  });
+
+  it('flips both axes in the top-right corner', () => {
+    const placed = placeLabel({ x: frame.width - 5, y: 5 }, text, fontSize, offset, frame);
+    expect(placed.textAnchor).to.equal('end');
+    expect(placed.dominantBaseline).to.equal('text-before-edge');
+  });
+
+  it('leaves the left and bottom edges alone — the preferred side already fits', () => {
+    const placed = placeLabel({ x: 0, y: frame.height }, text, fontSize, offset, frame);
+    expect(placed.textAnchor).to.equal('start');
+    expect(placed.dominantBaseline).to.equal('text-after-edge');
+  });
+
+  it('flips on the estimate, so a longer label flips further from the edge', () => {
+    const at = { x: frame.width - 120, y: 500 };
+    expect(placeLabel(at, 'x', fontSize, offset, frame).textAnchor).to.equal('start');
+    expect(
+      placeLabel(at, '-1234.5, -1234.5, -1234.5 mm', fontSize, offset, frame).textAnchor
+    ).to.equal('end');
+  });
+
+  it('does not flip into an edge that fits the label even less well', () => {
+    // A frame narrower than the label overflows either way; flipping there
+    // would trade a clipped tail for a clipped head and lose the leading
+    // digits, which are the ones that identify the point.
+    const narrow = { width: 60, height: 1080 };
+    const placed = placeLabel({ x: 50, y: 500 }, text, fontSize, offset, narrow);
+    expect(placed.textAnchor).to.equal('start');
+  });
+
+  it('is callable for any symbol that carries a label, not just a crosshair', () => {
+    // The sensor symbol (#31) sits in the same frame with the same edges and
+    // reads the same rule; only its offset differs.
+    const placed = placeLabel({ x: 500, y: 500 }, 'siding-3', fontSize, 20, frame);
+    expect(placed.x).to.equal(520);
+    expect(placed.y).to.equal(480);
   });
 });

@@ -353,6 +353,10 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | `DEFAULT_GRAB_RADIUS_SCREEN_PX` | The grab radius every tool uses, in screen pixels — one number, because it describes the pointing device |
 | `CLICK_SLOP_SCREEN_PX` | How far a pointer may travel between press and release and still be a click. Smaller than the grab radius: this is tremor, not aim |
 | `isClick(from, to, tolerance)` | Whether a finished gesture was a click rather than a drag |
+| `placeLabel(at, text, fontSizePx, offsetPx, frame)` | Where a symbol's label goes so it does not run off the frame — up and to the right, flipped inwards at the top or right edge |
+| `LabelPlacement` | `{ x, y, textAnchor, dominantBaseline }` — the SVG attributes that place the label |
+| `estimateLabelWidthPx(text, fontSizePx)` | An **estimate** of a monospace label's width: character count × 0.6em |
+| `FrameSize` | `{ width, height }` — the image bounds, `rr-viewer`'s `resolution` |
 
 **Both constants come from `@occupancy/config`.** The scale ratio cancels out of the width formula —
 a car is 2.09 track-widths wide in **every** scale — so no scale lookup belongs anywhere in `ui/`,
@@ -377,6 +381,21 @@ press so the grab offset survives — grabbing a point three pixels off-center m
 under the cursor — and identical across handles so a coupler's ends land on the *same* pixel, which
 is what keeps them coupled. Rounded, because a handle names a pixel.
 
+**A label flips inwards rather than being clipped.** `placeLabel` prefers up and to the right, and
+draws on the inside — to the left near the right edge, below near the top — when it would otherwise
+run past the frame. Only the axis that overflows flips, and only when the other side actually fits: a
+frame narrower than the label overflows either way, and flipping there would trade a clipped tail for
+a clipped head, losing the leading digits that identify the point. The symbol itself never moves;
+a calibration crosshair still names its exact pixel on the edge.
+
+**The width behind that decision is an estimate, and is named one.** Nothing here measures text:
+`measureText` and `getBBox` need layout, jsdom performs none, and a rule depending on them would be
+untestable — which is the reason this module exists. Every editor label is monospace and its content
+is known, so `estimateLabelWidthPx` is character count × 0.6em, erring slightly wide, which is the
+safe direction for a flip test. It is not a box the glyphs are guaranteed to sit inside. The rule
+lives here rather than in a renderer because the sensor symbol ([#31]) carries a name in the same
+frame against the same edges: its geometry differs, this decision does not.
+
 ---
 
 ### `calibrationMarker.ts`
@@ -386,7 +405,7 @@ must be used together** — styles in the host's `static styles`, the renderer o
 
 | Export | Type | Description |
 |---|---|---|
-| `renderCalibrationPoint(point, index, size)` | `(CalibrationPoint, number, number) => SVGTemplateResult` | A crosshair centered on `point.px`, a small circle at the exact pixel, and a `text` label carrying the world coordinate. `size` is in image pixels — `rr-viewer`'s `symbolSize`, so the crosshair is constant on screen |
+| `renderCalibrationPoint(point, index, size, frame)` | `(CalibrationPoint, number, number, FrameSize) => SVGTemplateResult` | A crosshair centered on `point.px`, a small circle at the exact pixel, and a `text` label carrying the world coordinate. `size` is in image pixels — `rr-viewer`'s `symbolSize`, so the crosshair is constant on screen; `frame` is its `resolution` |
 | `calibrationMarkerStyles` | `CSSResult` | Crosshair and label colors, non-scaling strokes, and the label's own outline |
 
 There are no `<defs>` and so no third export: a crosshair is two lines, and nothing is reused.
@@ -400,6 +419,14 @@ reads as a bug in the editor.
 Points carry **no `id`** — nothing references one individually — so `index` (position in
 `layout.calibration.points`) is the only handle a gesture has, and it is rendered as
 `data-calibration-index`.
+
+**`frame` is only the label's business.** The label sits up and to the right by default and would be
+clipped on a point near the top or right edge, so it flips inwards; the decision is `geometry.ts`'s
+`placeLabel`, shared with the sensor symbol ([#31]) rather than inlined here, and made from an
+*estimated* label width because nothing can measure text. `text-anchor` and `dominant-baseline` are
+therefore set **per element** and are deliberately absent from `calibrationMarkerStyles` — a
+stylesheet rule beats a presentation attribute and would pin every label to one corner. The crosshair
+ignores `frame` entirely: it names an exact pixel, wherever that pixel is.
 
 ---
 
