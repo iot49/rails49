@@ -47,7 +47,8 @@ rr-app                          ← shell: owns the archive and the view mode
 │   │   ├── marker.ts           ← module, not an element
 │   │   └── calibrationMarker.ts ← module: the labelled crosshair
 │   ├── rr-thumbnail-bar        ← horizontal image selector strip
-│   └── rr-calibration-dialog   ← asks for a point's x/y/z in mm (sl-dialog)
+│   ├── rr-calibration-dialog   ← asks for a point's x/y/z in mm (sl-dialog)
+│   └── rr-context-menu         ← right-click verbs on one object (sl-menu)
 └── rr-live-view                ← live mode; owns the classifier
     ├── rr-stats-bar            ← FPS / marker-count overlay
     └── rr-viewer               ← SAME component, video source instead of img
@@ -61,14 +62,16 @@ rr-app                          ← shell: owns the archive and the view mode
 > holding the car-width, rectangle and hit-testing arithmetic — and [#28] gave
 > it its first consumer: click a pixel, type its world coordinate, and the point
 > is written as one `layout` history entry. [#30] added the drag — the same point
-> moves, and the whole gesture costs exactly one entry.
+> moves, and the whole gesture costs exactly one entry. [#29] added the
+> right-click: a context menu on the object under the cursor, carrying delete,
+> which is why the editor needs no delete mode.
 >
 > Still absent, each with its own ticket: the tool palette and the calibration
-> gate on the labeling tools ([#31]), the right-click context menu and delete
-> ([#29]), car authoring (chain-clicked two-point spans),
-> sensor placement, and the completeness affordance. They are specified in
-> `../SPEC.md` § Labeling Workflow. Because the palette does not exist, a click
-> in the viewer unconditionally means *calibrate*.
+> gate on the labeling tools ([#31]), car authoring (chain-clicked two-point
+> spans), sensor placement, and the completeness affordance. They are specified
+> in `../SPEC.md` § Labeling Workflow. Because the palette does not exist, a
+> click in the viewer unconditionally means *calibrate*; because no chain can be
+> live, a right-click is always the idle branch.
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -91,9 +94,10 @@ rr-app ─────────── rr-editor-view ────────
 
 * **`rr-app` owns:** the archive, the **undo history**, the view mode, the status string, and file
   new/open/save.
-* **`rr-editor-view` owns:** the current image index, blob URLs for the images, and the click that is
-  waiting on a coordinate. It mutates the archive through image add/remove/reorder and through
-  calibration-point placement and edits — each wrapped in `history.record`.
+* **`rr-editor-view` owns:** the current image index, blob URLs for the images, the click that is
+  waiting on a coordinate, and what the context menu is open on. It mutates the archive through
+  image add/remove/reorder and through calibration-point placement, edits and deletion — each
+  wrapped in `history.record`.
 * **`rr-live-view` owns:** the camera stream, the classifier, and the classification loop. It never
   mutates the archive.
 * **Only the live view loads a classifier.** The editor's use of it was displaying a per-marker
@@ -282,7 +286,8 @@ mutated (`rr-marker-add`, `rr-marker-move`, `rr-marker-delete`, `rr-calibration-
 in the v4 reduction and do not come back — v4 has neither point markers nor a draggable `{p0, p1}`
 pair. The viewer reports where the pointer is; deciding what that means is the editor's job, and the
 arithmetic it needs is in `geometry.ts`. The right-click is **not** `preventDefault()`ed here, since
-whether the native menu is suppressed depends on editor state.
+whether the native menu is suppressed depends on editor state: `rr-editor-view` suppresses every
+right-click it hears, and `rr-live-view` does not listen at all.
 
 **Methods:** `getVideoElement()`, `getImageElement()` — `rr-live-view` uses these to feed the
 classifier the live frame source.
@@ -354,6 +359,8 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | `CLICK_SLOP_SCREEN_PX` | How far a pointer may travel between press and release and still be a click. Smaller than the grab radius: this is tremor, not aim |
 | `isClick(from, to, tolerance)` | Whether a finished gesture was a click rather than a drag |
 | `placeLabel(at, text, fontSizePx, offsetPx, frame)` | Where a symbol's label goes so it does not run off the frame — up and to the right, flipped inwards at the top or right edge |
+| `clampToViewport(at, size, viewport, margin)` | Moves a box so it stays inside the viewport, keeping `margin` from every edge. The one function here in **screen** coordinates — it places the context menu on the glass. A box bigger than the viewport pins to the near edge |
+| `Size` | `{ width, height }` — a box on the screen, as opposed to `FrameSize`, which is the image |
 | `LabelPlacement` | `{ x, y, textAnchor, dominantBaseline }` — the SVG attributes that place the label |
 | `estimateLabelWidthPx(text, fontSizePx)` | An **estimate** of a monospace label's width: character count × 0.6em |
 | `FrameSize` | `{ width, height }` — the image bounds, `rr-viewer`'s `resolution` |
@@ -455,9 +462,50 @@ i.e. when the opening animation finishes, and the caller is waiting only for the
 
 ---
 
+### `rr-context-menu`
+
+The right-click menu: a short list of verbs acting on one object. It is why the editor needs no
+delete mode at all — deleting is a verb on the thing under the cursor rather than a mode the user
+enters and must remember to leave (`../SPEC.md` § Right-click is state-dependent).
+
+**Properties:** none. Opened imperatively, like `rr-calibration-dialog` and for the same reason: what
+it shows belongs to the gesture that opened it. Nothing is rendered while it is closed.
+
+**Methods:** `show(at, items)` — `at` is a `ScreenPoint` in **client** coordinates, `items` is
+`ContextMenuItem[]`; resolves once the rows are in the DOM. `hide()`. `open` is a read-only getter.
+
+| Type | Shape | Description |
+|---|---|---|
+| `ContextMenuItem` | `{ id, label }` | `id` is reported on selection and never shown; `label` is what the user reads |
+| `ScreenPoint` | `{ x, y }` | Named apart from `Point` on purpose — every other editor position is in **image** pixels; a menu is placed on the glass |
+
+**Emits:** `rr-context-menu-select` with `{ id }`. Dismissing emits nothing.
+
+**It knows nothing about what the object is.** The editor hit-tests, names the verbs, and interprets
+the selection; this element renders rows and reports which one was chosen. That is what lets cars and
+sensors plug into the same menu as they arrive, along with the reclassify submenu the spec puts here.
+
+**Dismissal is on the document**, in the capture phase: a press anywhere outside the element (tested
+with `composedPath()`, which sees through the shadow boundary) and Escape. A menu the user has to aim
+at in order to close is worse than no menu. The listeners are added on `show()` and dropped by
+`hide()`, which `disconnectedCallback()` calls — a document listener outliving the element would
+swallow presses for the rest of the session.
+
+**The dismissing press is swallowed** (`stopPropagation` + `preventDefault` in the capture phase), as
+it is for a native menu. Without that it reaches `rr-viewer` underneath and the editor reads it as a
+click, placing a calibration point behind the menu the user was only closing.
+
+**Position** is written as `--menu-x` / `--menu-y` on the host, which `position: fixed` styles read.
+`updated()` measures the rendered menu and runs it through `geometry.ts`'s `clampToViewport` so it
+stays inside the window — in the element only because that is where the measurement is; the
+arithmetic is in `geometry.ts`, where a test can reach it. With an unmeasured menu (jsdom, every rect
+zero) the clamp is the identity and the menu lands at the cursor.
+
+---
+
 ### `rr-editor-view`
 
-Orchestrates the editor: images, a DPT readout, and calibration authoring.
+Orchestrates the editor: images, a DPT readout, calibration authoring, and the right-click menu.
 
 | Property | Type | Description |
 |---|---|---|
@@ -518,6 +566,36 @@ that image into view before the change lands.
   * An edit remembers the **pixel** as well as the index. Points carry no `id`, so if an undo lands
     while the dialog is open and slides that index onto a different point, the commit is dropped
     rather than applied to whatever now sits there.
+* **Right-click, and delete** ([#29]). `rr-pointer-contextmenu` is dispatched on the editor's state —
+  a `switch` over an `EditorMode` union whose only member today is `idle`, because right-click is
+  state-dependent by design (`../SPEC.md` § Right-click is state-dependent): idle opens the menu,
+  chaining a train will end the chain instead. Written as a branch so that is a case to add rather
+  than a rewrite.
+  * The **idle** branch hit-tests at `DEFAULT_GRAB_RADIUS_SCREEN_PX` and opens `rr-context-menu` at
+    the cursor, carrying delete. Empty image opens nothing, and neither does an object with no verbs
+    — a list of disabled rows is a worse answer than the absence of one. Only calibration points are
+    in the scene, so they are the only subject; cars and sensors get their rows from the same switch
+    when the tools that create them exist.
+  * **The browser's own menu is suppressed here, not in `rr-viewer`**, and for every right-click the
+    viewer reports rather than only the ones that open something: inside the labeling surface a
+    right-click is the editor's gesture whatever it lands on, and over empty image it will end a
+    chain. `rr-live-view` shares the viewer and does not listen, so its right-click stays the
+    browser's.
+  * A right-click **during a drag** opens nothing: the object under the cursor is mid-gesture, and
+    verbs naming a position the user has not settled on would act on geometry about to change.
+  * **Only the primary button authors.** `rr-pointer-down` and `-up` are ignored unless
+    `originalEvent.button <= 0`, because a right-click arrives through those same events: without the
+    filter the press that opens the menu also runs the click path and puts the calibration dialog up
+    behind it. One `pointerId` covers every mouse button, so the filter on `-up` is also what keeps
+    the release of a secondary button from committing a left drag still in progress. Touch and pen
+    report button 0.
+  * The press that **dismisses** the menu is swallowed by `rr-context-menu` and never reaches the
+    viewer, so closing a menu over empty image does not place a point.
+  * Delete is **one `history.record` entry targeting `layout`**, and undo restores the point with its
+    coordinate intact — an entry is a snapshot, so there is no per-object restore to author. The
+    subject is resolved when the menu opens and carries its **pixel** for the same reason an edit
+    does: an undo landing while the menu is up can slide the index onto another point, and a subject
+    that moved is dropped rather than deleted from underneath the user.
 * **DPT readout** (`.dpt-bar`). `getDPT()` to one decimal, or "Not calibrated" with a warning style
   when it returns `null` — a real v4 state, reported rather than blocked on, and now with the click
   that fixes it. Two further states:

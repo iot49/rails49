@@ -6,6 +6,7 @@ import { EditHistory } from '../src/history.js';
 import '../src/rr-editor-view.js';
 import { RREditorView } from '../src/rr-editor-view.js';
 import type { RRCalibrationDialog } from '../src/rr-calibration-dialog.js';
+import type { RRContextMenu } from '../src/rr-context-menu.js';
 
 // Mock ResizeObserver for RRViewer
 global.ResizeObserver = vi.fn().mockImplementation(() => ({
@@ -140,20 +141,26 @@ describe('rr-editor-view', () => {
     /** Lets the editor's async pointer and commit handlers settle. */
     const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 
-    /** One `rr-pointer-*` event, shaped the way `rr-viewer` emits it. */
+    /**
+     * One `rr-pointer-*` event, shaped the way `rr-viewer` emits it.
+     *
+     * `pointerId` tells a second finger from the first; `button` is 0 for the
+     * primary press and 2 for a right-click, which the editor must not author
+     * on.
+     */
     function gesture(
       el: RREditorView,
       name: string,
       point: Point,
       imagePxPerScreenPx: number,
-      pointerId = 1
+      { pointerId = 1, button = 0 }: { pointerId?: number; button?: number } = {}
     ) {
       el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
         new CustomEvent(name, {
           detail: {
             point,
             imagePxPerScreenPx,
-            originalEvent: Object.assign(new MouseEvent(name), { pointerId }),
+            originalEvent: Object.assign(new MouseEvent(name, { button }), { pointerId }),
           },
           bubbles: true,
           composed: true,
@@ -460,12 +467,12 @@ describe('rr-editor-view', () => {
         history.attach(archive);
         const el = await mount(history);
 
-        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1, 1);
-        gesture(el, 'rr-pointer-down', { x: 500, y: 500 }, 1, 2);
-        gesture(el, 'rr-pointer-move', { x: 600, y: 600 }, 1, 2);
-        gesture(el, 'rr-pointer-up', { x: 600, y: 600 }, 1, 2);
-        gesture(el, 'rr-pointer-move', { x: 140, y: 130 }, 1, 1);
-        gesture(el, 'rr-pointer-up', { x: 140, y: 130 }, 1, 1);
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1, { pointerId: 1 });
+        gesture(el, 'rr-pointer-down', { x: 500, y: 500 }, 1, { pointerId: 2 });
+        gesture(el, 'rr-pointer-move', { x: 600, y: 600 }, 1, { pointerId: 2 });
+        gesture(el, 'rr-pointer-up', { x: 600, y: 600 }, 1, { pointerId: 2 });
+        gesture(el, 'rr-pointer-move', { x: 140, y: 130 }, 1, { pointerId: 1 });
+        gesture(el, 'rr-pointer-up', { x: 140, y: 130 }, 1, { pointerId: 1 });
         await flush();
         await el.updateComplete;
 
@@ -577,6 +584,218 @@ describe('rr-editor-view', () => {
 
         expect(show).toHaveBeenCalledWith({ x: 0, y: 0, z: 0 }, { mode: 'edit' });
         expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+      });
+    });
+
+    describe('right-click context menu', () => {
+      /** One calibration point per pixel, as `seed` does for the drag tests. */
+      function seed(...pixels: readonly Point[]) {
+        archive.getManifest().layout.calibration.points = pixels.map((px, i) => ({
+          px,
+          world: { x: i * 10, y: 0, z: 0 },
+        }));
+      }
+
+      function menuOf(el: RREditorView): RRContextMenu {
+        return el.shadowRoot!.querySelector('rr-context-menu')!;
+      }
+
+      /** The menu's rows, by id. Empty when it is closed. */
+      function menuItems(el: RREditorView): string[] {
+        return [...menuOf(el).shadowRoot!.querySelectorAll('sl-menu-item')].map(
+          item => item.getAttribute('value') ?? ''
+        );
+      }
+
+      /**
+       * A right-click, shaped the way `rr-viewer` emits one. Returns the
+       * underlying event so the caller can check the native menu was suppressed.
+       */
+      async function rightClickAt(
+        el: RREditorView,
+        point: Point,
+        client: { x: number; y: number } = { x: 0, y: 0 },
+        imagePxPerScreenPx = 1
+      ): Promise<MouseEvent> {
+        const originalEvent = new MouseEvent('contextmenu', {
+          cancelable: true,
+          clientX: client.x,
+          clientY: client.y,
+        });
+        el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
+          new CustomEvent('rr-pointer-contextmenu', {
+            detail: { point, imagePxPerScreenPx, originalEvent },
+            bubbles: true,
+            composed: true,
+          })
+        );
+        await flush();
+        await el.updateComplete;
+        await menuOf(el).updateComplete;
+        return originalEvent;
+      }
+
+      /**
+       * Chooses a row the way `sl-menu` reports one, so the whole chain runs:
+       * the menu closes itself and the editor hears the selection.
+       */
+      async function choose(el: RREditorView, id: string) {
+        const menu = menuOf(el);
+        const item = menu.shadowRoot!.querySelector(`sl-menu-item[value="${id}"]`)!;
+        menu.shadowRoot!.querySelector('sl-menu')!.dispatchEvent(
+          new CustomEvent('sl-select', { detail: { item }, bubbles: true, composed: true })
+        );
+        await flush();
+        await el.updateComplete;
+      }
+
+      it('opens on the object under the cursor, carrying delete', async () => {
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+
+        await rightClickAt(el, { x: 103, y: 101 }, { x: 640, y: 400 });
+
+        expect(menuOf(el).open).to.be.true;
+        expect(menuItems(el)).to.deep.equal(['delete']);
+        // At the cursor, in the client frame the right-click was reported in.
+        expect(menuOf(el).style.getPropertyValue('--menu-x')).to.equal('640px');
+        expect(menuOf(el).style.getPropertyValue('--menu-y')).to.equal('400px');
+      });
+
+      it('opens nothing on empty image', async () => {
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+
+        await rightClickAt(el, { x: 500, y: 500 });
+
+        expect(menuOf(el).open).to.be.false;
+      });
+
+      it('suppresses the browser menu inside the viewer, hit or miss', async () => {
+        // Right-click is an editor gesture wherever it lands in the viewer —
+        // idle on empty image is the one case that does nothing, and once a
+        // chain can be live the same press ends it. Outside the viewer nothing
+        // listens, so the browser's own menu is untouched there.
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+
+        expect((await rightClickAt(el, { x: 100, y: 100 })).defaultPrevented).to.be.true;
+        expect((await rightClickAt(el, { x: 500, y: 500 })).defaultPrevented).to.be.true;
+      });
+
+      it('deletes the point as one layout entry, and undo restores it exactly', async () => {
+        seed({ x: 100, y: 100 }, { x: 400, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+        const before = structuredClone(points());
+
+        await rightClickAt(el, { x: 400, y: 100 });
+        await choose(el, 'delete');
+
+        expect(points()).to.deep.equal([before[0]]);
+        expect(history.size).to.equal(1);
+        expect(history.undoLabel).to.contain('calibration');
+
+        const entry = await history.undo();
+        expect(entry!.target).to.deep.equal({ kind: 'layout' });
+        expect(points()).to.deep.equal(before);
+
+        await history.redo();
+        expect(points()).to.deep.equal([before[0]]);
+      });
+
+      it('takes the DPT readout with it', async () => {
+        seed({ x: 0, y: 0 }, { x: 100, y: 0 });
+        const el = await mount();
+        expect(el.shadowRoot!.querySelector('.dpt-bar')!.textContent).to.contain('DPT 89.7');
+
+        await rightClickAt(el, { x: 100, y: 0 });
+        await choose(el, 'delete');
+
+        expect(el.shadowRoot!.querySelector('.dpt-bar')!.textContent).to.contain('Not calibrated');
+      });
+
+      it('closes the menu once a row is chosen', async () => {
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+
+        await rightClickAt(el, { x: 100, y: 100 });
+        await choose(el, 'delete');
+
+        expect(menuOf(el).open).to.be.false;
+      });
+
+      it('drops a delete whose point moved underneath the open menu', async () => {
+        // Same staleness as the dialog: an undo landing while the menu is up can
+        // slide the index onto a point the menu was never opened on, and points
+        // carry no id to tell them apart.
+        const layout = archive.getManifest().layout;
+        seed({ x: 100, y: 100 }, { x: 400, y: 100 });
+        const el = await mount();
+
+        await rightClickAt(el, { x: 400, y: 100 });
+        layout.calibration = { points: [layout.calibration.points[1]] };
+        await choose(el, 'delete');
+
+        expect(points()).to.deep.equal([
+          { px: { x: 400, y: 100 }, world: { x: 10, y: 0, z: 0 } },
+        ]);
+      });
+
+      it('does not run the click path for the right button', async () => {
+        // A right-click arrives through the same pointer events as a left one.
+        // Without the button filter the press that opens the menu also places
+        // or edits a point, and the dialog comes up behind the menu.
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+        const show = stubDialog(el);
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1, { button: 2 });
+        gesture(el, 'rr-pointer-up', { x: 100, y: 100 }, 1, { button: 2 });
+        await flush();
+        await el.updateComplete;
+
+        expect(show).not.toHaveBeenCalled();
+        expect(history.size).to.equal(0);
+      });
+
+      it('leaves a live drag alone when a secondary button is released', async () => {
+        // One `pointerId` covers every mouse button, so the right button's
+        // release carries the left drag's id. Ending the drag on it would
+        // commit a gesture the user has not finished.
+        seed({ x: 100, y: 100 });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mount(history);
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1);
+        gesture(el, 'rr-pointer-move', { x: 300, y: 300 }, 1);
+        gesture(el, 'rr-pointer-up', { x: 300, y: 300 }, 1, { button: 2 });
+        await flush();
+        expect(history.size).to.equal(0);
+
+        gesture(el, 'rr-pointer-move', { x: 350, y: 350 }, 1);
+        gesture(el, 'rr-pointer-up', { x: 350, y: 350 }, 1);
+        await flush();
+        await el.updateComplete;
+
+        expect(points()[0].px).to.deep.equal({ x: 350, y: 350 });
+        expect(history.size).to.equal(1);
+      });
+
+      it('ignores a right-click during a drag', async () => {
+        seed({ x: 100, y: 100 });
+        const el = await mount();
+
+        gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1);
+        gesture(el, 'rr-pointer-move', { x: 300, y: 300 }, 1);
+        await flush();
+        await rightClickAt(el, { x: 300, y: 300 });
+
+        expect(menuOf(el).open).to.be.false;
       });
     });
 

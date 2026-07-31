@@ -13,15 +13,21 @@ import {
   CLICK_SLOP_SCREEN_PX,
   DEFAULT_GRAB_RADIUS_SCREEN_PX,
 } from './geometry.js';
-import type { DragHandle, HitTarget, HitTolerance } from './geometry.js';
+import type { DragHandle, HitScene, HitTarget, HitTolerance } from './geometry.js';
 import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
-import type { ViewerPointerDetail } from './rr-viewer.js';
+import type { ViewerContextMenuDetail, ViewerPointerDetail } from './rr-viewer.js';
 import type { CalibrationCommitDetail, RRCalibrationDialog } from './rr-calibration-dialog.js';
+import type {
+  ContextMenuItem,
+  ContextMenuSelectDetail,
+  RRContextMenu,
+} from './rr-context-menu.js';
 
 import './rr-viewer.js';
 import './rr-toolbar.js';
 import './rr-thumbnail-bar.js';
 import './rr-calibration-dialog.js';
+import './rr-context-menu.js';
 
 /**
  * The gesture a click is waiting on a coordinate for.
@@ -41,6 +47,83 @@ type PendingCalibration =
    * remove or replace another point and slide this index onto a different one.
    */
   | { readonly kind: 'edit'; readonly index: number; readonly px: Point };
+
+/**
+ * What the editor is in the middle of — the state the gestures that mean two
+ * things are dispatched on.
+ *
+ * One member today. Right-click is state-dependent by design (`SPEC.md`
+ * § Right-click is state-dependent): idle opens the context menu on whatever is
+ * under the cursor, while chaining a train it ends the chain instead. Undo is
+ * state-dependent in the same way and against the same states. Car authoring
+ * brings `{ kind: 'chaining' }` and the branches that read it; the dispatch
+ * below is a switch so that is a case to add rather than a rewrite.
+ *
+ * One gesture meaning two things is a real cost, accepted because the two
+ * states differ by whether a chain is in progress — which the rubber band makes
+ * loudly visible.
+ */
+type EditorMode = { readonly kind: 'idle' };
+
+/**
+ * What the open context menu acts on.
+ *
+ * The hit is resolved when the menu opens, not when a row is chosen, because
+ * the menu names verbs for *that* object and the user may have moved on by the
+ * time they pick one. `px` is the same staleness guard the calibration dialog
+ * carries: an undo landing while the menu is up can slide an index onto a
+ * different point, and points have no `id` to tell them apart.
+ */
+interface MenuSubject {
+  readonly hit: HitTarget;
+  readonly px: Point;
+}
+
+/**
+ * Delete, the one verb the menu carries today.
+ *
+ * It is why the editor needs no delete mode at all (`SPEC.md` § Right-click is
+ * state-dependent). Reclassify — and the dotted class taxonomy as a submenu —
+ * joins it when there are cars to reclassify.
+ */
+const DELETE_ITEM: ContextMenuItem = { id: 'delete', label: 'Delete calibration point' };
+
+/**
+ * What a right-click found: the object the menu will act on, and the rows it
+ * offers for it — or null when there is nothing to offer.
+ *
+ * One switch resolves both, because a subject the menu cannot name a verb for
+ * must not open a menu at all: a list of disabled rows is a worse answer than
+ * the absence of one. Only calibration points are in the hit-test scene today;
+ * cars and sensors join it with the tools that create them (#31), and their
+ * rows arrive here, through this same switch.
+ */
+function menuFor(
+  hit: HitTarget,
+  scene: HitScene
+): { readonly subject: MenuSubject; readonly items: readonly ContextMenuItem[] } | null {
+  switch (hit.kind) {
+    case 'calibration': {
+      const point = scene.calibrationPoints[hit.index];
+      return point ? { subject: { hit, px: point.px }, items: [DELETE_ITEM] } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether a press or release is the primary button — the only one that authors.
+ *
+ * `button` is 0 for a left click, for a touch and for a pen tip, and 2 for a
+ * right click; a `pointermove` reports -1, which is why only the ends of a
+ * gesture are filtered. The editor reads it off `originalEvent` rather than
+ * asking `rr-viewer` to, because which buttons mean something is the editor's
+ * decision and the live view has no gestures at all.
+ */
+function isPrimaryButton(event: PointerEvent): boolean {
+  return event.button <= 0;
+}
 
 /**
  * The pointer gesture currently in flight: one press, its moves, and its end.
@@ -79,10 +162,11 @@ interface LiveGesture {
  * **Calibration points are the only geometry it authors** (#28). A click asks
  * for the pixel's world coordinate and records one `layout` history entry; a
  * click on an existing point edits that point's coordinate instead; a **drag**
- * moves it, as one entry per gesture (#30). Cars and sensors, the tool palette
- * that would choose between them, and the context menu are later tickets (#29,
- * #31); until the palette exists, a click in the viewer means "calibrate",
- * which is the only tool there is.
+ * moves it, as one entry per gesture (#30); a **right-click** opens the context
+ * menu on it and deletes it from there (#29). Cars and sensors, and the tool
+ * palette that would choose between them, are a later ticket (#31); until the
+ * palette exists, a click in the viewer means "calibrate", which is the only
+ * tool there is.
  *
  * DPT is reported live, with the fit residual once the fit is over-determined,
  * and a DPT below `layout.min_dpt` warns **persistently and blocks nothing** —
@@ -112,8 +196,13 @@ export class RREditorView extends LitElement {
   private _pendingCalibration: PendingCalibration | null = null;
   /** The press in flight, or null between gestures. At most one at a time. */
   private _gesture: LiveGesture | null = null;
+  /** What the context menu is open on, or null when it is closed. */
+  private _menuSubject: MenuSubject | null = null;
+  /** Which state the state-dependent gestures dispatch on. See {@link EditorMode}. */
+  private _mode: EditorMode = { kind: 'idle' };
 
   @query('rr-calibration-dialog') private _calibrationDialog!: RRCalibrationDialog;
+  @query('rr-context-menu') private _contextMenu!: RRContextMenu;
 
   static styles = css`
     :host {
@@ -337,6 +426,13 @@ export class RREditorView extends LitElement {
    * when it has no transform to convert with, which is one way that happens.
    */
   private _onViewerPointerDown(e: CustomEvent<ViewerPointerDetail>) {
+    // Only the primary button authors anything. A right-click arrives through
+    // these same pointer events, so without this the press that opens the
+    // context menu also runs the click path and puts the calibration dialog up
+    // behind it. Touch and pen report button 0, so nothing is lost there — and
+    // a right press during a drag is ignored here rather than closing it.
+    if (!isPrimaryButton(e.detail.originalEvent)) return;
+
     const pointerId = e.detail.originalEvent.pointerId;
     if (this._gesture) {
       if (this._gesture.pointerId !== pointerId) return;
@@ -348,13 +444,7 @@ export class RREditorView extends LitElement {
     if (!this.archive) return;
 
     const at = e.detail.point;
-    // Only calibration points are in the scene: they are the only object this
-    // editor authors. Cars and sensors join it with the tools that create them.
-    const scene = {
-      cars: [],
-      sensors: [],
-      calibrationPoints: this.archive.getManifest().layout.calibration.points,
-    };
+    const scene = this._scene();
     const hit = hitTest(scene, at, this._tolerance(DEFAULT_GRAB_RADIUS_SCREEN_PX, e.detail));
     const handles = hit ? dragHandles(hit, scene) : [];
 
@@ -365,6 +455,22 @@ export class RREditorView extends LitElement {
       handles,
       entry: handles.length > 0 ? this._beginDragEntry() : null,
       dragging: false,
+    };
+  }
+
+  /**
+   * Everything a pointer can land on, for the image on screen.
+   *
+   * Only calibration points are in it: they are the only object this editor
+   * authors. Cars and sensors join the scene with the tools that create them,
+   * and every gesture that asks "what is under here" reads it from here, so
+   * they arrive for the press, the right-click and the drag at once.
+   */
+  private _scene(): HitScene {
+    return {
+      cars: [],
+      sensors: [],
+      calibrationPoints: this.archive?.getManifest().layout.calibration.points ?? [],
     };
   }
 
@@ -413,6 +519,11 @@ export class RREditorView extends LitElement {
    * dispatched on.
    */
   private async _onViewerPointerUp(e: CustomEvent<ViewerPointerDetail>) {
+    // The mouse reports one `pointerId` for every button, so the release of a
+    // secondary button carries the id of a left drag still in progress. Ending
+    // that drag here would commit it on a press the user did not mean as one.
+    if (!isPrimaryButton(e.detail.originalEvent)) return;
+
     const gesture = this._current(e);
     if (!gesture) return;
 
@@ -457,6 +568,119 @@ export class RREditorView extends LitElement {
   }
 
   /**
+   * Right-click, dispatched on the editor's state.
+   *
+   * The browser's own menu is suppressed **here** rather than in `rr-viewer`,
+   * and for every right-click the viewer reports rather than only the ones that
+   * open something: inside the labeling surface a right-click is the editor's
+   * gesture whatever it lands on, and once a chain can be live the same press
+   * ends it over empty image. The live view shares the viewer and does not
+   * listen, so its right-click stays the browser's.
+   *
+   * The state branch is the point of this handler (`SPEC.md` § Right-click is
+   * state-dependent). Only {@link EditorMode}'s idle case exists; chaining ends
+   * the chain instead, and is a case to add here.
+   */
+  private _onViewerContextMenu(e: CustomEvent<ViewerContextMenuDetail>) {
+    e.detail.originalEvent.preventDefault();
+
+    // A press is still in flight: the object under the cursor is mid-drag, and
+    // a menu naming verbs for a position the user has not settled on would act
+    // on geometry that is about to change. The gesture keeps the pointer.
+    if (this._gesture) return;
+
+    switch (this._mode.kind) {
+      case 'idle':
+        void this._openContextMenu(e.detail);
+        return;
+    }
+  }
+
+  /**
+   * The idle branch: a menu on the object under the cursor.
+   *
+   * Empty image opens nothing, and so does an object with no verbs — see
+   * {@link menuFor}. The subject is resolved now rather than when a row is
+   * chosen, because the rows are named for *this* object.
+   */
+  private async _openContextMenu(detail: ViewerContextMenuDetail) {
+    this._menuSubject = null;
+    this._contextMenu.hide();
+    if (!this.archive) return;
+
+    const scene = this._scene();
+    const hit = hitTest(
+      scene,
+      detail.point,
+      this._tolerance(DEFAULT_GRAB_RADIUS_SCREEN_PX, detail)
+    );
+    if (!hit) return;
+
+    const menu = menuFor(hit, scene);
+    if (!menu) return;
+
+    this._menuSubject = menu.subject;
+    // The cursor, in the frame it was reported in: the menu is placed on the
+    // glass, which is the one editor position that is a screen coordinate.
+    await this._contextMenu.show(
+      { x: detail.originalEvent.clientX, y: detail.originalEvent.clientY },
+      menu.items
+    );
+  }
+
+  /** A row was chosen. The menu has closed itself by the time this runs. */
+  private async _onContextMenuSelect(e: CustomEvent<ContextMenuSelectDetail>) {
+    const subject = this._menuSubject;
+    this._menuSubject = null;
+    if (!subject || !this.archive) return;
+
+    switch (e.detail.id) {
+      case 'delete':
+        await this._deleteSubject(subject);
+        return;
+    }
+  }
+
+  /**
+   * Whether the point at `index` is still the one a gesture was aimed at.
+   *
+   * A dialog and a menu both outlive the click that opened them, and an undo
+   * landing in between can remove that point, or remove another one and slide
+   * this index onto a different point. Points carry no `id`, so the pixel is
+   * what identifies one: a target that moved is dropped rather than edited or
+   * deleted from underneath the user.
+   */
+  private _pointIsStillAt(index: number, px: Point): boolean {
+    const point = this.archive?.getManifest().layout.calibration.points[index];
+    return point !== undefined && point.px.x === px.x && point.px.y === px.y;
+  }
+
+  /**
+   * Deletes the menu's subject, as one entry scoped to the subtree it touches.
+   *
+   * Undo restores the object with everything it carried, because an entry is a
+   * snapshot rather than an inverse command — there is no per-object restore to
+   * author here, and therefore none to author wrongly.
+   */
+  private async _deleteSubject(subject: MenuSubject) {
+    switch (subject.hit.kind) {
+      case 'calibration': {
+        const { index } = subject.hit;
+        if (!this._pointIsStillAt(index, subject.px)) return;
+
+        await this._record('delete calibration point', { kind: 'layout' }, () => {
+          const points = [...this.archive!.getManifest().layout.calibration.points];
+          points.splice(index, 1);
+          this._writeCalibrationPoints(points);
+        });
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
    * Closes a gesture: one entry for everything it moved, or none at all.
    *
    * Every ending goes through here, including the two that are not the
@@ -485,7 +709,10 @@ export class RREditorView extends LitElement {
   }
 
   /** A screen-pixel tolerance in the zoom the viewer just reported. */
-  private _tolerance(screenPx: number, detail: ViewerPointerDetail): HitTolerance {
+  private _tolerance(
+    screenPx: number,
+    detail: ViewerPointerDetail | ViewerContextMenuDetail
+  ): HitTolerance {
     return { screenPx, imagePxPerScreenPx: detail.imagePxPerScreenPx };
   }
 
@@ -540,16 +767,9 @@ export class RREditorView extends LitElement {
     if (!pending || !this.archive) return;
 
     const manifest = this.archive.getManifest();
-    const current = manifest.layout.calibration.points;
-    // An undo while the dialog was open can have removed the point, or removed
-    // another one and slid this index onto a different point. The index alone
-    // cannot tell those apart — points carry no `id` — so the pixel the dialog
-    // was opened on is what identifies it, and an edit whose target moved is
-    // dropped rather than applied to whatever now sits at that index.
-    if (pending.kind === 'edit') {
-      const target = current[pending.index];
-      if (!target || target.px.x !== pending.px.x || target.px.y !== pending.px.y) return;
-    }
+    // The dialog can have outlived the point it was opened on — see
+    // {@link _pointIsStillAt}.
+    if (pending.kind === 'edit' && !this._pointIsStillAt(pending.index, pending.px)) return;
 
     const label = pending.kind === 'place' ? 'place calibration point' : 'edit calibration point';
     await this._record(label, { kind: 'layout' }, () => {
@@ -628,6 +848,7 @@ export class RREditorView extends LitElement {
               @rr-pointer-move=${this._onViewerPointerMove}
               @rr-pointer-up=${this._onViewerPointerUp}
               @rr-pointer-cancel=${this._onViewerPointerCancel}
+              @rr-pointer-contextmenu=${this._onViewerContextMenu}
             ></rr-viewer>
 
             <rr-thumbnail-bar
@@ -642,6 +863,10 @@ export class RREditorView extends LitElement {
             <rr-calibration-dialog
               @rr-calibration-commit=${this._onCalibrationCommit}
             ></rr-calibration-dialog>
+
+            <rr-context-menu
+              @rr-context-menu-select=${this._onContextMenuSelect}
+            ></rr-context-menu>
           `
         }
       </div>

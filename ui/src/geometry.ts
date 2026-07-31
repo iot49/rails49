@@ -162,6 +162,37 @@ export function placeLabel(
   };
 }
 
+/**
+ * A rectangle's extent, in whatever frame the caller is working in.
+ *
+ * Distinct from {@link FrameSize}, which is the image: this one measures a
+ * thing placed *on* the screen, and the two are never in the same units.
+ */
+export interface Size {
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * Moves a box of `size` at `at` so it sits inside `viewport`, keeping `margin`
+ * from every edge.
+ *
+ * The one piece of editor arithmetic in **screen** coordinates, because it
+ * positions the context menu on the glass rather than on the photograph. It
+ * lives here for the same reason everything else does — a clamp left inside a
+ * Lit element is untestable, since jsdom neither lays out nor paints.
+ *
+ * A box larger than the viewport is pinned to the top-left margin rather than
+ * pushed off the opposite edge: the head of a menu is the part worth keeping,
+ * exactly as {@link placeLabel} keeps a label's leading digits.
+ */
+export function clampToViewport(at: Point, size: Size, viewport: Size, margin: number): Point {
+  return {
+    x: Math.max(margin, Math.min(at.x, viewport.width - size.width - margin)),
+    y: Math.max(margin, Math.min(at.y, viewport.height - size.height - margin)),
+  };
+}
+
 /** One end of one car, keyed by label `id` — never by object identity. */
 export interface CarEnd {
   readonly id: string;

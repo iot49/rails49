@@ -4,6 +4,7 @@ import { STANDARD_GAUGE, STANDARD_WIDTH } from '@occupancy/config';
 import {
   carWidthPx,
   carCorners,
+  clampToViewport,
   dragHandles,
   dragTo,
   estimateLabelWidthPx,
@@ -452,5 +453,51 @@ describe('placeLabel', () => {
     const placed = placeLabel({ x: 500, y: 500 }, 'siding-3', fontSize, 20, frame);
     expect(placed.x).to.equal(520);
     expect(placed.y).to.equal(480);
+  });
+});
+
+describe('clampToViewport', () => {
+  const viewport = { width: 1000, height: 800 };
+  const size = { width: 200, height: 100 };
+
+  it('leaves a box that already fits where it was asked for', () => {
+    expect(clampToViewport({ x: 300, y: 200 }, size, viewport, 4)).to.deep.equal({
+      x: 300,
+      y: 200,
+    });
+  });
+
+  it('pulls a box back off the right and bottom edges', () => {
+    // 1000 - 200 - 4 and 800 - 100 - 4: fully visible, one margin clear.
+    expect(clampToViewport({ x: 950, y: 780 }, size, viewport, 4)).to.deep.equal({
+      x: 796,
+      y: 696,
+    });
+  });
+
+  it('clamps only the axis that overflows', () => {
+    expect(clampToViewport({ x: 950, y: 100 }, size, viewport, 4)).to.deep.equal({
+      x: 796,
+      y: 100,
+    });
+  });
+
+  it('keeps the margin on the near edge', () => {
+    expect(clampToViewport({ x: 0, y: 0 }, size, viewport, 4)).to.deep.equal({ x: 4, y: 4 });
+  });
+
+  it('pins a box bigger than the viewport to the near edge, not off the far one', () => {
+    // The head of a menu is the part worth keeping.
+    const huge = { width: 2000, height: 1600 };
+    expect(clampToViewport({ x: 500, y: 400 }, huge, viewport, 4)).to.deep.equal({ x: 4, y: 4 });
+  });
+
+  it('is the identity where nothing has been measured', () => {
+    // jsdom: every rect is zero, and the clamp must not move the menu because
+    // of it.
+    expect(clampToViewport({ x: 120, y: 60 }, { width: 0, height: 0 }, viewport, 4)).to.deep.equal({
+      x: 120,
+      y: 60,
+    });
   });
 });

@@ -18,20 +18,21 @@ without discussion.**
 **The editor was reduced to what v4 supports and no further** (#19), and is now being rebuilt one
 ticket at a time. It opens an archive, manages its images, edits layout metadata, reports DPT, and
 **authors calibration points** (#28) — click a pixel, type its world coordinate, one `layout`
-history entry per placement or edit — which it now also **drags** (#30), at one entry per gesture.
+history entry per placement or edit — which it now also **drags** (#30), at one entry per gesture,
+and **deletes** through the right-click context menu (#29).
 v3's point-marker authoring and two-point calibration dragging are gone for good, and
 `src/prototype/` with them: what came back is a different mechanism, built to carry the coupler case.
 
 So a missing affordance is usually a deferral, not a bug. Car authoring (chain-clicked spans,
 shared coupler handles, the width rectangle), sensor placement, the tool palette and its calibration
-gate (#31), the state-dependent right-click and its context menu (#29), and the
-completeness affordance are all specified in `../SPEC.md` § Labeling Workflow and belong to their own
-tickets. Don't reconstruct them piecemeal to close a gap you notice here.
+gate (#31), and the completeness affordance are all specified in `../SPEC.md` § Labeling Workflow and
+belong to their own tickets. Don't reconstruct them piecemeal to close a gap you notice here.
 
-Two consequences of arriving in that order, which the code states where it matters: a click in the
+Three consequences of arriving in that order, which the code states where it matters: a click in the
 viewer means "calibrate" because calibration is the **only** tool — the palette that would dispatch
-on an active tool is #31 — and the hit-test scene contains only calibration points, because they are
-the only object the editor can create.
+on an active tool is #31 — the hit-test scene contains only calibration points, because they are
+the only object the editor can create, and a right-click is always the idle branch of a
+state-dependent gesture, because no chain can be live until cars can be authored.
 
 Where README and the code disagree, the code wins and README is the thing to correct:
 **a change to a component's properties or events belongs in README in the same commit.**
@@ -148,6 +149,32 @@ aim — and `isClick` is what keeps a swipe on a phone from placing a point.
 case, and it is why one history entry can cover more than one object. `dragTo` applies the same delta
 to each handle's *pointer-down* position: measured from the press so the grab offset survives, and
 identical across handles so a coupler's ends stay on the same pixel.
+
+### Right-click is a state branch, and the menu knows nothing
+
+`rr-editor-view` dispatches `rr-pointer-contextmenu` through a `switch` over an `EditorMode` union
+with one member (`idle`). That is deliberate: right-click means *context menu* when idle and *end the
+chain* while chaining a train (`SPEC.md` § Right-click is state-dependent), so the second meaning has
+to be a case to add rather than a rewrite. Undo is state-dependent against the same states.
+
+The **native menu is suppressed in the editor, not in `rr-viewer`**, and for every right-click rather
+than only the ones that open something — inside the labeling surface the gesture is the editor's
+whatever it lands on, and it will end a chain over empty image. `rr-live-view` shares the viewer and
+does not listen, so its right-click stays the browser's.
+
+`rr-context-menu` renders rows and reports which one was chosen; it never learns what the object is.
+The editor hit-tests, names the verbs in one `menuFor` switch — subject *and* rows together, so an
+object it cannot name a verb for opens no menu at all — and interprets the selection. Delete is one
+`layout` entry and the subject carries the pixel it was opened on, the same staleness guard the
+calibration dialog uses (`_pointIsStillAt`): an undo landing while either is up can slide an index
+onto another point.
+
+Two consequences of right-click sharing the pointer stream with the left button, both of which look
+like nothing until they are missing: the editor **ignores presses and releases whose `button` is not
+primary** — otherwise the press that opens the menu also runs the click path and the calibration
+dialog comes up behind it, and the release of a secondary button ends a left drag mid-gesture — and
+the menu **swallows its own dismissing press**, so closing a menu over empty image does not place a
+point.
 
 ### `marker.ts` and `calibrationMarker.ts` are modules, not elements
 
