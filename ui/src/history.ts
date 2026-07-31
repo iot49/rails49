@@ -60,6 +60,41 @@ interface MutableEntry extends HistoryEntry {
 }
 
 /**
+ * A gesture in progress: one drag, which will cost **one** entry or none.
+ *
+ * `record` brackets a single mutation, which a drag is not — it mutates on
+ * every pointer-move and must still be one Cmd+Z. So the snapshot is taken when
+ * the gesture opens (pointer-down), the caller mutates as freely as it likes,
+ * and {@link commit} closes it (pointer-up).
+ *
+ * That the entry covers **more than one object** falls out of the target being
+ * a subtree rather than an object: a coupler drag moves two cars inside one
+ * image record, and one `{kind: 'image'}` gesture already covers both.
+ *
+ * @see SPEC.md § Undo and redo — "one entry is one gesture"
+ */
+export interface HistoryGesture {
+  /**
+   * Closes the gesture, recording one entry if the subtree actually changed.
+   *
+   * @returns whether an entry was recorded. `false` for a drag returned to its
+   *   origin — a no-op suppressed by value comparison, not by trusting that the
+   *   user meant it — and for a gesture that was already closed.
+   */
+  commit(): Promise<boolean>;
+}
+
+/** The open gesture's own state. Held by the history, not by the caller. */
+interface OpenGesture {
+  readonly label: string;
+  readonly target: HistoryTarget;
+  readonly before: string;
+}
+
+/** A gesture with nothing to record: no archive is attached. */
+const INERT_GESTURE: HistoryGesture = { commit: async () => false };
+
+/**
  * Default retention ceiling.
  *
  * A byte budget rather than an entry count, because entries are heterogeneous
@@ -91,6 +126,8 @@ export class EditHistory {
   private _savedIndex = 0;
   private _bytes = 0;
   private readonly _budgetBytes: number;
+  /** The gesture currently open, or null. At most one — see {@link beginGesture}. */
+  private _gesture: OpenGesture | null = null;
 
   constructor(budgetBytes: number = DEFAULT_HISTORY_BUDGET_BYTES) {
     this._budgetBytes = budgetBytes;
@@ -110,6 +147,10 @@ export class EditHistory {
     this._index = 0;
     this._savedIndex = 0;
     this._bytes = 0;
+    // A gesture holds a snapshot of the archive being replaced, so it cannot
+    // survive the replacement. Dropping it here is also what keeps an
+    // uncommitted gesture from wedging undo permanently.
+    this._gesture = null;
   }
 
   get canUndo(): boolean {
@@ -188,6 +229,16 @@ export class EditHistory {
     const archive = this._archive;
     if (!archive) return await mutate();
 
+    if (this._gesture) {
+      // Nesting is a caller bug, not a state to support: the gesture's own
+      // commit would record this mutation a second time. Noisy rather than
+      // silent, like an unretained removal.
+      console.warn(
+        `EditHistory: "${label}" was recorded inside the open gesture ` +
+          `"${this._gesture.label}"; the gesture will record it again.`
+      );
+    }
+
     const blobs = new Map<string, Uint8Array>();
     for (const filename of options?.retain ?? []) {
       const data = await archive.getImage(filename);
@@ -206,6 +257,63 @@ export class EditHistory {
       await this._retainImageBytes(archive, before, after, blobs);
     }
 
+    this._push(label, target, before, after, blobs);
+    return result;
+  }
+
+  /**
+   * Opens a gesture — a drag — that will cost one entry or none.
+   *
+   * Called at **pointer-down**, so the snapshot is of the state before anything
+   * moved; the caller then mutates on every pointer-move and calls
+   * {@link HistoryGesture.commit} at pointer-up. Recording per motion event
+   * instead would make a drag across the image two hundred presses of Cmd+Z.
+   *
+   * Only one gesture is open at a time: a second press during a drag is a
+   * second finger, and the editor ignores it rather than starting a gesture the
+   * first one's commit would close.
+   *
+   * Every gesture owes an ending, because an abandoned one holds undo shut
+   * until the archive is replaced. `commit()` pushes before it yields, so a
+   * caller closing a stale gesture and opening the next in the same handler
+   * records both, in order.
+   *
+   * `target` carries the same obligation as in {@link record} — declare the
+   * subtree actually touched — and is what lets one entry cover several
+   * objects, since a coupler drag's two cars share one image record. Gestures
+   * move geometry, never image bytes, so there is no `retain` here.
+   */
+  beginGesture(label: string, target: HistoryTarget): HistoryGesture {
+    if (!this._archive) return INERT_GESTURE;
+
+    const gesture: OpenGesture = { label, target, before: JSON.stringify(this._read(target)) };
+    this._gesture = gesture;
+
+    return {
+      commit: async () => {
+        // Identity, not just presence: a gesture dropped by `attach` or already
+        // closed by an earlier commit must record nothing. Pointer-up and
+        // pointer-cancel can both arrive for one gesture.
+        if (this._gesture !== gesture) return false;
+        this._gesture = null;
+
+        const after = JSON.stringify(this._read(target));
+        if (after === gesture.before) return false;
+
+        this._push(label, target, gesture.before, after, new Map());
+        return true;
+      },
+    };
+  }
+
+  /** Appends an entry, discarding the abandoned redo branch and evicting. */
+  private _push(
+    label: string,
+    target: HistoryTarget,
+    before: string,
+    after: string,
+    blobs: Map<string, Uint8Array>
+  ): void {
     let bytes = before.length + after.length;
     for (const data of blobs.values()) bytes += data.byteLength;
 
@@ -215,8 +323,6 @@ export class EditHistory {
     this._index = this._entries.length;
     this._bytes += bytes;
     this._evict();
-
-    return result;
   }
 
   /**
@@ -226,16 +332,20 @@ export class EditHistory {
    *   changed, or null if there was nothing to undo.
    */
   async undo(): Promise<HistoryEntry | null> {
-    if (!this.canUndo) return null;
+    // Not while a drag is live. The gesture has already mutated the manifest
+    // outside the stack, so applying an older snapshot over it would leave the
+    // commit that follows comparing against a `before` that never existed. The
+    // press ends first; the next one undoes normally.
+    if (this._gesture || !this.canUndo) return null;
     const entry = this._entries[this._index - 1];
     await this._apply(entry, entry.before);
     this._index--;
     return entry;
   }
 
-  /** Reapplies the next edit. Mirror of {@link undo}. */
+  /** Reapplies the next edit. Mirror of {@link undo}, gesture guard included. */
   async redo(): Promise<HistoryEntry | null> {
-    if (!this.canRedo) return null;
+    if (this._gesture || !this.canRedo) return null;
     const entry = this._entries[this._index];
     await this._apply(entry, entry.after);
     this._index++;

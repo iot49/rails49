@@ -1,17 +1,20 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { R49Archive, getDPT, getDPTResidual } from '@occupancy/r49';
-import type { ManifestData, Point } from '@occupancy/r49';
+import type { CalibrationPoint, ManifestData, Point } from '@occupancy/r49';
 import { MIN_DPT } from '@occupancy/config';
 import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
 import {
+  dragHandles,
+  dragTo,
   hitTest,
   isClick,
   CLICK_SLOP_SCREEN_PX,
   DEFAULT_GRAB_RADIUS_SCREEN_PX,
 } from './geometry.js';
-import type { EditHistory, HistoryTarget } from './history.js';
+import type { DragHandle, HitTarget, HitTolerance } from './geometry.js';
+import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
 import type { ViewerPointerDetail } from './rr-viewer.js';
 import type { CalibrationCommitDetail, RRCalibrationDialog } from './rr-calibration-dialog.js';
 
@@ -40,15 +43,46 @@ type PendingCalibration =
   | { readonly kind: 'edit'; readonly index: number; readonly px: Point };
 
 /**
+ * The pointer gesture currently in flight: one press, its moves, and its end.
+ *
+ * Everything a release needs is decided at **pointer-down** — what was under
+ * the pointer, which handles move with it, and the history entry the whole
+ * gesture will commit — so no motion event has to re-decide anything, and the
+ * entry's snapshot is of the state before the first pixel moved.
+ */
+interface LiveGesture {
+  /** Only this pointer drives the gesture; a second finger is ignored. */
+  readonly pointerId: number;
+  /** Where the press landed, in image pixels. Every delta is measured from here. */
+  readonly origin: Point;
+  /** What the press grabbed, or null for empty image. */
+  readonly hit: HitTarget | null;
+  /**
+   * The points this gesture moves. A list, not one object: a coupler drag moves
+   * two car ends and one entry has to cover both (`SPEC.md` § Undo and redo).
+   */
+  readonly handles: readonly DragHandle[];
+  /** The one history entry, opened at pointer-down and committed at pointer-up. */
+  readonly entry: HistoryGesture | null;
+  /**
+   * Set once the pointer leaves the click slop, and **sticky** thereafter: a
+   * drag walked back to where it started is still a drag, and must not fall
+   * through to the click path and open a dialog.
+   */
+  dragging: boolean;
+}
+
+/**
  * Main editor view: opens an archive, manages its images, reports DPT, and
  * authors calibration points.
  *
  * **Calibration points are the only geometry it authors** (#28). A click asks
  * for the pixel's world coordinate and records one `layout` history entry; a
- * click on an existing point edits that point's coordinate instead. Cars and
- * sensors, the tool palette that would choose between them, the context menu
- * and dragging are later tickets (#29–#31); until the palette exists, a click
- * in the viewer means "calibrate", which is the only tool there is.
+ * click on an existing point edits that point's coordinate instead; a **drag**
+ * moves it, as one entry per gesture (#30). Cars and sensors, the tool palette
+ * that would choose between them, and the context menu are later tickets (#29,
+ * #31); until the palette exists, a click in the viewer means "calibrate",
+ * which is the only tool there is.
  *
  * DPT is reported live, with the fit residual once the fit is over-determined,
  * and a DPT below `layout.min_dpt` warns **persistently and blocks nothing** —
@@ -76,8 +110,8 @@ export class RREditorView extends LitElement {
   @state() private _imageUrls: Map<string, string> = new Map();
   /** The click waiting on a coordinate, or null when no dialog is open. */
   private _pendingCalibration: PendingCalibration | null = null;
-  /** Where the live gesture began, so a release can tell a click from a drag. */
-  private _gestureStart: { readonly point: Point; readonly pointerId: number } | null = null;
+  /** The press in flight, or null between gestures. At most one at a time. */
+  private _gesture: LiveGesture | null = null;
 
   @query('rr-calibration-dialog') private _calibrationDialog!: RRCalibrationDialog;
 
@@ -285,57 +319,114 @@ export class RREditorView extends LitElement {
     this._notifyHistoryChange();
   }
 
-  /** Remembers where the gesture began; nothing is decided until it ends. */
+  /**
+   * Everything a gesture needs, decided where the pointer went down.
+   *
+   * The hit-test runs **here** rather than at release: the press is where the
+   * user aimed, and a drag has to know what it grabbed before it can move it.
+   * The history entry opens here too, so its snapshot is of the state before
+   * the first motion event — the whole gesture then costs one Cmd+Z, not one
+   * per pixel of travel (`SPEC.md` § Undo and redo).
+   *
+   * A press arriving while a gesture is live is read by its `pointerId`. A
+   * **different** one is a second finger, and is ignored rather than allowed to
+   * replace the first. The **same** one cannot be a second finger — a pointer
+   * cannot go down twice without going up — so it means the previous gesture's
+   * end never arrived, and it is closed here rather than left to block every
+   * press and every undo for the rest of the session. `rr-viewer` emits nothing
+   * when it has no transform to convert with, which is one way that happens.
+   */
   private _onViewerPointerDown(e: CustomEvent<ViewerPointerDetail>) {
-    this._gestureStart = {
-      point: e.detail.point,
-      pointerId: e.detail.originalEvent.pointerId,
-    };
-  }
+    const pointerId = e.detail.originalEvent.pointerId;
+    if (this._gesture) {
+      if (this._gesture.pointerId !== pointerId) return;
+      // Not awaited: this handler must have the new gesture in place before the
+      // first pointer-move can arrive. `commit()` pushes its entry before it
+      // yields, so the stale entry still lands ahead of the one opened below.
+      void this._endGesture(this._gesture);
+    }
+    if (!this.archive) return;
 
-  /** The browser took the gesture away: it ended nowhere and means nothing. */
-  private _onViewerPointerCancel() {
-    this._gestureStart = null;
+    const at = e.detail.point;
+    // Only calibration points are in the scene: they are the only object this
+    // editor authors. Cars and sensors join it with the tools that create them.
+    const scene = {
+      cars: [],
+      sensors: [],
+      calibrationPoints: this.archive.getManifest().layout.calibration.points,
+    };
+    const hit = hitTest(scene, at, this._tolerance(DEFAULT_GRAB_RADIUS_SCREEN_PX, e.detail));
+    const handles = hit ? dragHandles(hit, scene) : [];
+
+    this._gesture = {
+      pointerId,
+      origin: at,
+      hit,
+      handles,
+      entry: handles.length > 0 ? this._beginDragEntry() : null,
+      dragging: false,
+    };
   }
 
   /**
-   * A finished gesture in the viewer, which today can only mean "calibrate".
+   * Opens the one history entry a drag will commit.
    *
-   * A press and a release more than `CLICK_SLOP_SCREEN_PX` apart is a drag, and
-   * a drag does nothing yet (#30 gives it meaning) — without that test every
-   * swipe across the image would place a point, and the labeling device is a
-   * phone. The **press** position is what gets used: it is where the user
-   * aimed, and where a drag would have grabbed.
+   * Every handle a press can grab today lives in `layout`. A coupler drag's two
+   * cars would open one `image` entry the same way — one target, one entry,
+   * however many objects move under it.
+   */
+  private _beginDragEntry(): HistoryGesture | null {
+    return this.history?.beginGesture('move calibration point', { kind: 'layout' }) ?? null;
+  }
+
+  /**
+   * Motion, which becomes a drag only once it clears the click slop.
+   *
+   * Nothing is recorded here — the open entry already holds the pre-drag
+   * snapshot, so the manifest is free to be written on every event.
+   */
+  private _onViewerPointerMove(e: CustomEvent<ViewerPointerDetail>) {
+    const gesture = this._current(e);
+    if (!gesture) return;
+
+    if (!gesture.dragging) {
+      if (isClick(gesture.origin, e.detail.point, this._tolerance(CLICK_SLOP_SCREEN_PX, e.detail))) {
+        return;
+      }
+      gesture.dragging = true;
+    }
+    this._moveHandles(gesture, e.detail.point);
+  }
+
+  /**
+   * The end of the gesture: commit what moved, or interpret the click.
+   *
+   * One entry lands here or none at all — a drag returned to its origin leaves
+   * the subtree byte-identical, and `EditHistory` suppresses it by value rather
+   * than by trusting that the user meant it.
+   *
+   * A gesture that dragged never falls through to the click path, even if it
+   * ended back inside the slop. Without that, every swipe over the image would
+   * place a point, and the labeling device is a phone.
    *
    * When the tool palette arrives (#31) this is where the active tool is
-   * dispatched on. Neither that nor dragging is anticipated here beyond keeping
-   * the seam.
+   * dispatched on.
    */
   private async _onViewerPointerUp(e: CustomEvent<ViewerPointerDetail>) {
-    const start = this._gestureStart;
-    this._gestureStart = null;
-    if (!this.archive || !start) return;
-    if (start.pointerId !== e.detail.originalEvent.pointerId) return;
+    const gesture = this._current(e);
+    if (!gesture) return;
 
-    const tolerance = {
-      screenPx: CLICK_SLOP_SCREEN_PX,
-      imagePxPerScreenPx: e.detail.imagePxPerScreenPx,
-    };
-    if (!isClick(start.point, e.detail.point, tolerance)) return;
+    if (gesture.dragging) this._moveHandles(gesture, e.detail.point);
+    await this._endGesture(gesture);
+    if (gesture.dragging) return;
+    if (!isClick(gesture.origin, e.detail.point, this._tolerance(CLICK_SLOP_SCREEN_PX, e.detail))) {
+      return;
+    }
 
-    const at = start.point;
-    const points = this.archive.getManifest().layout.calibration.points;
-
-    // Only calibration points are in the scene: they are the only object this
-    // editor authors. Cars and sensors join it with the tools that create them.
-    const hit = hitTest({ cars: [], sensors: [], calibrationPoints: points }, at, {
-      screenPx: DEFAULT_GRAB_RADIUS_SCREEN_PX,
-      imagePxPerScreenPx: e.detail.imagePxPerScreenPx,
-    });
-
-    if (hit?.kind === 'calibration') {
-      const point = points[hit.index];
-      this._pendingCalibration = { kind: 'edit', index: hit.index, px: point.px };
+    if (gesture.hit?.kind === 'calibration') {
+      const point = this.archive!.getManifest().layout.calibration.points[gesture.hit.index];
+      if (!point) return;
+      this._pendingCalibration = { kind: 'edit', index: gesture.hit.index, px: point.px };
       await this._calibrationDialog.show(point.world, { mode: 'edit' });
       return;
     }
@@ -344,18 +435,105 @@ export class RREditorView extends LitElement {
     // coordinate would be precision the gesture does not have.
     this._pendingCalibration = {
       kind: 'place',
-      px: { x: Math.round(at.x), y: Math.round(at.y) },
+      px: { x: Math.round(gesture.origin.x), y: Math.round(gesture.origin.y) },
     };
     await this._calibrationDialog.show();
   }
 
   /**
-   * The coordinate came back: write the point as one `layout` entry.
+   * The browser took the gesture away: it ended nowhere and means nothing.
    *
-   * The points array is rebuilt rather than mutated in place, because a history
-   * snapshot is taken by value and the editor must not hold a reference to an
-   * object undo will replace.
+   * What moved goes back to exactly where it started — restoring the handles
+   * rather than the snapshot, so a cancelled drag is undone even when no
+   * history is attached. The entry is then closed against an unchanged subtree
+   * and records nothing.
    */
+  private async _onViewerPointerCancel(e: CustomEvent<ViewerPointerDetail>) {
+    const gesture = this._current(e);
+    if (!gesture) return;
+
+    if (gesture.dragging) this._moveHandles(gesture, gesture.origin);
+    await this._endGesture(gesture);
+  }
+
+  /**
+   * Closes a gesture: one entry for everything it moved, or none at all.
+   *
+   * Every ending goes through here, including the two that are not the
+   * gesture's own — a repeated `pointerId`, which says the previous up never
+   * arrived, and teardown, since `rr-app` replaces this element on the view
+   * toggle and an entry left open would refuse every undo for the rest of the
+   * session. Both **commit** rather than revert: the objects visibly moved and
+   * the user has an undo for that, where a silent revert would be the editor
+   * deciding it knew better.
+   */
+  private async _endGesture(gesture: LiveGesture) {
+    if (this._gesture === gesture) this._gesture = null;
+    if (await gesture.entry?.commit()) this._notifyHistoryChange();
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this._gesture) void this._endGesture(this._gesture);
+  }
+
+  /** The live gesture, if this event belongs to it. */
+  private _current(e: CustomEvent<ViewerPointerDetail>): LiveGesture | null {
+    const gesture = this._gesture;
+    if (!gesture || gesture.pointerId !== e.detail.originalEvent.pointerId) return null;
+    return gesture;
+  }
+
+  /** A screen-pixel tolerance in the zoom the viewer just reported. */
+  private _tolerance(screenPx: number, detail: ViewerPointerDetail): HitTolerance {
+    return { screenPx, imagePxPerScreenPx: detail.imagePxPerScreenPx };
+  }
+
+  /**
+   * Writes every handle of the gesture to where `to` puts it.
+   *
+   * The delta is measured from the press and applied to each handle's starting
+   * position, so all of them take the identical translation: that is what keeps
+   * a coupler's ends on the same pixel, and a coupling is exact coincidence.
+   *
+   * Only calibration handles are written, because they are the only objects the
+   * hit-test scene contains — a car end or a sensor cannot be grabbed until the
+   * tools that create them exist (#31), and their writes arrive with them.
+   */
+  private _moveHandles(gesture: LiveGesture, to: Point) {
+    if (!this.archive || gesture.handles.length === 0) return;
+    const delta = { x: to.x - gesture.origin.x, y: to.y - gesture.origin.y };
+    const points = [...this.archive.getManifest().layout.calibration.points];
+
+    for (const handle of gesture.handles) {
+      if (handle.ref.kind !== 'calibration') continue;
+      const point = points[handle.ref.index];
+      if (!point) continue;
+      points[handle.ref.index] = { ...point, px: dragTo(handle, delta) };
+    }
+
+    this._writeCalibrationPoints(points);
+  }
+
+  /**
+   * Replaces the layout's calibration points, and re-renders.
+   *
+   * The array and the objects around it are rebuilt rather than mutated in
+   * place, because a history snapshot is taken by value and the editor must not
+   * hold a reference to an object undo will replace. Lit does not observe
+   * mutations inside `R49Archive`, hence the explicit `requestUpdate()` — which
+   * is what carries a mid-drag position into the DPT readout.
+   */
+  private _writeCalibrationPoints(points: readonly CalibrationPoint[]) {
+    const manifest = this.archive!.getManifest();
+    manifest.layout = {
+      ...manifest.layout,
+      calibration: { ...manifest.layout.calibration, points: [...points] },
+    };
+    this.requestUpdate();
+  }
+
+  /** The coordinate came back: write the point as one `layout` entry. */
   private async _onCalibrationCommit(e: CustomEvent<CalibrationCommitDetail>) {
     const pending = this._pendingCalibration;
     this._pendingCalibration = null;
@@ -381,12 +559,8 @@ export class RREditorView extends LitElement {
       } else {
         points[pending.index] = { ...points[pending.index], world: e.detail.world };
       }
-      manifest.layout = {
-        ...manifest.layout,
-        calibration: { ...manifest.layout.calibration, points },
-      };
+      this._writeCalibrationPoints(points);
     });
-    this.requestUpdate();
   }
 
   /**
@@ -451,6 +625,7 @@ export class RREditorView extends LitElement {
               .resolution=${manifest.camera.resolution}
               .calibrationPoints=${manifest.layout.calibration.points}
               @rr-pointer-down=${this._onViewerPointerDown}
+              @rr-pointer-move=${this._onViewerPointerMove}
               @rr-pointer-up=${this._onViewerPointerUp}
               @rr-pointer-cancel=${this._onViewerPointerCancel}
             ></rr-viewer>

@@ -18,12 +18,13 @@ without discussion.**
 **The editor was reduced to what v4 supports and no further** (#19), and is now being rebuilt one
 ticket at a time. It opens an archive, manages its images, edits layout metadata, reports DPT, and
 **authors calibration points** (#28) — click a pixel, type its world coordinate, one `layout`
-history entry per placement or edit. v3's point-marker authoring and two-point calibration dragging
-are gone for good, and `src/prototype/` with them.
+history entry per placement or edit — which it now also **drags** (#30), at one entry per gesture.
+v3's point-marker authoring and two-point calibration dragging are gone for good, and
+`src/prototype/` with them: what came back is a different mechanism, built to carry the coupler case.
 
 So a missing affordance is usually a deferral, not a bug. Car authoring (chain-clicked spans,
 shared coupler handles, the width rectangle), sensor placement, the tool palette and its calibration
-gate (#31), the state-dependent right-click and its context menu (#29), dragging (#30), and the
+gate (#31), the state-dependent right-click and its context menu (#29), and the
 completeness affordance are all specified in `../SPEC.md` § Labeling Workflow and belong to their own
 tickets. Don't reconstruct them piecemeal to close a gap you notice here.
 
@@ -82,9 +83,18 @@ Two rules follow from entries being scoped snapshots:
 An edit that *removes* images must pass `options.retain` with their filenames — the bytes are gone
 from the zip by the time the entry could look for them. Additions are captured automatically.
 
-`SPEC.md` § Undo and redo carries the reasoning, including the parts the editor spec still has to
-build: per-gesture drag commits and the chain interception that makes a live chain a wall Cmd+Z
-cannot cross.
+**A drag uses `beginGesture`, not `record`.** `record` brackets one mutation; a drag mutates on every
+pointer-move and must still be one Cmd+Z. So the snapshot is taken at pointer-down, the caller
+mutates freely, and `commit()` at pointer-up records one entry — or none, when the subtree came back
+byte-identical. That one entry can cover several objects falls out of the target being a subtree: a
+coupler drag's two cars share one image record. Undo and redo are **refused while a gesture is open**,
+because the drag has already mutated outside the stack and an older snapshot applied over it would
+leave the commit comparing against a `before` that never existed — which makes an abandoned gesture
+expensive, so every ending path (a repeated `pointerId`, `disconnectedCallback`, `attach`) has to
+close one.
+
+`SPEC.md` § Undo and redo carries the reasoning, including the part the editor spec still has to
+build: the chain interception that makes a live chain a wall Cmd+Z cannot cross.
 
 ### `rr-viewer` is shared, and that is load-bearing
 
@@ -133,6 +143,11 @@ Three rules it encodes, each of which is wrong somewhere if reimplemented:
 for every tool, because it describes the pointing device and not the object. A tool that grabbed at
 its own distance would read as a bug. The slop is the smaller of the two — it is hand tremor, not
 aim — and `isClick` is what keeps a swipe on a phone from placing a point.
+
+`dragHandles` turns a hit into the **list** of points a gesture moves — that list is the coupler
+case, and it is why one history entry can cover more than one object. `dragTo` applies the same delta
+to each handle's *pointer-down* position: measured from the press so the grab offset survives, and
+identical across handles so a coupler's ends stay on the same pixel.
 
 ### `marker.ts` and `calibrationMarker.ts` are modules, not elements
 
@@ -208,6 +223,12 @@ What jsdom means in practice:
   is right. Assert DOM structure, attributes, computed values, and emitted events. Do not claim a
   test verifies visual appearance; it cannot.
 * Camera (`getUserMedia`), ONNX sessions, and `PointerEvent` are mocked or polyfilled per test file.
+
+This is also the ceiling on what the drag tests prove. They dispatch `rr-pointer-*` events shaped the
+way `rr-viewer` emits them, so they cover the editor's half of a gesture — one entry, the no-op
+suppression, the sticky drag flag — and **not** the pointer capture, which is the browser's and the
+viewer's. A drag leaving the viewer is exercised as coordinates outside the image, which is what the
+editor actually sees.
 
 Real in-browser coverage — visual regression and genuine pointer interaction — is a stated goal but
 **is not wired up**. `@web/test-runner` sits in `devDependencies` with no config file and runs

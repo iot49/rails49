@@ -255,6 +255,111 @@ describe('EditHistory', () => {
   });
 });
 
+describe('EditHistory gestures', () => {
+  // A drag mutates continuously and must cost exactly one entry. `record` cannot
+  // express that — it brackets a single mutation — so a gesture opens at
+  // pointer-down, lets the caller mutate freely, and closes at pointer-up.
+
+  /** Puts one calibration point at `x`, the way a drag moves one. */
+  function moveTo(archive: R49Archive, x: number) {
+    const manifest = archive.getManifest();
+    manifest.layout = {
+      ...manifest.layout,
+      calibration: { points: [{ px: { x, y: 0 }, world: { x: 0, y: 0, z: 0 } }] },
+    };
+  }
+
+  const xOf = (archive: R49Archive) => archive.getManifest().layout.calibration.points[0].px.x;
+
+  async function withPoint(): Promise<R49Archive> {
+    const archive = await makeArchive();
+    moveTo(archive, 0);
+    return archive;
+  }
+
+  it('records one entry for a gesture, however many times it mutated', async () => {
+    const archive = await withPoint();
+    const history = attached(archive);
+
+    const gesture = history.beginGesture('move calibration point', { kind: 'layout' });
+    for (const x of [10, 20, 30, 40]) moveTo(archive, x);
+    expect(await gesture.commit()).toBe(true);
+
+    expect(history.size).toBe(1);
+    expect(history.undoLabel).toBe('move calibration point');
+
+    await history.undo();
+    expect(xOf(archive)).toBe(0);
+    await history.redo();
+    expect(xOf(archive)).toBe(40);
+  });
+
+  it('records nothing when the gesture ends where it started', async () => {
+    const archive = await withPoint();
+    const history = attached(archive);
+
+    const gesture = history.beginGesture('move calibration point', { kind: 'layout' });
+    moveTo(archive, 250);
+    moveTo(archive, 0);
+    expect(await gesture.commit()).toBe(false);
+
+    expect(history.size).toBe(0);
+    expect(history.isDirty).toBe(false);
+  });
+
+  it('refuses undo and redo while a gesture is open', async () => {
+    // The gesture has already mutated the manifest outside the stack. An undo
+    // landing mid-drag would apply an older snapshot over it, and the commit
+    // that follows would then compare against a `before` that never existed.
+    const archive = await withPoint();
+    const history = attached(archive);
+    await history.record('edit name', { kind: 'layout' }, () => {
+      archive.getManifest().layout = { ...archive.getManifest().layout, name: 'Renamed' };
+    });
+
+    const gesture = history.beginGesture('move calibration point', { kind: 'layout' });
+    expect(await history.undo()).toBeNull();
+    expect(archive.getManifest().layout.name).toBe('Renamed');
+
+    await gesture.commit();
+    expect(await history.undo()).not.toBeNull();
+    expect(archive.getManifest().layout.name).toBe('Test Layout');
+    expect(await history.redo()).not.toBeNull();
+  });
+
+  it('ignores a second commit of the same gesture', async () => {
+    // Pointer-up and pointer-cancel can both arrive for one gesture; the second
+    // must not record the first one's effect a second time.
+    const archive = await withPoint();
+    const history = attached(archive);
+
+    const gesture = history.beginGesture('move calibration point', { kind: 'layout' });
+    moveTo(archive, 40);
+    expect(await gesture.commit()).toBe(true);
+    expect(await gesture.commit()).toBe(false);
+
+    expect(history.size).toBe(1);
+  });
+
+  it('drops an open gesture when another archive is attached', async () => {
+    const archive = await withPoint();
+    const history = attached(archive);
+    const gesture = history.beginGesture('move calibration point', { kind: 'layout' });
+    moveTo(archive, 40);
+
+    history.attach(await withPoint());
+    expect(await gesture.commit()).toBe(false);
+    expect(history.size).toBe(0);
+    expect(history.canUndo).toBe(false);
+  });
+
+  it('runs without an archive rather than throwing', async () => {
+    const history = new EditHistory();
+    const gesture = history.beginGesture('move calibration point', { kind: 'layout' });
+    expect(await gesture.commit()).toBe(false);
+  });
+});
+
 describe('EditHistory round-trip', () => {
   // Undo and redo are one operation with the fields swapped, so there is no
   // inverse to author and no inverse to get wrong. The only class of bug scoped

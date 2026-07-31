@@ -41,7 +41,7 @@ Non-element modules use plain camelCase filenames with no prefix.
 rr-app                          ← shell: owns the archive and the view mode
 ├── rr-header                   ← app bar: status slot, view toggle, settings gear
 │   └── rr-settings-dialog      ← layout metadata (sl-dialog)
-├── rr-editor-view              ← editor mode; images, DPT readout, calibration points
+├── rr-editor-view              ← editor mode; images, DPT readout, calibration points and their drag
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
 │   ├── rr-viewer               ← SHARED: media + SVG overlay; reports pointer gestures
 │   │   ├── marker.ts           ← module, not an element
@@ -60,11 +60,12 @@ rr-app                          ← shell: owns the archive and the view mode
 > `rr-viewer` reporting pointer gestures in image pixels, and `geometry.ts`
 > holding the car-width, rectangle and hit-testing arithmetic — and [#28] gave
 > it its first consumer: click a pixel, type its world coordinate, and the point
-> is written as one `layout` history entry.
+> is written as one `layout` history entry. [#30] added the drag — the same point
+> moves, and the whole gesture costs exactly one entry.
 >
 > Still absent, each with its own ticket: the tool palette and the calibration
 > gate on the labeling tools ([#31]), the right-click context menu and delete
-> ([#29]), dragging ([#30]), car authoring (chain-clicked two-point spans),
+> ([#29]), car authoring (chain-clicked two-point spans),
 > sensor placement, and the completeness affordance. They are specified in
 > `../SPEC.md` § Labeling Workflow. Because the palette does not exist, a click
 > in the viewer unconditionally means *calibrate*.
@@ -123,7 +124,8 @@ Application shell. Owns the archive and routes between the two views.
 **Keyboard:** Cmd/Ctrl+Z and Cmd+Shift+Z / Ctrl+Y, bound on `window`, **editor view only**. The
 handler bails when a field has focus, testing `event.composedPath()[0]` rather than `event.target` —
 Shoelace inputs are custom elements, so `target` is retargeted to the host and the naive check would
-hijack Cmd+Z mid-typing.
+hijack Cmd+Z mid-typing. A press with a drag still live returns nothing (see `history.ts`), and
+`_undo`/`_redo` already do nothing when the stack hands back no entry.
 
 * `rr-file-new` and `rr-file-open` **confirm before discarding unsaved changes** (`_history.isDirty`),
   since replacing the archive takes the undo stack with it. This is the one destructive act undo
@@ -344,6 +346,10 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | `HitScene` | `{ cars, sensors, calibrationPoints }` — everything grabbable for one image of one layout |
 | `HitTarget` | `car-endpoint` / `coupler` (both carrying `ends`), `sensor` (`id`), `calibration` (`index`) |
 | `HitTolerance` | `{ screenPx, imagePxPerScreenPx }` |
+| `dragHandles(hit, scene)` | The points a grab moves — **a list**, one per object, and two or more for a coupler |
+| `DragHandle` | `{ ref, from }`: what it addresses, and where it sat at pointer-down |
+| `HandleRef` | `calibration` (`index`), `car-end` (`id`, `end`), `sensor` (`id`) — never an object reference |
+| `dragTo(handle, delta)` | Where that handle lands, in whole image pixels |
 | `DEFAULT_GRAB_RADIUS_SCREEN_PX` | The grab radius every tool uses, in screen pixels — one number, because it describes the pointing device |
 | `CLICK_SLOP_SCREEN_PX` | How far a pointer may travel between press and release and still be a click. Smaller than the grab radius: this is tremor, not aim |
 | `isClick(from, to, tolerance)` | Whether a finished gesture was a click rather than a drag |
@@ -363,6 +369,13 @@ because the only edits a span supports are to its two ends.
 **A coupler is exact coincidence, not proximity.** Nothing about a coupling is stored; it is two or
 more car ends at the identical pixel, which chaining and the shared handle both guarantee by writing
 the same value. Fusing endpoints that merely look close would move geometry the user never joined.
+
+**A drag is a list of handles, not the thing under the cursor.** `dragHandles` is where that
+conversion happens, and it is why one history entry can cover several objects. Every handle carries
+the position it had at pointer-down, and `dragTo` applies the same delta to each: measured from the
+press so the grab offset survives — grabbing a point three pixels off-center must not teleport it
+under the cursor — and identical across handles so a coupler's ends land on the *same* pixel, which
+is what keeps them coupled. Rounded, because a handle names a pixel.
 
 ---
 
@@ -444,13 +457,37 @@ that image into view before the change lands.
   **exactly one `history.record` entry targeting `layout`**, labelled "place calibration point" or
   "edit calibration point", and undo reverses it. Nothing is written until the coordinate arrives, so
   a dismissed dialog leaves both the manifest and the stack untouched.
-  * **A drag does nothing**, and `rr-pointer-cancel` abandons the gesture. Without the slop test
-    every swipe over the image would place a point, and the labeling device is a phone. The
-    **press** position is what gets used — where the user aimed, and where a drag would grab. This
-    is the seam dragging ([#30]) takes over, and where the palette ([#31]) will dispatch on the
+  * Everything is decided at **pointer-down** — the hit-test, the handles the gesture will move, and
+    the history entry it will commit — so no motion event re-decides anything and the entry's
+    snapshot predates the first moved pixel. The **press** position is what a click uses: where the
+    user aimed, and where a drag grabs. This is where the palette ([#31]) will dispatch on the
     active tool.
   * The hit-test scene contains only calibration points, because they are the only object this
     editor can create. Cars and sensors join it with the tools that author them.
+* **Dragging** ([#30]). A press on a calibration point followed by motion past `CLICK_SLOP_SCREEN_PX`
+  moves it, and the DPT readout follows live, mid-gesture. The history entry is opened at
+  pointer-down and committed at pointer-up, **never per motion event**, so a drag across the image is
+  one Cmd+Z and not two hundred; a drag returned to its origin records **nothing**, suppressed by
+  value comparison in `EditHistory` rather than by trusting that the user meant it.
+  * The gesture moves a **list** of handles from `dragHandles`, which is what lets one entry cover
+    more than one object — the coupler case a car drag will need. Only calibration handles are
+    written today, because they are the only ones the scene can produce.
+  * `dragging` is **sticky**: a gesture that moved never falls through to the click path, even if it
+    ended back inside the slop. Without it every swipe over the image would place a point, and the
+    labeling device is a phone.
+  * A press arriving mid-drag is read by its `pointerId`. A **different** one is a second finger and
+    is ignored. The **same** one cannot be — a pointer does not go down twice without going up — so
+    it means the previous gesture's end never arrived, and it closes that gesture instead of being
+    ignored. Without that, one swallowed `pointerup` (`rr-viewer` emits nothing when it has no
+    transform) would leave the editor deaf to every press *and* undo dead for the session.
+    `disconnectedCallback` closes an open gesture for the same reason: `rr-app` replaces this element
+    on the view toggle. Both **commit** what moved rather than reverting it — the objects visibly
+    moved and undo covers that; a silent revert would be the editor deciding it knew better.
+  * `rr-pointer-cancel` puts every handle back at its starting pixel and closes the entry against an
+    unchanged subtree, so a gesture the browser took away records nothing — and is restored even
+    when no history is attached.
+  * **Pointer capture** is `rr-viewer`'s (it takes it on `pointerdown`); what the editor owes it is
+    not bailing on coordinates outside the image, so a drag that leaves the viewer still commits.
   * An edit remembers the **pixel** as well as the index. Points carry no `id`, so if an undo lands
     while the dialog is open and slides that index onto a different point, the commit is dropped
     rather than applied to whatever now sits there.
@@ -527,9 +564,10 @@ exporter or to `lib/r49/tests/fixtures.test.ts`.
 
 | Export | Description |
 |---|---|
-| `EditHistory` | `attach`, `record`, `undo`, `redo`, `markSaved`; `canUndo`/`canRedo`/`undoLabel`/`redoLabel`/`isDirty`/`size`/`bytes` |
+| `EditHistory` | `attach`, `record`, `beginGesture`, `undo`, `redo`, `markSaved`; `canUndo`/`canRedo`/`undoLabel`/`redoLabel`/`isDirty`/`size`/`bytes` |
 | `HistoryTarget` | `{ kind: 'layout' }`, `{ kind: 'image', filename }`, or `{ kind: 'images' }` |
 | `HistoryEntry` | What `undo`/`redo` return, so the caller can reveal what changed |
+| `HistoryGesture` | An open gesture. One method, `commit()`, returning whether an entry was recorded |
 | `DEFAULT_HISTORY_BUDGET_BYTES` | 256 MB. A UI constant, **not** a `config.yaml` value — nothing outside `ui/` can read it |
 
 Entries are **scoped snapshots** — `before`/`after` clones of the one subtree touched — so undo and
@@ -537,10 +575,30 @@ redo are one operation with the fields swapped, and there is no per-command inve
 wrongly. Retention is bounded by bytes rather than entry count, because entries range from a
 kilobyte to a whole JPEG; eviction truncates the oldest end and never punches a hole.
 
-What is built and what is not: this covers layout metadata and image add/remove/reorder, which are
-the only manifest mutations the reduced editor has. The per-gesture drag commits and the chain
-interception described in `../SPEC.md` § Undo and redo arrive with car authoring — there is nothing
-yet for them to attach to.
+**`record` brackets one mutation; `beginGesture` brackets a drag.** A drag mutates on every
+pointer-move and must still be one Cmd+Z, so the snapshot is taken when the gesture opens
+(pointer-down), the caller mutates freely, and `commit()` closes it (pointer-up). `commit()` returns
+`false` — recording nothing — when the subtree came back byte-identical, which is how a drag returned
+to its origin costs no entry. It is idempotent, because pointer-up and pointer-cancel can both arrive
+for one gesture, and `attach` drops an open gesture with the archive it snapshotted.
+
+That **one entry can cover several objects** falls out of the target being a subtree: a coupler drag
+moves two cars inside one image record, and a single `{ kind: 'image' }` gesture already covers both.
+
+Two guards follow. **Undo and redo are refused while a gesture is open** — the drag has already
+mutated the manifest outside the stack, so applying an older snapshot over it would leave the commit
+comparing against a `before` that never existed; the press ends first, and the next Cmd+Z behaves
+normally. And `record` inside an open gesture **warns**: the gesture would record the same mutation a
+second time.
+
+Because that first guard makes an abandoned gesture expensive — undo would stay dead until the
+archive is replaced — every caller owes it an ending. `rr-editor-view` closes one on a repeated
+`pointerId` and on disconnect, and `attach` drops one outright. `commit()` pushes its entry **before
+it yields**, so closing a stale gesture and opening the next one in the same handler records both.
+
+What is built and what is not: this covers layout metadata, image add/remove/reorder, calibration
+points, and the calibration drag. The chain interception described in `../SPEC.md` § Undo and redo
+arrives with car authoring — there is no chain yet for it to intercept.
 
 ---
 
