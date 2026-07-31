@@ -15,16 +15,22 @@ without discussion.**
 | `README.md` | Per-component contracts: properties, events, hierarchy — describes only what is built | the shape of existing components |
 | `src/` | What actually ships | ground truth |
 
-**The editor has been reduced to what v4 supports and no further** (#19). It opens an archive,
-manages its images, edits layout metadata, and reports DPT. Point-marker authoring and two-point
-calibration dragging are gone, and `src/prototype/` with them. The target state was deliberately
-"compiles, tests pass, does less" — **not** "authors v4".
+**The editor was reduced to what v4 supports and no further** (#19), and is now being rebuilt one
+ticket at a time. It opens an archive, manages its images, edits layout metadata, reports DPT, and
+**authors calibration points** (#28) — click a pixel, type its world coordinate, one `layout`
+history entry per placement or edit. v3's point-marker authoring and two-point calibration dragging
+are gone for good, and `src/prototype/` with them.
 
 So a missing affordance is usually a deferral, not a bug. Car authoring (chain-clicked spans,
-shared coupler handles, the width rectangle), sensor placement, the calibration-point tool, the
-state-dependent right-click and its context menu, and the completeness affordance are all specified
-in `../SPEC.md` § Labeling Workflow and belong to the editor spec — a separate effort. Don't
-reconstruct them piecemeal to close a gap you notice here.
+shared coupler handles, the width rectangle), sensor placement, the tool palette and its calibration
+gate (#31), the state-dependent right-click and its context menu (#29), dragging (#30), and the
+completeness affordance are all specified in `../SPEC.md` § Labeling Workflow and belong to their own
+tickets. Don't reconstruct them piecemeal to close a gap you notice here.
+
+Two consequences of arriving in that order, which the code states where it matters: a click in the
+viewer means "calibrate" because calibration is the **only** tool — the palette that would dispatch
+on an active tool is #31 — and the hit-test scene contains only calibration points, because they are
+the only object the editor can create.
 
 Where README and the code disagree, the code wins and README is the thing to correct:
 **a change to a component's properties or events belongs in README in the same commit.**
@@ -102,6 +108,10 @@ The v3 machinery that *mutated* — marker add/move/delete, the draggable `{p0, 
 the v4 reduction and does not come back. Deciding what a gesture means is the editor's job; the
 arithmetic it needs is in `geometry.ts`.
 
+It draws what it is given, and `calibrationPoints` is the second such property after `markers`:
+crosshairs from `calibrationMarker.ts`, rendered from the manifest and never written by the viewer.
+`rr-editor-view` is what turns an `rr-pointer-up` into a point.
+
 ### `geometry.ts` holds the arithmetic, because a component cannot be tested
 
 Car width from DPT, a span's oriented rectangle, and hit-testing live in a pure module. jsdom does
@@ -119,11 +129,22 @@ Three rules it encodes, each of which is wrong somewhere if reimplemented:
   identical pixel, which chaining and the shared handle guarantee. A proximity test would fuse cars
   the user placed separately.
 
-### `marker.ts` is a module, not an element
+`DEFAULT_GRAB_RADIUS_SCREEN_PX` and `CLICK_SLOP_SCREEN_PX` live here for the same reason: one radius
+for every tool, because it describes the pointing device and not the object. A tool that grabbed at
+its own distance would read as a bug. The slop is the smaller of the two — it is hand tremor, not
+aim — and `isClick` is what keeps a swipe on a phone from placing a point.
+
+### `marker.ts` and `calibrationMarker.ts` are modules, not elements
 
 Custom elements break the SVG namespace when nested in `<svg>`, so markers are three plain exports —
 `renderMarker`, `markerDefs`, `markerStyles` — that **must be used together**: defs in the SVG,
 styles in the host's `static styles`, renderer per marker. The module boundary is the encapsulation.
+
+`calibrationMarker.ts` follows the same shape with two exports (`renderCalibrationPoint`,
+`calibrationMarkerStyles`; it needs no defs). A calibration point is a **crosshair labelled with its
+world coordinate**, deliberately unlike anything else the editor draws — `SPEC.md` § Reference points
+requires it to be unmistakable, and the sensor symbol arriving in #31 has to stay distinguishable
+from it.
 
 ### Absolute `/ui/` paths
 

@@ -2,7 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state, query } from 'lit/decorators.js';
 import { renderMarker, markerDefs, markerStyles } from './marker.js';
 import type { MarkerData } from './marker.js';
-import type { Point } from '@occupancy/r49';
+import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMarker.js';
+import type { CalibrationPoint, Point } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 export const viewerStyles = css`
@@ -112,7 +113,7 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * `preserveAspectRatio="xMidYMid meet"`, so the viewBox maps 1:1 onto image
  * pixel coordinates. Changing either half misplaces every marker.
  *
- * **Properties:** `src`, `stream`, `markers`, `resolution`.
+ * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `resolution`.
  *
  * @fires rr-pointer-down - Pointer pressed. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-move - Pointer moved. Detail: {@link ViewerPointerDetail}
@@ -122,11 +123,18 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  */
 @customElement('rr-viewer')
 export class RrViewer extends LitElement {
-  static styles = [viewerStyles, markerStyles];
+  static styles = [viewerStyles, markerStyles, calibrationMarkerStyles];
 
   @property({ type: String }) src: string | null = null;
   @property({ attribute: false }) stream: MediaStream | null = null;
   @property({ type: Array }) markers: MarkerData[] = [];
+  /**
+   * The layout's calibration points, drawn as labelled crosshairs.
+   *
+   * Display only, like `markers`: the editor authors them, and the viewer never
+   * writes one. Empty in the live view, which has no reason to show them.
+   */
+  @property({ attribute: false }) calibrationPoints: readonly CalibrationPoint[] = [];
   @property({ type: Object }) resolution = { width: 1920, height: 1080 };
 
   @state() private symbolSize = MARKER_SIZE_PX;
@@ -279,6 +287,8 @@ export class RrViewer extends LitElement {
           ${markerDefs()}
 
           ${this.markers.map(m => renderMarker(m, this.symbolSize))}
+
+          ${this.calibrationPoints.map((p, i) => renderCalibrationPoint(p, i, this.symbolSize))}
         </svg>
       </div>
     `;

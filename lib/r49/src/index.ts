@@ -40,8 +40,12 @@ export { MANIFEST_VERSION } from './manifest.schema.ts';
 // prototype domain (real-world 1435mm gauge) and the model domain (physical
 // gauge in mm) are internal implementation details of how getDPT() is
 // computed.
+// getDPTResidual is the same fit's diagnostic and lives beside it deliberately:
+// both must select the same equal-z pairs, and two implementations of that rule
+// would drift.
 export {
   getDPT,
+  getDPTResidual,
   VALID_SCALES,
   type ValidScales,
 } from './manifest.schema.ts';

@@ -131,6 +131,38 @@ export interface HitTolerance {
 }
 
 /**
+ * The grab radius every editor tool uses, in **screen** pixels.
+ *
+ * One number rather than one per tool: the radius describes the pointing
+ * device, and a sensor that grabs at a different distance than a calibration
+ * point would feel like a bug. Sized for a fingertip on the phone the labeling
+ * is done on, not for a mouse.
+ */
+export const DEFAULT_GRAB_RADIUS_SCREEN_PX = 14;
+
+/**
+ * How far a pointer may travel between press and release and still be a click,
+ * in **screen** pixels.
+ *
+ * Smaller than the grab radius: this is hand tremor, not aim. Without it every
+ * swipe over the image is a click, and the labeling device is a phone.
+ */
+export const CLICK_SLOP_SCREEN_PX = 5;
+
+/**
+ * Whether a gesture that started at `from` and ended at `to` is a click.
+ *
+ * Expressed as a distance in screen pixels, like every other tolerance here,
+ * and evaluated against the same `HitTolerance` shape so the conversion happens
+ * in one place. A gesture that is not a click is a drag — which nothing acts on
+ * yet.
+ */
+export function isClick(from: Point, to: Point, tolerance: HitTolerance): boolean {
+  const reach = tolerance.screenPx * tolerance.imagePxPerScreenPx;
+  return (to.x - from.x) ** 2 + (to.y - from.y) ** 2 <= reach * reach;
+}
+
+/**
  * Rank used only to break an exact distance tie, densest geometry first.
  *
  * Couplers are absent because they are never candidates: a coincidence is

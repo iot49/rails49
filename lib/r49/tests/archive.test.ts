@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { R49Archive, getDPT } from '../src/index.ts';
+import { R49Archive, getDPT, getDPTResidual } from '../src/index.ts';
 import type { ManifestData } from '../src/index.ts';
 
 // One seam: the archive. Every test here drives the package's public interface
@@ -114,6 +114,22 @@ describe('R49Archive', () => {
       expect(m.layout.calibration.points).toHaveLength(3);
       expect(m.layout.calibration.points[2]).toEqual(cal([50, 50], [5, 5, 12]));
       expect(m.images.map(i => i.labeled_complete)).toEqual([true, false]);
+    });
+
+    it('carries DPT and its residual across a save and reopen unchanged', async () => {
+      // What the editor writes when a user calibrates: three coplanar points,
+      // one of them slightly off, so both derived numbers are non-trivial.
+      const points = [cal([0, 0], [0, 0]), cal([100, 0], [10, 0]), cal([210, 0], [20, 0])];
+      const authored = manifest({
+        layout: { scale: 'HO', sensors: [], calibration: { points } },
+      });
+
+      const loaded = await roundTrip(authored);
+
+      expect(loaded.getManifest().layout.calibration.points).toEqual(points);
+      expect(getDPT(loaded.getManifest())).toBe(getDPT(authored));
+      expect(getDPTResidual(loaded.getManifest())).toBe(getDPTResidual(authored));
+      expect(getDPTResidual(loaded.getManifest())).toBeGreaterThan(0);
     });
 
     it('preserves layout metadata and camera resolution', async () => {
@@ -312,6 +328,53 @@ describe('R49Archive', () => {
       const n = dptOf(points, 'N')!;
       // gauge_HO / gauge_N == ratio_N / ratio_HO == 160 / 87
       expect(ho / n).toBeCloseTo(160 / 87, 10);
+    });
+  });
+
+  describe('getDPTResidual', () => {
+    function residualOf(points: ReturnType<typeof cal>[], scale = 'HO') {
+      return getDPTResidual(manifest({ layout: { scale, calibration: { points }, sensors: [] } }));
+    }
+
+    it('is null while the fit is exact by construction', () => {
+      // Nothing to fit, nothing over-determined: no pair, and the single pair
+      // a two-point calibration gives, both reproduce themselves exactly, so a
+      // residual of zero would claim agreement nobody checked.
+      expect(residualOf([])).toBeNull();
+      expect(residualOf([cal([0, 0], [0, 0])])).toBeNull();
+      expect(residualOf([cal([0, 0], [0, 0]), cal([100, 0], [10, 0])])).toBeNull();
+    });
+
+    it('is null when no scale resolves at all', () => {
+      // Three points, three pairs, every one of them zero millimetres apart.
+      expect(residualOf([cal([0, 0], [5, 5]), cal([50, 0], [5, 5]), cal([99, 0], [5, 5])])).toBeNull();
+    });
+
+    it('is zero when three coplanar points agree', () => {
+      const points = [cal([0, 0], [0, 0]), cal([100, 0], [10, 0]), cal([200, 0], [20, 0])];
+      expect(residualOf(points)).toBeCloseTo(0, 10);
+    });
+
+    it('reports a mistyped coordinate in image pixels', () => {
+      // The third point's world y is 200 mm where the pixels say 20 mm — the
+      // millimetre/pixel confusion the readout exists to make visible.
+      const points = [cal([0, 0], [0, 0]), cal([100, 0], [10, 0]), cal([200, 0], [200, 0])];
+      const residual = residualOf(points)!;
+      expect(residual).toBeGreaterThan(10);
+      // RMS over the three pairs of (d_px - s·d_mm), s = 60000/76100 px/mm.
+      expect(residual).toBeCloseTo(65.2, 1);
+    });
+
+    it('ignores pairs at a different height, exactly as the fit does', () => {
+      const coplanar = [cal([0, 0], [0, 0]), cal([100, 0], [10, 0]), cal([200, 0], [20, 0])];
+      // An off-plane point disagrees wildly and still contributes nothing: it
+      // pairs with nothing at its own z, and cross-height pairs never enter.
+      expect(residualOf([...coplanar, cal([9999, 9999], [1, 1, 30])])).toBeCloseTo(0, 10);
+    });
+
+    it('is unaffected by the scale, being a pixel-domain quantity', () => {
+      const points = [cal([0, 0], [0, 0]), cal([100, 0], [10, 0]), cal([200, 0], [30, 0])];
+      expect(residualOf(points, 'N')).toBeCloseTo(residualOf(points, 'G')!, 10);
     });
   });
 
