@@ -19,20 +19,45 @@ without discussion.**
 ticket at a time. It opens an archive, manages its images, edits layout metadata, reports DPT, and
 **authors calibration points** (#28) — click a pixel, type its world coordinate, one `layout`
 history entry per placement or edit — which it now also **drags** (#30), at one entry per gesture,
-and **deletes** through the right-click context menu (#29).
+and **deletes** through the right-click context menu (#29). #31 added the **tool palette**, the
+**calibration gate**, and **sensor authoring**.
 v3's point-marker authoring and two-point calibration dragging are gone for good, and
 `src/prototype/` with them: what came back is a different mechanism, built to carry the coupler case.
 
 So a missing affordance is usually a deferral, not a bug. Car authoring (chain-clicked spans,
-shared coupler handles, the width rectangle), sensor placement, the tool palette and its calibration
-gate (#31), and the completeness affordance are all specified in `../SPEC.md` § Labeling Workflow and
-belong to their own tickets. Don't reconstruct them piecemeal to close a gap you notice here.
+shared coupler handles, the width rectangle, #32) and the completeness affordance (#36) are
+specified in `../SPEC.md` § Labeling Workflow and belong to their own tickets. Don't reconstruct
+them piecemeal to close a gap you notice here.
 
-Three consequences of arriving in that order, which the code states where it matters: a click in the
-viewer means "calibrate" because calibration is the **only** tool — the palette that would dispatch
-on an active tool is #31 — the hit-test scene contains only calibration points, because they are
-the only object the editor can create, and a right-click is always the idle branch of a
-state-dependent gesture, because no chain can be live until cars can be authored.
+Two consequences of arriving in that order, which the code states where it matters: the hit-test
+scene contains calibration points and sensors, because they are the only objects the editor can
+create, and a right-click is always the idle branch of a state-dependent gesture, because no chain
+can be live until cars can be authored. The `car` tool is in the palette and authors nothing — #32
+plugs into it.
+
+### The calibration gate
+
+`rr-tool-palette` chooses the tool a click means, and **disables the labeling tools while DPT is
+unresolved, stating why**. Car width is derived from DPT rather than stored, so an uncalibrated
+archive cannot draw the width rectangle that is the only feedback a label covers the car. The stated
+reason names **DPT**, not that rectangle: the rectangle is the car tool's reason, and a sensor is a
+single point that would draw fine uncalibrated.
+
+The gate is on **existence, never completion** (`SPEC.md` § Labeling Workflow): `getDPT` returning a
+number *is* the gate. It is enforced twice on purpose — the palette disables the buttons, and
+`rr-editor-view.willUpdate` demotes a live tool back to calibration — because the DPT can vanish
+through an **undo**, which `rr-app` applies straight into the archive with no editor handler seeing
+it. Enforcing it only where a point is deleted would leave the sensor tool live over an archive that
+no longer resolves a scale.
+
+> The **sensor** tool is gated with the car tool, which goes one step beyond `SPEC.md` § Labeling
+> Workflow ("sensors can be placed at any time") — a sensor point needs no DPT to draw. #31 asked for
+> both. `needsDpt` is per tool in `rr-tool-palette.ts`, so that is one flag if it is revisited.
+
+Sensors are **per layout**, carry **no provenance** (no model can propose where a human wants an
+answer), and their ids are snowflakes in a namespace never compared with label ids. A sensor is
+placed unnamed and named afterwards: `name` is optional passthrough, never auto-generated, and the
+UI shows the `id` in its place.
 
 Where README and the code disagree, the code wins and README is the thing to correct:
 **a change to a component's properties or events belongs in README in the same commit.**
@@ -119,9 +144,10 @@ The v3 machinery that *mutated* — marker add/move/delete, the draggable `{p0, 
 the v4 reduction and does not come back. Deciding what a gesture means is the editor's job; the
 arithmetic it needs is in `geometry.ts`.
 
-It draws what it is given, and `calibrationPoints` is the second such property after `markers`:
-crosshairs from `calibrationMarker.ts`, rendered from the manifest and never written by the viewer.
-`rr-editor-view` is what turns an `rr-pointer-up` into a point.
+It draws what it is given: `markers`, then `calibrationPoints` (crosshairs from
+`calibrationMarker.ts`) and `sensors` (diamonds from `sensorMarker.ts`), all rendered from the
+manifest and never written by the viewer. `rr-editor-view` is what turns an `rr-pointer-up` into a
+point or a sensor.
 
 ### `geometry.ts` holds the arithmetic, because a component cannot be tested
 
@@ -183,10 +209,13 @@ Custom elements break the SVG namespace when nested in `<svg>`, so markers are t
 styles in the host's `static styles`, renderer per marker. The module boundary is the encapsulation.
 
 `calibrationMarker.ts` follows the same shape with two exports (`renderCalibrationPoint`,
-`calibrationMarkerStyles`; it needs no defs). A calibration point is a **crosshair labelled with its
-world coordinate**, deliberately unlike anything else the editor draws — `SPEC.md` § Reference points
-requires it to be unmistakable, and the sensor symbol arriving in #31 has to stay distinguishable
-from it.
+`calibrationMarkerStyles`; it needs no defs), and `sensorMarker.ts` with three (`renderSensor`,
+`sensorLabelText`, `sensorMarkerStyles`). A calibration point is a **cyan crosshair labelled with its
+world coordinate**; a sensor is an **amber diamond labelled with its name, or its id when it has
+none**. The difference is shape as much as colour, and it is a requirement rather than taste:
+`SPEC.md` § Reference points says the two must be unmistakable, because they are authored by
+different tools and mean different things. Both labels flip inwards at a frame edge through the same
+`placeLabel`.
 
 ### Absolute `/ui/` paths
 

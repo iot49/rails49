@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { R49Archive, getDPT, getDPTResidual } from '@occupancy/r49';
-import type { CalibrationPoint, ManifestData, Point } from '@occupancy/r49';
+import type { CalibrationPoint, ManifestData, Point, Sensor } from '@occupancy/r49';
 import { MIN_DPT } from '@occupancy/config';
 import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
@@ -17,6 +17,8 @@ import type { DragHandle, HitScene, HitTarget, HitTolerance } from './geometry.j
 import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
 import type { ViewerContextMenuDetail, ViewerPointerDetail } from './rr-viewer.js';
 import type { CalibrationCommitDetail, RRCalibrationDialog } from './rr-calibration-dialog.js';
+import type { SensorNameCommitDetail, RRSensorDialog } from './rr-sensor-dialog.js';
+import type { EditorTool, ToolSelectDetail } from './rr-tool-palette.js';
 import type {
   ContextMenuItem,
   ContextMenuSelectDetail,
@@ -25,9 +27,20 @@ import type {
 
 import './rr-viewer.js';
 import './rr-toolbar.js';
+import './rr-tool-palette.js';
 import './rr-thumbnail-bar.js';
 import './rr-calibration-dialog.js';
+import './rr-sensor-dialog.js';
 import './rr-context-menu.js';
+
+/**
+ * Node id for the snowflakes this editor mints, as `make_id` takes one.
+ *
+ * The node id only separates concurrent generators; it carries no meaning
+ * downstream. Images already use 2 and 3, so sensors take their own rather than
+ * sharing a stream with them.
+ */
+const SENSOR_NODE_ID = 4;
 
 /**
  * The gesture a click is waiting on a coordinate for.
@@ -72,7 +85,10 @@ type EditorMode = { readonly kind: 'idle' };
  * the menu names verbs for *that* object and the user may have moved on by the
  * time they pick one. `px` is the same staleness guard the calibration dialog
  * carries: an undo landing while the menu is up can slide an index onto a
- * different point, and points have no `id` to tell them apart.
+ * different point, and points have no `id` to tell them apart. A sensor needs
+ * no such guard — it carries an `id`, so the hit names it exactly however the
+ * list is reordered underneath — and `px` is carried for it only so every
+ * subject has the same shape.
  */
 interface MenuSubject {
   readonly hit: HitTarget;
@@ -80,13 +96,26 @@ interface MenuSubject {
 }
 
 /**
- * Delete, the one verb the menu carries today.
+ * Delete, the verb every object carries.
  *
  * It is why the editor needs no delete mode at all (`SPEC.md` § Right-click is
  * state-dependent). Reclassify — and the dotted class taxonomy as a submenu —
- * joins it when there are cars to reclassify.
+ * joins it when there are cars to reclassify. The `id` is what the editor
+ * dispatches on and the label is what the user reads, so the same verb reads
+ * correctly for each subject.
  */
-const DELETE_ITEM: ContextMenuItem = { id: 'delete', label: 'Delete calibration point' };
+const CALIBRATION_ITEMS: readonly ContextMenuItem[] = [
+  { id: 'delete', label: 'Delete calibration point' },
+];
+
+/**
+ * A sensor's verbs. Naming is here as well as on a click, because a name is
+ * optional and an unnamed sensor gives a click nothing to discover.
+ */
+const SENSOR_ITEMS: readonly ContextMenuItem[] = [
+  { id: 'name', label: 'Name sensor…' },
+  { id: 'delete', label: 'Delete sensor' },
+];
 
 /**
  * What a right-click found: the object the menu will act on, and the rows it
@@ -94,9 +123,9 @@ const DELETE_ITEM: ContextMenuItem = { id: 'delete', label: 'Delete calibration 
  *
  * One switch resolves both, because a subject the menu cannot name a verb for
  * must not open a menu at all: a list of disabled rows is a worse answer than
- * the absence of one. Only calibration points are in the hit-test scene today;
- * cars and sensors join it with the tools that create them (#31), and their
- * rows arrive here, through this same switch.
+ * the absence of one. Calibration points and sensors are in the scene; cars
+ * join it with the tool that creates them (#32), and their rows arrive here,
+ * through this same switch.
  */
 function menuFor(
   hit: HitTarget,
@@ -105,7 +134,13 @@ function menuFor(
   switch (hit.kind) {
     case 'calibration': {
       const point = scene.calibrationPoints[hit.index];
-      return point ? { subject: { hit, px: point.px }, items: [DELETE_ITEM] } : null;
+      return point ? { subject: { hit, px: point.px }, items: CALIBRATION_ITEMS } : null;
+    }
+    case 'sensor': {
+      const sensor = scene.sensors.find(s => s.id === hit.id);
+      return sensor
+        ? { subject: { hit, px: { x: sensor.x, y: sensor.y } }, items: SENSOR_ITEMS }
+        : null;
     }
     default:
       return null;
@@ -157,16 +192,22 @@ interface LiveGesture {
 
 /**
  * Main editor view: opens an archive, manages its images, reports DPT, and
- * authors calibration points.
+ * authors calibration points and sensors.
  *
- * **Calibration points are the only geometry it authors** (#28). A click asks
- * for the pixel's world coordinate and records one `layout` history entry; a
- * click on an existing point edits that point's coordinate instead; a **drag**
- * moves it, as one entry per gesture (#30); a **right-click** opens the context
- * menu on it and deletes it from there (#29). Cars and sensors, and the tool
- * palette that would choose between them, are a later ticket (#31); until the
- * palette exists, a click in the viewer means "calibrate", which is the only
- * tool there is.
+ * **A click means whatever the active tool means** (#31). `rr-tool-palette`
+ * chooses between calibration, sensor and car; the palette **gates the labeling
+ * tools on DPT resolving**, and this component enforces the same gate — the
+ * tool snaps back to calibration the moment the DPT stops resolving, so a
+ * deleted or undone calibration point cannot leave a gated tool live.
+ *
+ * A click on empty image runs the active tool: calibration asks for the pixel's
+ * world coordinate (#28), sensor places a point immediately, car does nothing
+ * until #32 builds it. A click **on an existing object** edits that object
+ * whatever the tool is — a coordinate for a calibration point, a name for a
+ * sensor — because the object under the cursor is less ambiguous than the mode.
+ * Dragging moves whatever it grabbed, as one entry per gesture (#30), and
+ * right-click opens the context menu on it (#29): delete for either, and naming
+ * for a sensor.
  *
  * DPT is reported live, with the fit residual once the fit is over-determined,
  * and a DPT below `layout.min_dpt` warns **persistently and blocks nothing** —
@@ -192,8 +233,18 @@ export class RREditorView extends LitElement {
   @property({ attribute: false }) redoLabel: string | null = null;
   @state() private _currentImageIndex = 0;
   @state() private _imageUrls: Map<string, string> = new Map();
+  /**
+   * What a click in the viewer means.
+   *
+   * Calibration is the default and the fallback: it is the only tool that works
+   * on an uncalibrated archive, so an archive that opens without a DPT opens in
+   * calibration mode and stays there until one resolves.
+   */
+  @state() private _tool: EditorTool = 'calibration';
   /** The click waiting on a coordinate, or null when no dialog is open. */
   private _pendingCalibration: PendingCalibration | null = null;
+  /** The sensor whose name dialog is open, by `id`, or null when none is. */
+  private _pendingSensorName: { readonly id: string } | null = null;
   /** The press in flight, or null between gestures. At most one at a time. */
   private _gesture: LiveGesture | null = null;
   /** What the context menu is open on, or null when it is closed. */
@@ -202,6 +253,7 @@ export class RREditorView extends LitElement {
   private _mode: EditorMode = { kind: 'idle' };
 
   @query('rr-calibration-dialog') private _calibrationDialog!: RRCalibrationDialog;
+  @query('rr-sensor-dialog') private _sensorDialog!: RRSensorDialog;
   @query('rr-context-menu') private _contextMenu!: RRContextMenu;
 
   static styles = css`
@@ -215,6 +267,15 @@ export class RREditorView extends LitElement {
     .sidebar {
       display: flex;
       flex-direction: column;
+      /* The toolbar's own width, stated here as well so the palette below it
+         wraps inside the same strip instead of widening the column to fit its
+         gate note on one line. */
+      width: 100px;
+      flex-shrink: 0;
+      /* The same dark green the toolbar and the palette sit on, so the column
+         reads as one strip however much of it the two elements fill. */
+      background-color: #064e3b;
+      overflow-y: auto;
     }
 
     .main-content {
@@ -259,11 +320,55 @@ export class RREditorView extends LitElement {
     }
   `;
 
+  /**
+   * Where the tool state is settled — **before** the render that shows it.
+   *
+   * Both branches set `_tool`, which is why they are here rather than in
+   * `updated()`: a state write after the update has completed schedules a
+   * second one, and Lit says so out loud.
+   */
+  protected willUpdate(changedProperties: Map<string, unknown>) {
+    // A fresh archive brings its own state: an uncalibrated one opens in
+    // calibration mode, and a calibrated one starts there too rather than
+    // inheriting whichever tool the previous archive was left on.
+    if (changedProperties.has('archive')) this._tool = 'calibration';
+    this._enforceGate();
+  }
+
   async updated(changedProperties: Map<string, unknown>) {
     if (changedProperties.has('archive') && this.archive) {
       await this._refreshImageUrls();
       this._currentImageIndex = 0;
     }
+  }
+
+  /**
+   * Whether a DPT resolves — the whole of the calibration gate.
+   *
+   * Gated on **existence, never on completion** (`SPEC.md` § Labeling
+   * Workflow): two points at a nonzero separation is exactly what `getDPT`
+   * answers, so the gate is that one call and nothing else. A DPT below
+   * `MIN_DPT` still counts — it warns and blocks nothing.
+   */
+  private _calibrated(): boolean {
+    return this.archive !== null && getDPT(this.archive.getManifest()) !== null;
+  }
+
+  /**
+   * Drops a gated tool back to calibration when the DPT stops resolving.
+   *
+   * Run before every render rather than at the one place a point is deleted,
+   * because the DPT can also vanish through an **undo** — `rr-app` applies a
+   * snapshot straight into the archive, and no editor handler sees it. Every
+   * stage stays re-enterable, so this is a demotion and never a lock: placing a
+   * second point re-enables the tools immediately.
+   */
+  private _enforceGate() {
+    if (this._tool !== 'calibration' && !this._calibrated()) this._tool = 'calibration';
+  }
+
+  private _onToolSelect(e: CustomEvent<ToolSelectDetail>) {
+    this._tool = e.detail.tool;
   }
 
   private async _refreshImageUrls() {
@@ -453,7 +558,7 @@ export class RREditorView extends LitElement {
       origin: at,
       hit,
       handles,
-      entry: handles.length > 0 ? this._beginDragEntry() : null,
+      entry: hit && handles.length > 0 ? this._beginDragEntry(hit) : null,
       dragging: false,
     };
   }
@@ -461,28 +566,35 @@ export class RREditorView extends LitElement {
   /**
    * Everything a pointer can land on, for the image on screen.
    *
-   * Only calibration points are in it: they are the only object this editor
-   * authors. Cars and sensors join the scene with the tools that create them,
-   * and every gesture that asks "what is under here" reads it from here, so
-   * they arrive for the press, the right-click and the drag at once.
+   * Calibration points and sensors are in it — the two objects this editor
+   * authors. Cars join the scene with the tool that creates them (#32), and
+   * every gesture that asks "what is under here" reads it from here, so they
+   * arrive for the press, the right-click and the drag at once.
+   *
+   * Sensors come from `layout`, not from the current image: they are per layout
+   * and are grabbable on every frame (`SPEC.md` § Location Data).
    */
   private _scene(): HitScene {
+    const layout = this.archive?.getManifest().layout;
     return {
       cars: [],
-      sensors: [],
-      calibrationPoints: this.archive?.getManifest().layout.calibration.points ?? [],
+      sensors: layout?.sensors ?? [],
+      calibrationPoints: layout?.calibration.points ?? [],
     };
   }
 
   /**
    * Opens the one history entry a drag will commit.
    *
-   * Every handle a press can grab today lives in `layout`. A coupler drag's two
-   * cars would open one `image` entry the same way — one target, one entry,
-   * however many objects move under it.
+   * Every handle a press can grab today lives in `layout`, so the target is the
+   * same whatever was grabbed and only the label differs — the phrase is what
+   * the undo tooltip reads back, so it has to name the object that moved. A
+   * coupler drag's two cars would open one `image` entry the same way: one
+   * target, one entry, however many objects move under it.
    */
-  private _beginDragEntry(): HistoryGesture | null {
-    return this.history?.beginGesture('move calibration point', { kind: 'layout' }) ?? null;
+  private _beginDragEntry(hit: HitTarget): HistoryGesture | null {
+    const label = hit.kind === 'sensor' ? 'move sensor' : 'move calibration point';
+    return this.history?.beginGesture(label, { kind: 'layout' }) ?? null;
   }
 
   /**
@@ -515,8 +627,10 @@ export class RREditorView extends LitElement {
    * ended back inside the slop. Without that, every swipe over the image would
    * place a point, and the labeling device is a phone.
    *
-   * When the tool palette arrives (#31) this is where the active tool is
-   * dispatched on.
+   * The click itself splits before the tool does: **an object under the cursor
+   * is edited whatever the tool is**, and only a click on empty image is
+   * dispatched on the active tool. Anything else would let the sensor tool
+   * stack a sensor on a calibration point the user was aiming at.
    */
   private async _onViewerPointerUp(e: CustomEvent<ViewerPointerDetail>) {
     // The mouse reports one `pointerId` for every button, so the release of a
@@ -534,21 +648,101 @@ export class RREditorView extends LitElement {
       return;
     }
 
-    if (gesture.hit?.kind === 'calibration') {
-      const point = this.archive!.getManifest().layout.calibration.points[gesture.hit.index];
-      if (!point) return;
-      this._pendingCalibration = { kind: 'edit', index: gesture.hit.index, px: point.px };
-      await this._calibrationDialog.show(point.world, { mode: 'edit' });
+    if (gesture.hit) {
+      await this._editHit(gesture.hit);
       return;
     }
 
     // The click names a pixel, so that is what is stored — a fractional
     // coordinate would be precision the gesture does not have.
-    this._pendingCalibration = {
-      kind: 'place',
-      px: { x: Math.round(gesture.origin.x), y: Math.round(gesture.origin.y) },
-    };
-    await this._calibrationDialog.show();
+    await this._useTool({
+      x: Math.round(gesture.origin.x),
+      y: Math.round(gesture.origin.y),
+    });
+  }
+
+  /**
+   * A click that landed on an object: edit *that* object, whatever the tool is.
+   *
+   * What "edit" means is the object's own property that a click can ask for —
+   * a calibration point's world coordinate, a sensor's name. A car end has no
+   * such property (its position is what a drag is for), so a click on one does
+   * nothing until #32, and doing nothing is the right answer rather than
+   * falling through to the tool and placing something on top of it.
+   */
+  private async _editHit(hit: HitTarget) {
+    switch (hit.kind) {
+      case 'calibration': {
+        const point = this.archive!.getManifest().layout.calibration.points[hit.index];
+        if (!point) return;
+        this._pendingCalibration = { kind: 'edit', index: hit.index, px: point.px };
+        await this._calibrationDialog.show(point.world, { mode: 'edit' });
+        return;
+      }
+      case 'sensor': {
+        await this._openSensorName(hit.id);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
+   * A click on empty image, dispatched on the active tool.
+   *
+   * The gate is re-checked here rather than trusted from the palette: the
+   * palette is a view of `_tool`, and a click is what actually writes. A gated
+   * tool cannot be active — {@link _enforceGate} demotes it — so this is the
+   * belt to that braces, not a second policy.
+   */
+  private async _useTool(px: Point) {
+    switch (this._tool) {
+      case 'calibration':
+        this._pendingCalibration = { kind: 'place', px };
+        await this._calibrationDialog.show();
+        return;
+      case 'sensor':
+        if (!this._calibrated()) return;
+        await this._placeSensor(px);
+        return;
+      case 'car':
+        // Car authoring is #32. The tool selects; nothing authors yet.
+        return;
+    }
+  }
+
+  /**
+   * Places a sensor at a pixel, as one `layout` entry.
+   *
+   * Unnamed, and that is a complete sensor rather than a half-finished one:
+   * consumers key on `id`, and `name` is optional passthrough that is **never
+   * auto-generated** (`SPEC.md` § Occupancy Output). The id is a snowflake from
+   * `@occupancy/uid`, unique within the layout because it is unique full stop.
+   *
+   * No provenance field exists to set: no model can propose where a human wants
+   * an answer, so the format gives sensors none.
+   */
+  private async _placeSensor(px: Point) {
+    const manifest = this.archive!.getManifest();
+    await this._record('place sensor', { kind: 'layout' }, () => {
+      this._writeLayout({
+        sensors: [...manifest.layout.sensors, { id: make_id(SENSOR_NODE_ID), x: px.x, y: px.y }],
+      });
+    });
+  }
+
+  /** The sensor with this id, or undefined once it is gone. */
+  private _sensor(id: string): Sensor | undefined {
+    return this.archive?.getManifest().layout.sensors.find(s => s.id === id);
+  }
+
+  /** Opens the name dialog on a sensor, if it is still there. */
+  private async _openSensorName(id: string) {
+    const sensor = this._sensor(id);
+    if (!sensor) return;
+    this._pendingSensorName = { id };
+    await this._sensorDialog.show(sensor.name ?? null, { id });
   }
 
   /**
@@ -638,6 +832,9 @@ export class RREditorView extends LitElement {
       case 'delete':
         await this._deleteSubject(subject);
         return;
+      case 'name':
+        if (subject.hit.kind === 'sensor') await this._openSensorName(subject.hit.id);
+        return;
     }
   }
 
@@ -671,7 +868,21 @@ export class RREditorView extends LitElement {
         await this._record('delete calibration point', { kind: 'layout' }, () => {
           const points = [...this.archive!.getManifest().layout.calibration.points];
           points.splice(index, 1);
-          this._writeCalibrationPoints(points);
+          this._writeLayout({ calibrationPoints: points });
+        });
+        return;
+      }
+      case 'sensor': {
+        // Keyed by `id`, so there is nothing to go stale: the hit names one
+        // sensor however the list is reordered or replaced underneath. It can
+        // still be *gone*, which is why the filter is a filter and not a splice.
+        const { id } = subject.hit;
+        if (!this._sensor(id)) return;
+
+        await this._record('delete sensor', { kind: 'layout' }, () => {
+          this._writeLayout({
+            sensors: this.archive!.getManifest().layout.sensors.filter(s => s.id !== id),
+          });
         });
         return;
       }
@@ -723,39 +934,71 @@ export class RREditorView extends LitElement {
    * position, so all of them take the identical translation: that is what keeps
    * a coupler's ends on the same pixel, and a coupling is exact coincidence.
    *
-   * Only calibration handles are written, because they are the only objects the
-   * hit-test scene contains — a car end or a sensor cannot be grabbed until the
-   * tools that create them exist (#31), and their writes arrive with them.
+   * Calibration and sensor handles are written; a car end cannot be grabbed
+   * until the tool that creates one exists (#32), and its write arrives with it.
+   * Both live in `layout`, which is why one entry covers a gesture whatever it
+   * grabbed.
    */
   private _moveHandles(gesture: LiveGesture, to: Point) {
     if (!this.archive || gesture.handles.length === 0) return;
     const delta = { x: to.x - gesture.origin.x, y: to.y - gesture.origin.y };
-    const points = [...this.archive.getManifest().layout.calibration.points];
+    const layout = this.archive.getManifest().layout;
+    const points = [...layout.calibration.points];
+    const sensors = [...layout.sensors];
 
     for (const handle of gesture.handles) {
-      if (handle.ref.kind !== 'calibration') continue;
-      const point = points[handle.ref.index];
-      if (!point) continue;
-      points[handle.ref.index] = { ...point, px: dragTo(handle, delta) };
+      switch (handle.ref.kind) {
+        case 'calibration': {
+          const point = points[handle.ref.index];
+          if (point) points[handle.ref.index] = { ...point, px: dragTo(handle, delta) };
+          break;
+        }
+        case 'sensor': {
+          const id = handle.ref.id;
+          const index = sensors.findIndex(s => s.id === id);
+          if (index >= 0) {
+            const at = dragTo(handle, delta);
+            sensors[index] = { ...sensors[index], x: at.x, y: at.y };
+          }
+          break;
+        }
+        case 'car-end':
+          // #32.
+          break;
+      }
     }
 
-    this._writeCalibrationPoints(points);
+    this._writeLayout({ calibrationPoints: points, sensors });
   }
 
   /**
-   * Replaces the layout's calibration points, and re-renders.
+   * Replaces the parts of `layout` a gesture touched, and re-renders.
    *
-   * The array and the objects around it are rebuilt rather than mutated in
+   * The arrays and the objects in them are rebuilt rather than mutated in
    * place, because a history snapshot is taken by value and the editor must not
    * hold a reference to an object undo will replace. Lit does not observe
    * mutations inside `R49Archive`, hence the explicit `requestUpdate()` — which
    * is what carries a mid-drag position into the DPT readout.
+   *
+   * An omitted key is left alone, so a caller states exactly what it changed
+   * and a sensor write cannot silently rewrite the calibration beside it.
    */
-  private _writeCalibrationPoints(points: readonly CalibrationPoint[]) {
+  private _writeLayout(changes: {
+    calibrationPoints?: readonly CalibrationPoint[];
+    sensors?: readonly Sensor[];
+  }) {
     const manifest = this.archive!.getManifest();
     manifest.layout = {
       ...manifest.layout,
-      calibration: { ...manifest.layout.calibration, points: [...points] },
+      ...(changes.calibrationPoints
+        ? {
+            calibration: {
+              ...manifest.layout.calibration,
+              points: [...changes.calibrationPoints],
+            },
+          }
+        : {}),
+      ...(changes.sensors ? { sensors: [...changes.sensors] } : {}),
     };
     this.requestUpdate();
   }
@@ -779,7 +1022,38 @@ export class RREditorView extends LitElement {
       } else {
         points[pending.index] = { ...points[pending.index], world: e.detail.world };
       }
-      this._writeCalibrationPoints(points);
+      this._writeLayout({ calibrationPoints: points });
+    });
+  }
+
+  /**
+   * The name came back: write it as one `layout` entry, or drop it.
+   *
+   * `null` **removes** the key rather than storing an empty string — `name` is
+   * absent when unset, and a stored `""` would be a name that displays as
+   * nothing while still counting as one. Retyping the same name records
+   * nothing: `EditHistory.record` suppresses a no-op by value.
+   *
+   * The sensor is looked up by `id` when the dialog closes, so a sensor deleted
+   * or undone while it was open is simply gone and the commit does nothing —
+   * exactly the staleness guard `_pointIsStillAt` provides for a point, but
+   * exact, because a sensor has an id and a point does not.
+   */
+  private async _onSensorNameCommit(e: CustomEvent<SensorNameCommitDetail>) {
+    const pending = this._pendingSensorName;
+    this._pendingSensorName = null;
+    if (!pending || !this.archive || !this._sensor(pending.id)) return;
+
+    const { name } = e.detail;
+    const manifest = this.archive.getManifest();
+    await this._record('name sensor', { kind: 'layout' }, () => {
+      this._writeLayout({
+        sensors: manifest.layout.sensors.map(sensor => {
+          if (sensor.id !== pending.id) return sensor;
+          const renamed: Sensor = { id: sensor.id, x: sensor.x, y: sensor.y };
+          return name === null ? renamed : { ...renamed, name };
+        }),
+      });
     });
   }
 
@@ -832,6 +1106,14 @@ export class RREditorView extends LitElement {
           .undoLabel=${this.undoLabel}
           .redoLabel=${this.redoLabel}
         ></rr-toolbar>
+
+        ${manifest
+          ? html`<rr-tool-palette
+              .tool=${this._tool}
+              ?calibrated=${this._calibrated()}
+              @rr-tool-select=${this._onToolSelect}
+            ></rr-tool-palette>`
+          : ''}
       </div>
 
       <div class="main-content">
@@ -844,6 +1126,7 @@ export class RREditorView extends LitElement {
               .src=${src}
               .resolution=${manifest.camera.resolution}
               .calibrationPoints=${manifest.layout.calibration.points}
+              .sensors=${manifest.layout.sensors}
               @rr-pointer-down=${this._onViewerPointerDown}
               @rr-pointer-move=${this._onViewerPointerMove}
               @rr-pointer-up=${this._onViewerPointerUp}
@@ -863,6 +1146,10 @@ export class RREditorView extends LitElement {
             <rr-calibration-dialog
               @rr-calibration-commit=${this._onCalibrationCommit}
             ></rr-calibration-dialog>
+
+            <rr-sensor-dialog
+              @rr-sensor-name-commit=${this._onSensorNameCommit}
+            ></rr-sensor-dialog>
 
             <rr-context-menu
               @rr-context-menu-select=${this._onContextMenuSelect}

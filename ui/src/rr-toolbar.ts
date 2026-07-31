@@ -43,7 +43,10 @@ export class RRToolbar extends LitElement {
       box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
       align-items: center;
       box-sizing: border-box;
-      height: 100%;
+      /* Height is the content's, not the column's: the tool palette sits below
+         this in the same sidebar, and a toolbar demanding 100% would push it
+         out of the view entirely. The sidebar carries the background. */
+      flex-shrink: 0;
     }
 
     .tool-group {

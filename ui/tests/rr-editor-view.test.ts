@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fixture, html } from '@open-wc/testing';
 import { R49Archive, getDPT } from '@occupancy/r49';
-import type { CalibrationPoint, Point, WorldPoint } from '@occupancy/r49';
+import type { CalibrationPoint, Point, Sensor, WorldPoint } from '@occupancy/r49';
 import { EditHistory } from '../src/history.js';
 import '../src/rr-editor-view.js';
 import { RREditorView } from '../src/rr-editor-view.js';
 import type { RRCalibrationDialog } from '../src/rr-calibration-dialog.js';
+import type { RRSensorDialog } from '../src/rr-sensor-dialog.js';
+import type { RRToolPalette, EditorTool } from '../src/rr-tool-palette.js';
 import type { RRContextMenu } from '../src/rr-context-menu.js';
 
 // Mock ResizeObserver for RRViewer
@@ -137,91 +139,155 @@ describe('rr-editor-view', () => {
     expect(viewer.markers).to.deep.equal([]);
   });
 
+  /** Lets the editor's async pointer and commit handlers settle. */
+  const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  /**
+   * One `rr-pointer-*` event, shaped the way `rr-viewer` emits it.
+   *
+   * `pointerId` tells a second finger from the first; `button` is 0 for the
+   * primary press and 2 for a right-click, which the editor must not author
+   * on.
+   */
+  function gesture(
+    el: RREditorView,
+    name: string,
+    point: Point,
+    imagePxPerScreenPx: number,
+    { pointerId = 1, button = 0 }: { pointerId?: number; button?: number } = {}
+  ) {
+    el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
+      new CustomEvent(name, {
+        detail: {
+          point,
+          imagePxPerScreenPx,
+          originalEvent: Object.assign(new MouseEvent(name, { button }), { pointerId }),
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  /** A press and a release at the same pixel: a click. */
+  async function clickAt(el: RREditorView, point: Point, imagePxPerScreenPx = 1) {
+    gesture(el, 'rr-pointer-down', point, imagePxPerScreenPx);
+    gesture(el, 'rr-pointer-up', point, imagePxPerScreenPx);
+    await flush();
+    await el.updateComplete;
+  }
+
+  /** A press, a run of moves, and a release. One gesture, one pointerId. */
+  async function drag(el: RREditorView, path: readonly Point[], imagePxPerScreenPx = 1) {
+    gesture(el, 'rr-pointer-down', path[0], imagePxPerScreenPx);
+    for (const point of path.slice(1)) {
+      gesture(el, 'rr-pointer-move', point, imagePxPerScreenPx);
+    }
+    gesture(el, 'rr-pointer-up', path[path.length - 1], imagePxPerScreenPx);
+    await flush();
+    await el.updateComplete;
+  }
+
+  /** What the dialog emits when the user confirms a coordinate. */
+  async function commit(el: RREditorView, world: WorldPoint) {
+    el.shadowRoot!.querySelector('rr-calibration-dialog')!.dispatchEvent(
+      new CustomEvent('rr-calibration-commit', {
+        detail: { world },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await flush();
+    await el.updateComplete;
+  }
+
+  function dialogOf(el: RREditorView): RRCalibrationDialog {
+    return el.shadowRoot!.querySelector('rr-calibration-dialog')!;
+  }
+
+  /** Silences the real dialog's DOM work and records how it was opened. */
+  function stubDialog(el: RREditorView) {
+    const dialog = dialogOf(el);
+    return vi.spyOn(dialog, 'show').mockResolvedValue(undefined);
+  }
+
+  /** The same, for the sensor name dialog. */
+  function stubSensorDialog(el: RREditorView) {
+    const dialog = el.shadowRoot!.querySelector<RRSensorDialog>('rr-sensor-dialog')!;
+    return vi.spyOn(dialog, 'show').mockResolvedValue(undefined);
+  }
+
+  function points(): CalibrationPoint[] {
+    return archive.getManifest().layout.calibration.points;
+  }
+
+  function sensors(): Sensor[] {
+    return archive.getManifest().layout.sensors;
+  }
+
+  async function mount(history?: EditHistory) {
+    const el = await fixture<RREditorView>(html`
+      <rr-editor-view .archive=${archive} .history=${history ?? null}></rr-editor-view>
+    `);
+    stubDialog(el);
+    stubSensorDialog(el);
+    return el;
+  }
+
+  function menuOf(el: RREditorView): RRContextMenu {
+    return el.shadowRoot!.querySelector('rr-context-menu')!;
+  }
+
+  /** The menu's rows, by id. Empty when it is closed. */
+  function menuItems(el: RREditorView): string[] {
+    return [...menuOf(el).shadowRoot!.querySelectorAll('sl-menu-item')].map(
+      item => item.getAttribute('value') ?? ''
+    );
+  }
+
+  /**
+   * A right-click, shaped the way `rr-viewer` emits one. Returns the
+   * underlying event so the caller can check the native menu was suppressed.
+   */
+  async function rightClickAt(
+    el: RREditorView,
+    point: Point,
+    client: { x: number; y: number } = { x: 0, y: 0 },
+    imagePxPerScreenPx = 1
+  ): Promise<MouseEvent> {
+    const originalEvent = new MouseEvent('contextmenu', {
+      cancelable: true,
+      clientX: client.x,
+      clientY: client.y,
+    });
+    el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
+      new CustomEvent('rr-pointer-contextmenu', {
+        detail: { point, imagePxPerScreenPx, originalEvent },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await flush();
+    await el.updateComplete;
+    await menuOf(el).updateComplete;
+    return originalEvent;
+  }
+
+  /**
+   * Chooses a row the way `sl-menu` reports one, so the whole chain runs:
+   * the menu closes itself and the editor hears the selection.
+   */
+  async function choose(el: RREditorView, id: string) {
+    const menu = menuOf(el);
+    const item = menu.shadowRoot!.querySelector(`sl-menu-item[value="${id}"]`)!;
+    menu.shadowRoot!.querySelector('sl-menu')!.dispatchEvent(
+      new CustomEvent('sl-select', { detail: { item }, bubbles: true, composed: true })
+    );
+    await flush();
+    await el.updateComplete;
+  }
+
   describe('calibration authoring', () => {
-    /** Lets the editor's async pointer and commit handlers settle. */
-    const flush = () => new Promise(resolve => setTimeout(resolve, 0));
-
-    /**
-     * One `rr-pointer-*` event, shaped the way `rr-viewer` emits it.
-     *
-     * `pointerId` tells a second finger from the first; `button` is 0 for the
-     * primary press and 2 for a right-click, which the editor must not author
-     * on.
-     */
-    function gesture(
-      el: RREditorView,
-      name: string,
-      point: Point,
-      imagePxPerScreenPx: number,
-      { pointerId = 1, button = 0 }: { pointerId?: number; button?: number } = {}
-    ) {
-      el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
-        new CustomEvent(name, {
-          detail: {
-            point,
-            imagePxPerScreenPx,
-            originalEvent: Object.assign(new MouseEvent(name, { button }), { pointerId }),
-          },
-          bubbles: true,
-          composed: true,
-        })
-      );
-    }
-
-    /** A press and a release at the same pixel: a click. */
-    async function clickAt(el: RREditorView, point: Point, imagePxPerScreenPx = 1) {
-      gesture(el, 'rr-pointer-down', point, imagePxPerScreenPx);
-      gesture(el, 'rr-pointer-up', point, imagePxPerScreenPx);
-      await flush();
-      await el.updateComplete;
-    }
-
-    /** A press, a run of moves, and a release. One gesture, one pointerId. */
-    async function drag(el: RREditorView, path: readonly Point[], imagePxPerScreenPx = 1) {
-      gesture(el, 'rr-pointer-down', path[0], imagePxPerScreenPx);
-      for (const point of path.slice(1)) {
-        gesture(el, 'rr-pointer-move', point, imagePxPerScreenPx);
-      }
-      gesture(el, 'rr-pointer-up', path[path.length - 1], imagePxPerScreenPx);
-      await flush();
-      await el.updateComplete;
-    }
-
-    /** What the dialog emits when the user confirms a coordinate. */
-    async function commit(el: RREditorView, world: WorldPoint) {
-      el.shadowRoot!.querySelector('rr-calibration-dialog')!.dispatchEvent(
-        new CustomEvent('rr-calibration-commit', {
-          detail: { world },
-          bubbles: true,
-          composed: true,
-        })
-      );
-      await flush();
-      await el.updateComplete;
-    }
-
-    function dialogOf(el: RREditorView): RRCalibrationDialog {
-      return el.shadowRoot!.querySelector('rr-calibration-dialog')!;
-    }
-
-    /** Silences the real dialog's DOM work and records how it was opened. */
-    function stubDialog(el: RREditorView) {
-      const dialog = dialogOf(el);
-      return vi.spyOn(dialog, 'show').mockResolvedValue(undefined);
-    }
-
-    function points(): CalibrationPoint[] {
-      return archive.getManifest().layout.calibration.points;
-    }
-
-    async function mount(history?: EditHistory) {
-      const el = await fixture<RREditorView>(html`
-        <rr-editor-view .archive=${archive} .history=${history ?? null}></rr-editor-view>
-      `);
-      stubDialog(el);
-      return el;
-    }
-
     it('shows the layout\'s calibration points on the viewer', async () => {
       archive.getManifest().layout.calibration.points = [
         { px: { x: 10, y: 20 }, world: { x: 0, y: 0, z: 0 } },
@@ -596,59 +662,6 @@ describe('rr-editor-view', () => {
         }));
       }
 
-      function menuOf(el: RREditorView): RRContextMenu {
-        return el.shadowRoot!.querySelector('rr-context-menu')!;
-      }
-
-      /** The menu's rows, by id. Empty when it is closed. */
-      function menuItems(el: RREditorView): string[] {
-        return [...menuOf(el).shadowRoot!.querySelectorAll('sl-menu-item')].map(
-          item => item.getAttribute('value') ?? ''
-        );
-      }
-
-      /**
-       * A right-click, shaped the way `rr-viewer` emits one. Returns the
-       * underlying event so the caller can check the native menu was suppressed.
-       */
-      async function rightClickAt(
-        el: RREditorView,
-        point: Point,
-        client: { x: number; y: number } = { x: 0, y: 0 },
-        imagePxPerScreenPx = 1
-      ): Promise<MouseEvent> {
-        const originalEvent = new MouseEvent('contextmenu', {
-          cancelable: true,
-          clientX: client.x,
-          clientY: client.y,
-        });
-        el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
-          new CustomEvent('rr-pointer-contextmenu', {
-            detail: { point, imagePxPerScreenPx, originalEvent },
-            bubbles: true,
-            composed: true,
-          })
-        );
-        await flush();
-        await el.updateComplete;
-        await menuOf(el).updateComplete;
-        return originalEvent;
-      }
-
-      /**
-       * Chooses a row the way `sl-menu` reports one, so the whole chain runs:
-       * the menu closes itself and the editor hears the selection.
-       */
-      async function choose(el: RREditorView, id: string) {
-        const menu = menuOf(el);
-        const item = menu.shadowRoot!.querySelector(`sl-menu-item[value="${id}"]`)!;
-        menu.shadowRoot!.querySelector('sl-menu')!.dispatchEvent(
-          new CustomEvent('sl-select', { detail: { item }, bubbles: true, composed: true })
-        );
-        await flush();
-        await el.updateComplete;
-      }
-
       it('opens on the object under the cursor, carrying delete', async () => {
         seed({ x: 100, y: 100 });
         const el = await mount();
@@ -897,6 +910,366 @@ describe('rr-editor-view', () => {
 
       expect(points()).to.have.length(3);
       expect(el.shadowRoot!.querySelector('.dpt-bar')!.classList.contains('below-minimum')).to.be.true;
+    });
+  });
+
+  /**
+   * Two calibration points at a nonzero separation — exactly "DPT resolves",
+   * which is the whole of the gate.
+   */
+  function calibrate() {
+    archive.getManifest().layout.calibration.points = [
+      { px: { x: 0, y: 0 }, world: { x: 0, y: 0, z: 0 } },
+      { px: { x: 100, y: 0 }, world: { x: 10, y: 0, z: 0 } },
+    ];
+  }
+
+  function paletteOf(el: RREditorView): RRToolPalette {
+    return el.shadowRoot!.querySelector('rr-tool-palette')!;
+  }
+
+  /** A palette selection, shaped the way `rr-tool-palette` reports one. */
+  async function selectTool(el: RREditorView, tool: EditorTool) {
+    paletteOf(el).dispatchEvent(
+      new CustomEvent('rr-tool-select', { detail: { tool }, bubbles: true, composed: true })
+    );
+    await el.updateComplete;
+  }
+
+  describe('the tool palette and the calibration gate', () => {
+    it('offers the palette once an archive is open', async () => {
+      const el = await mount();
+      expect(paletteOf(el)).to.exist;
+    });
+
+    it('opens an uncalibrated archive in calibration mode, with the rest gated', async () => {
+      const el = await mount();
+
+      expect(paletteOf(el).tool).to.equal('calibration');
+      expect(paletteOf(el).calibrated).to.be.false;
+    });
+
+    it('enables the labeling tools the moment a second point resolves DPT', async () => {
+      const el = await mount();
+
+      await clickAt(el, { x: 0, y: 0 });
+      await commit(el, { x: 0, y: 0, z: 0 });
+      expect(paletteOf(el).calibrated).to.be.false;
+
+      await clickAt(el, { x: 100, y: 0 });
+      await commit(el, { x: 10, y: 0, z: 0 });
+
+      // Existence, not completion: two points at a nonzero separation is it.
+      expect(paletteOf(el).calibrated).to.be.true;
+    });
+
+    it('leaves the tools gated for two points at the same position', async () => {
+      // A zero separation resolves no scale, so it is not calibration.
+      archive.getManifest().layout.calibration.points = [
+        { px: { x: 50, y: 50 }, world: { x: 0, y: 0, z: 0 } },
+        { px: { x: 50, y: 50 }, world: { x: 0, y: 0, z: 0 } },
+      ];
+      const el = await mount();
+
+      expect(paletteOf(el).calibrated).to.be.false;
+    });
+
+    it('drops a gated tool back to calibration when the DPT stops resolving', async () => {
+      // The DPT can vanish through an undo, which no handler here sees — so the
+      // demotion is enforced on render rather than at the delete.
+      calibrate();
+      const el = await mount();
+      await selectTool(el, 'sensor');
+      expect(paletteOf(el).tool).to.equal('sensor');
+
+      await rightClickAt(el, { x: 100, y: 0 });
+      await choose(el, 'delete');
+
+      expect(paletteOf(el).calibrated).to.be.false;
+      expect(paletteOf(el).tool).to.equal('calibration');
+      // And a click means calibrate again, rather than silently placing nothing.
+      const show = stubDialog(el);
+      await clickAt(el, { x: 400, y: 400 });
+      expect(show).toHaveBeenCalledOnce();
+      expect(sensors()).to.have.length(0);
+    });
+
+    it('re-enters calibration mode for the next archive', async () => {
+      calibrate();
+      const el = await mount();
+      await selectTool(el, 'sensor');
+
+      const next = new R49Archive();
+      next.setManifest({
+        version: 4,
+        layout: { name: 'Next', scale: 'N', calibration: { points: [] }, sensors: [] },
+        camera: { resolution: { width: 100, height: 100 } },
+        images: [],
+      });
+      vi.spyOn(next, 'getImage').mockResolvedValue(new Uint8Array());
+      el.archive = next;
+      await el.updateComplete;
+      await flush();
+      await el.updateComplete;
+
+      expect(paletteOf(el).tool).to.equal('calibration');
+    });
+  });
+
+  describe('sensor authoring', () => {
+    /** A calibrated archive with the sensor tool live. */
+    async function mountWithSensorTool(history?: EditHistory) {
+      calibrate();
+      const el = await mount(history);
+      await selectTool(el, 'sensor');
+      return el;
+    }
+
+    /** What the sensor dialog emits when the user confirms a name. */
+    async function commitName(el: RREditorView, name: string | null) {
+      el.shadowRoot!.querySelector('rr-sensor-dialog')!.dispatchEvent(
+        new CustomEvent('rr-sensor-name-commit', {
+          detail: { name },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await flush();
+      await el.updateComplete;
+    }
+
+    it('places a sensor at the clicked pixel, unnamed and with a snowflake id', async () => {
+      const el = await mountWithSensorTool();
+
+      await clickAt(el, { x: 320.4, y: 240.6 });
+
+      expect(sensors()).to.have.length(1);
+      const [sensor] = sensors();
+      // The click names a pixel, so the stored position is a whole one.
+      expect(sensor.x).to.equal(320);
+      expect(sensor.y).to.equal(241);
+      // Never auto-generated: consumers key on `id`, and a made-up name would be
+      // indistinguishable from one a human chose.
+      expect(sensor.name).to.be.undefined;
+      expect(sensor.id).to.have.length(11);
+    });
+
+    it('gives every sensor its own id', async () => {
+      const el = await mountWithSensorTool();
+
+      await clickAt(el, { x: 100, y: 400 });
+      await clickAt(el, { x: 200, y: 400 });
+      await clickAt(el, { x: 300, y: 400 });
+
+      expect(new Set(sensors().map(s => s.id)).size).to.equal(3);
+    });
+
+    it('records one layout entry per sensor, and undo reverses it', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithSensorTool(history);
+
+      await clickAt(el, { x: 320, y: 240 });
+
+      expect(history.size).to.equal(1);
+      expect(history.undoLabel).to.contain('sensor');
+
+      const entry = await history.undo();
+      expect(entry!.target).to.deep.equal({ kind: 'layout' });
+      expect(sensors()).to.have.length(0);
+
+      await history.redo();
+      expect(sensors()).to.have.length(1);
+    });
+
+    it('shows the layout\'s sensors on the viewer', async () => {
+      const el = await mountWithSensorTool();
+      await clickAt(el, { x: 320, y: 240 });
+
+      expect(el.shadowRoot!.querySelector('rr-viewer')!.sensors).to.deep.equal(sensors());
+    });
+
+    it('asks no dialog on placement — a sensor with no name is complete', async () => {
+      const el = await mountWithSensorTool();
+      const show = stubSensorDialog(el);
+
+      await clickAt(el, { x: 320, y: 240 });
+
+      expect(show).not.toHaveBeenCalled();
+      expect(sensors()).to.have.length(1);
+    });
+
+    it('names a sensor from the context menu', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithSensorTool(history);
+      await clickAt(el, { x: 320, y: 240 });
+      const show = stubSensorDialog(el);
+
+      await rightClickAt(el, { x: 320, y: 240 });
+      expect(menuItems(el)).to.deep.equal(['name', 'delete']);
+
+      await choose(el, 'name');
+      expect(show).toHaveBeenCalledWith(null, { id: sensors()[0].id });
+
+      await commitName(el, 'Yard throat');
+      expect(sensors()[0].name).to.equal('Yard throat');
+      expect(history.undoLabel).to.contain('sensor');
+
+      await history.undo();
+      expect(sensors()[0].name).to.be.undefined;
+    });
+
+    it('names a sensor from a click on it, whatever the tool is', async () => {
+      const el = await mountWithSensorTool();
+      await clickAt(el, { x: 320, y: 240 });
+      await selectTool(el, 'calibration');
+      const show = stubSensorDialog(el);
+      const calibrationShow = stubDialog(el);
+
+      await clickAt(el, { x: 322, y: 241 });
+
+      // The object under the cursor is edited; the calibration tool must not
+      // stack a point on top of the sensor the user was aiming at.
+      expect(show).toHaveBeenCalledOnce();
+      expect(calibrationShow).not.toHaveBeenCalled();
+      expect(points()).to.have.length(2);
+    });
+
+    it('removes the name when the field comes back blank', async () => {
+      const el = await mountWithSensorTool();
+      await clickAt(el, { x: 320, y: 240 });
+
+      await rightClickAt(el, { x: 320, y: 240 });
+      await choose(el, 'name');
+      await commitName(el, 'Yard throat');
+
+      await rightClickAt(el, { x: 320, y: 240 });
+      await choose(el, 'name');
+      await commitName(el, null);
+
+      // Absent, not empty: a stored `""` would be a name that displays as
+      // nothing while still counting as one.
+      expect('name' in sensors()[0]).to.be.false;
+    });
+
+    it('records nothing for a name that did not change', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithSensorTool(history);
+      await clickAt(el, { x: 320, y: 240 });
+      await rightClickAt(el, { x: 320, y: 240 });
+      await choose(el, 'name');
+      await commitName(el, 'Yard throat');
+      const size = history.size;
+
+      await rightClickAt(el, { x: 320, y: 240 });
+      await choose(el, 'name');
+      await commitName(el, 'Yard throat');
+
+      expect(history.size).to.equal(size);
+    });
+
+    it('drags a sensor, one entry per gesture, targeting layout', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithSensorTool(history);
+      await clickAt(el, { x: 320, y: 240 });
+      const placed = history.size;
+
+      // Pressed three pixels off-centre: the sensor translates by the delta
+      // rather than teleporting under the cursor.
+      await drag(el, [
+        { x: 323, y: 242 },
+        { x: 400, y: 300 },
+        { x: 423, y: 342 },
+      ]);
+
+      expect(sensors()[0]).to.include({ x: 420, y: 340 });
+      expect(history.size).to.equal(placed + 1);
+      expect(history.undoLabel).to.contain('sensor');
+
+      const entry = await history.undo();
+      expect(entry!.target).to.deep.equal({ kind: 'layout' });
+      expect(sensors()[0]).to.include({ x: 320, y: 240 });
+    });
+
+    it('keeps a dragged sensor\'s id and name', async () => {
+      const el = await mountWithSensorTool();
+      await clickAt(el, { x: 320, y: 240 });
+      await rightClickAt(el, { x: 320, y: 240 });
+      await choose(el, 'name');
+      await commitName(el, 'Yard throat');
+      const before = sensors()[0].id;
+
+      await drag(el, [
+        { x: 320, y: 240 },
+        { x: 500, y: 400 },
+      ]);
+
+      expect(sensors()[0].id).to.equal(before);
+      expect(sensors()[0].name).to.equal('Yard throat');
+    });
+
+    it('deletes a sensor from the context menu, and undo restores it whole', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithSensorTool(history);
+      await clickAt(el, { x: 320, y: 240 });
+      await clickAt(el, { x: 500, y: 240 });
+      const before = structuredClone(sensors());
+
+      await rightClickAt(el, { x: 320, y: 240 });
+      await choose(el, 'delete');
+
+      expect(sensors()).to.deep.equal([before[1]]);
+      expect(history.undoLabel).to.contain('sensor');
+
+      const entry = await history.undo();
+      expect(entry!.target).to.deep.equal({ kind: 'layout' });
+      expect(sensors()).to.deep.equal(before);
+    });
+
+    it('leaves the calibration points alone when a sensor is written', async () => {
+      // `_writeLayout` takes only what changed, so a sensor edit cannot rewrite
+      // the calibration beside it.
+      const el = await mountWithSensorTool();
+      const before = structuredClone(points());
+
+      await clickAt(el, { x: 320, y: 240 });
+      await drag(el, [
+        { x: 320, y: 240 },
+        { x: 400, y: 300 },
+      ]);
+
+      expect(points()).to.deep.equal(before);
+    });
+
+    it('grabs whichever object is nearest, sensor or calibration point', async () => {
+      const el = await mountWithSensorTool();
+      await clickAt(el, { x: 320, y: 240 });
+
+      // The calibration point at (100, 0) is what this drag grabs, even with the
+      // sensor tool live: a drag moves what is under it, never what is selected.
+      await drag(el, [
+        { x: 100, y: 0 },
+        { x: 150, y: 50 },
+      ]);
+
+      expect(points()[1].px).to.deep.equal({ x: 150, y: 50 });
+      expect(sensors()[0]).to.include({ x: 320, y: 240 });
+    });
+
+    it('survives a save and reopen', async () => {
+      const el = await mountWithSensorTool();
+      await clickAt(el, { x: 320, y: 240 });
+      await rightClickAt(el, { x: 320, y: 240 });
+      await choose(el, 'name');
+      await commitName(el, 'Yard throat');
+
+      const reopened = await R49Archive.load(await archive.export());
+
+      expect(reopened.getManifest().layout.sensors).to.deep.equal(sensors());
     });
   });
 

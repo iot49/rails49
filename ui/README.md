@@ -41,13 +41,16 @@ Non-element modules use plain camelCase filenames with no prefix.
 rr-app                          ← shell: owns the archive and the view mode
 ├── rr-header                   ← app bar: status slot, view toggle, settings gear
 │   └── rr-settings-dialog      ← layout metadata (sl-dialog)
-├── rr-editor-view              ← editor mode; images, DPT readout, calibration points and their drag
+├── rr-editor-view              ← editor mode; images, DPT readout, calibration points, sensors
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
+│   ├── rr-tool-palette         ← active tool, and the calibration gate on the labeling ones
 │   ├── rr-viewer               ← SHARED: media + SVG overlay; reports pointer gestures
 │   │   ├── marker.ts           ← module, not an element
-│   │   └── calibrationMarker.ts ← module: the labelled crosshair
+│   │   ├── calibrationMarker.ts ← module: the labelled crosshair
+│   │   └── sensorMarker.ts     ← module: the labelled diamond
 │   ├── rr-thumbnail-bar        ← horizontal image selector strip
 │   ├── rr-calibration-dialog   ← asks for a point's x/y/z in mm (sl-dialog)
+│   ├── rr-sensor-dialog        ← asks for a sensor's optional name (sl-dialog)
 │   └── rr-context-menu         ← right-click verbs on one object (sl-menu)
 └── rr-live-view                ← live mode; owns the classifier
     ├── rr-stats-bar            ← FPS / marker-count overlay
@@ -55,23 +58,25 @@ rr-app                          ← shell: owns the archive and the view mode
         └── marker.ts
 ```
 
-> **The editor authors calibration points, and nothing else yet.** v3's
-> point-marker placement and two-point calibration dragging were removed in the
-> v4 reduction ([#19]); v4 stores neither. [#27] added the provisioning —
-> `rr-viewer` reporting pointer gestures in image pixels, and `geometry.ts`
-> holding the car-width, rectangle and hit-testing arithmetic — and [#28] gave
-> it its first consumer: click a pixel, type its world coordinate, and the point
-> is written as one `layout` history entry. [#30] added the drag — the same point
-> moves, and the whole gesture costs exactly one entry. [#29] added the
-> right-click: a context menu on the object under the cursor, carrying delete,
-> which is why the editor needs no delete mode.
+> **The editor authors calibration points and sensors.** v3's point-marker
+> placement and two-point calibration dragging were removed in the v4 reduction
+> ([#19]); v4 stores neither. [#27] added the provisioning — `rr-viewer`
+> reporting pointer gestures in image pixels, and `geometry.ts` holding the
+> car-width, rectangle and hit-testing arithmetic — and [#28] gave it its first
+> consumer: click a pixel, type its world coordinate, and the point is written as
+> one `layout` history entry. [#30] added the drag — the same point moves, and
+> the whole gesture costs exactly one entry. [#29] added the right-click: a
+> context menu on the object under the cursor, carrying delete, which is why the
+> editor needs no delete mode. [#31] added the **tool palette** and the
+> **calibration gate** — while DPT is `null` the labeling tools are disabled and
+> the reason is stated — and **sensor authoring** on top of the same shared
+> paths: click to place, click or the menu to name, drag to move, menu to delete.
 >
-> Still absent, each with its own ticket: the tool palette and the calibration
-> gate on the labeling tools ([#31]), car authoring (chain-clicked two-point
-> spans), sensor placement, and the completeness affordance. They are specified
-> in `../SPEC.md` § Labeling Workflow. Because the palette does not exist, a
-> click in the viewer unconditionally means *calibrate*; because no chain can be
-> live, a right-click is always the idle branch.
+> Still absent, each with its own ticket: car authoring (chain-clicked two-point
+> spans, [#32]) and the completeness affordance ([#36]). They are specified in
+> `../SPEC.md` § Labeling Workflow. Because no chain can be live, a right-click
+> is still always the idle branch, and the `car` tool selects but authors
+> nothing.
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -79,6 +84,8 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#29]: https://github.com/iot49/rails49/issues/29
 > [#30]: https://github.com/iot49/rails49/issues/30
 > [#31]: https://github.com/iot49/rails49/issues/31
+> [#32]: https://github.com/iot49/rails49/issues/32
+> [#36]: https://github.com/iot49/rails49/issues/36
 
 ## State and data flow
 
@@ -94,10 +101,11 @@ rr-app ─────────── rr-editor-view ────────
 
 * **`rr-app` owns:** the archive, the **undo history**, the view mode, the status string, and file
   new/open/save.
-* **`rr-editor-view` owns:** the current image index, blob URLs for the images, the click that is
-  waiting on a coordinate, and what the context menu is open on. It mutates the archive through
-  image add/remove/reorder and through calibration-point placement, edits and deletion — each
-  wrapped in `history.record`.
+* **`rr-editor-view` owns:** the current image index, blob URLs for the images, **the active tool**,
+  the click that is waiting on a coordinate or a name, and what the context menu is open on. It
+  mutates the archive through image add/remove/reorder, through calibration-point placement, edits
+  and deletion, and through sensor placement, naming, drag and deletion — each wrapped in
+  `history.record` (or in one `beginGesture` per drag).
 * **`rr-live-view` owns:** the camera stream, the classifier, and the classification loop. It never
   mutates the archive.
 * **Only the live view loads a classifier.** The editor's use of it was displaying a per-marker
@@ -214,9 +222,55 @@ and touch devices have no Cmd+Z at all.
 
 The v3 labeling tools (`track`, `train`, `coupling`, `other`, `delete`, `calibrate`) and the
 `rr-tool-select` event they fired are gone, along with `activeTool` and `disabled`. **The palette
-does not come back here until [#31]**, which adds it together with the tools it would choose between
-and the calibration gate that disables them. Calibration authoring needs no palette entry in the
-meantime: it is the only tool, so every click in the viewer means calibrate.
+did not come back here**: [#31] gave it its own element, `rr-tool-palette` below, so file actions and
+tool selection stay separable.
+
+---
+
+### `rr-tool-palette`
+
+Selects the active tool, and carries the **calibration gate**.
+
+| Property | Type | Description |
+|---|---|---|
+| `tool` | `EditorTool` (`'calibration' \| 'sensor' \| 'car'`) | The active tool. The editor owns it |
+| `calibrated` | `boolean` | Whether DPT resolves. False disables every gated tool |
+
+**Emits:** `rr-tool-select` `{ tool }`. Nothing is emitted for a disabled tool, or for the tool that
+is already active.
+
+**While `calibrated` is false the sensor and car tools are disabled and the reason is stated.** The
+reason names **DPT** rather than the width rectangle. The rectangle is why the *car* tool is gated —
+car width is derived rather than stored, so an uncalibrated archive cannot draw what tells a user
+whether a label covers the car — but a sensor is a single point and would draw fine uncalibrated, so
+blaming the rectangle would put a false reason on the one tool whose gating is a deliberate
+deviation. Calibration itself is never gated: it is the tool that *produces* the DPT.
+
+The reason lives in the page (`.gate-reason`), not in the buttons' tooltips: a disabled
+`sl-icon-button` takes no pointer events, so a tooltip on one never opens. The gate is on **existence, never completion** (`../SPEC.md`
+§ Labeling Workflow) — two points at a nonzero separation, which is exactly "`getDPT` returns a
+number" — and it opens and closes live, so an undone calibration disables the tools again.
+
+> The sensor tool is gated with the car tool at [#31]'s request, one step beyond `../SPEC.md`
+> § Labeling Workflow ("sensors can be placed at any time"). `needsDpt` is per tool in the source, so
+> that is one flag to flip if it is revisited.
+
+The `car` tool selects but authors nothing: car authoring is [#32]. The palette is what that ticket
+plugs into.
+
+---
+
+### `rr-sensor-dialog`
+
+Asks for a sensor's **optional** name. Opened imperatively with `show(name, { id })`, like
+`rr-calibration-dialog`, because the value it starts from belongs to the gesture.
+
+**Emits:** `rr-sensor-name-commit` `{ name: string | null }`. `null` is "no name" — a cleared field
+is how a name is *removed*, and the editor writes that as the absence of the key rather than as `""`.
+
+Naming is separate from placing, because a sensor with no name is complete: consumers key on `id`,
+and `name` is optional passthrough that is never auto-generated (`../SPEC.md` § Occupancy Output).
+The dialog shows the id it is naming, which is what the editor displays in its place.
 
 ---
 
@@ -245,6 +299,7 @@ image pixel coordinates.
 | `stream` | `MediaStream \| null` | Video stream (live mode) |
 | `markers` | `MarkerData[]` | Markers to draw |
 | `calibrationPoints` | `readonly CalibrationPoint[]` | Crosshairs to draw; empty in the live view |
+| `sensors` | `readonly Sensor[]` | Diamonds to draw. Per **layout**, so the same list draws over every image; empty in the live view |
 | `resolution` | `{ width, height }` | Native media resolution → the SVG viewBox |
 
 **Emits:** `rr-pointer-down`, `rr-pointer-move`, `rr-pointer-up`, `rr-pointer-cancel`
@@ -400,8 +455,8 @@ a calibration crosshair still names its exact pixel on the edge.
 untestable — which is the reason this module exists. Every editor label is monospace and its content
 is known, so `estimateLabelWidthPx` is character count × 0.6em, erring slightly wide, which is the
 safe direction for a flip test. It is not a box the glyphs are guaranteed to sit inside. The rule
-lives here rather than in a renderer because the sensor symbol ([#31]) carries a name in the same
-frame against the same edges: its geometry differs, this decision does not.
+lives here rather than in a renderer because the sensor symbol carries a name in the same frame
+against the same edges: its geometry differs, this decision does not.
 
 ---
 
@@ -418,7 +473,8 @@ must be used together** — styles in the host's `static styles`, the renderer o
 There are no `<defs>` and so no third export: a crosshair is two lines, and nothing is reused.
 
 A calibration point is drawn **unlike anything else in the editor** by requirement (`../SPEC.md`
-§ Reference points) — it must not be confusable with the sensor symbol that arrives with [#31]. The
+§ Reference points) — it must not be confusable with the sensor symbol, which is why that one is a
+closed amber diamond and this one is two cyan crossing arms. The
 crosshair also names the exact pixel, which a boxed icon does not. The label rounds to one decimal:
 coordinates are typed by hand today, but a dragged point will not be, and float noise in a label
 reads as a bug in the editor.
@@ -429,11 +485,36 @@ Points carry **no `id`** — nothing references one individually — so `index` 
 
 **`frame` is only the label's business.** The label sits up and to the right by default and would be
 clipped on a point near the top or right edge, so it flips inwards; the decision is `geometry.ts`'s
-`placeLabel`, shared with the sensor symbol ([#31]) rather than inlined here, and made from an
+`placeLabel`, shared with `sensorMarker.ts` rather than inlined here, and made from an
 *estimated* label width because nothing can measure text. `text-anchor` and `dominant-baseline` are
 therefore set **per element** and are deliberately absent from `calibrationMarkerStyles` — a
 stylesheet rule beats a presentation attribute and would pin every label to one corner. The crosshair
 ignores `frame` entirely: it names an exact pixel, wherever that pixel is.
+
+---
+
+### `sensorMarker.ts`
+
+The sensor's own SVG, with the same shape and the same rules as `calibrationMarker.ts`. **The exports
+must be used together** — styles in the host's `static styles`, the renderer once per sensor.
+
+| Export | Type | Description |
+|---|---|---|
+| `renderSensor(sensor, size, frame)` | `(Sensor, number, FrameSize) => SVGTemplateResult` | A diamond centered on the sensor, a filled core at the exact pixel, and a `text` label. `size` is `rr-viewer`'s `symbolSize`, `frame` its `resolution` |
+| `sensorLabelText(sensor)` | `(Sensor) => string` | The sensor's `name`, or its `id` when it has none |
+| `sensorMarkerStyles` | `CSSResult` | Diamond and label colors, the translucent fill, non-scaling strokes |
+
+**Amber diamond against the crosshair's cyan arms**, and the difference is shape as much as colour: a
+sensor and a calibration point are different objects with different tools, and `../SPEC.md`
+§ Reference points requires them to be unmistakable. The symbol also *closes* around its pixel rather
+than extending arms, because a sensor is a single query point and nothing about it implies an extent.
+
+**An unnamed sensor is labelled with its `id`.** Names are optional, free text, not unique, and never
+auto-generated (`../SPEC.md` § Occupancy Output): an invented "Sensor 3" is indistinguishable from a
+name a human chose and stops matching as sensors come and go. A blank name is treated as no name.
+
+`frame` is the label's business only, exactly as for the crosshair, and through the same
+`placeLabel`.
 
 ---
 
@@ -505,7 +586,8 @@ zero) the clamp is the identity and the menu lands at the cursor.
 
 ### `rr-editor-view`
 
-Orchestrates the editor: images, a DPT readout, calibration authoring, and the right-click menu.
+Orchestrates the editor: images, a DPT readout, the active tool, calibration and sensor authoring,
+and the right-click menu.
 
 | Property | Type | Description |
 |---|---|---|
@@ -535,18 +617,18 @@ that image into view before the change lands.
   * Everything is decided at **pointer-down** — the hit-test, the handles the gesture will move, and
     the history entry it will commit — so no motion event re-decides anything and the entry's
     snapshot predates the first moved pixel. The **press** position is what a click uses: where the
-    user aimed, and where a drag grabs. This is where the palette ([#31]) will dispatch on the
-    active tool.
-  * The hit-test scene contains only calibration points, because they are the only object this
-    editor can create. Cars and sensors join it with the tools that author them.
+    user aimed, and where a drag grabs.
+  * The hit-test scene contains calibration points and sensors — the two objects this editor can
+    create. Cars join it with the tool that authors them ([#32]).
 * **Dragging** ([#30]). A press on a calibration point followed by motion past `CLICK_SLOP_SCREEN_PX`
   moves it, and the DPT readout follows live, mid-gesture. The history entry is opened at
   pointer-down and committed at pointer-up, **never per motion event**, so a drag across the image is
   one Cmd+Z and not two hundred; a drag returned to its origin records **nothing**, suppressed by
   value comparison in `EditHistory` rather than by trusting that the user meant it.
   * The gesture moves a **list** of handles from `dragHandles`, which is what lets one entry cover
-    more than one object — the coupler case a car drag will need. Only calibration handles are
-    written today, because they are the only ones the scene can produce.
+    more than one object — the coupler case a car drag will need. Calibration and sensor handles are
+    written today; a car end joins them with [#32]. Both live in `layout`, so one entry covers a
+    gesture whatever it grabbed, and only the entry's *label* differs.
   * `dragging` is **sticky**: a gesture that moved never falls through to the click path, even if it
     ended back inside the slop. Without it every swipe over the image would place a point, and the
     labeling device is a phone.
@@ -572,10 +654,10 @@ that image into view before the change lands.
   chaining a train will end the chain instead. Written as a branch so that is a case to add rather
   than a rewrite.
   * The **idle** branch hit-tests at `DEFAULT_GRAB_RADIUS_SCREEN_PX` and opens `rr-context-menu` at
-    the cursor, carrying delete. Empty image opens nothing, and neither does an object with no verbs
-    — a list of disabled rows is a worse answer than the absence of one. Only calibration points are
-    in the scene, so they are the only subject; cars and sensors get their rows from the same switch
-    when the tools that create them exist.
+    the cursor: **delete** for a calibration point, **name and delete** for a sensor. Empty image
+    opens nothing, and neither does an object with no verbs — a list of disabled rows is a worse
+    answer than the absence of one. Cars get their rows from the same switch when the tool that
+    creates them exists.
   * **The browser's own menu is suppressed here, not in `rr-viewer`**, and for every right-click the
     viewer reports rather than only the ones that open something: inside the labeling surface a
     right-click is the editor's gesture whatever it lands on, and over empty image it will end a
@@ -595,7 +677,30 @@ that image into view before the change lands.
     coordinate intact — an entry is a snapshot, so there is no per-object restore to author. The
     subject is resolved when the menu opens and carries its **pixel** for the same reason an edit
     does: an undo landing while the menu is up can slide the index onto another point, and a subject
-    that moved is dropped rather than deleted from underneath the user.
+    that moved is dropped rather than deleted from underneath the user. A **sensor** subject needs no
+    such guard: it carries an `id`, so the hit names it exactly however the list is replaced
+    underneath — the delete is a filter by id, not a splice by position.
+* **The active tool, and the gate** ([#31]). `rr-tool-palette` reports `rr-tool-select`; this
+  component holds the tool and dispatches a click on it. A click on **empty image** runs the tool —
+  calibration opens the dialog, sensor places a point, car does nothing until [#32]. A click **on an
+  object** edits that object *whatever the tool is*, because the thing under the cursor is less
+  ambiguous than the mode: a coordinate for a calibration point, a name for a sensor.
+  * The gate is enforced in `willUpdate`, not at the one place a point is deleted: **the DPT can also
+    vanish through an undo**, which `rr-app` applies straight into the archive with no handler here
+    seeing it. A gated tool is demoted to calibration; placing a second point re-enables it. An
+    archive **opens in calibration mode**, and a new archive resets the tool rather than inheriting
+    the last one.
+* **Sensor authoring** ([#31]). A click with the sensor tool writes `{ id, x, y }` into
+  `layout.sensors` as **one `history.record` entry targeting `layout`** — unnamed, which is a
+  complete sensor: consumers key on `id`, and `name` is never auto-generated. The `id` is a
+  `make_id` snowflake, so it is unique within the layout by construction. Sensors carry **no
+  provenance**: no model can propose where a human wants an answer.
+  * Naming goes through `rr-sensor-dialog`, opened from a click on the sensor or from the menu's
+    "Name sensor…". A commit of `null` **removes** the key; retyping the same name records nothing,
+    suppressed by `EditHistory`'s value comparison. The sensor is re-found by `id` at commit, so one
+    deleted while the dialog was open is simply gone.
+  * Drag and delete reuse the calibration paths unchanged — that is the point of `dragHandles` and of
+    the menu knowing nothing about its subject. Both are one `layout` entry.
 * **DPT readout** (`.dpt-bar`). `getDPT()` to one decimal, or "Not calibrated" with a warning style
   when it returns `null` — a real v4 state, reported rather than blocked on, and now with the click
   that fixes it. Two further states:
@@ -606,8 +711,8 @@ that image into view before the change lands.
   * **Below `MIN_DPT`**, the bar takes the `below-minimum` warning style and says so. It **blocks
     nothing** — the six fixture archives sit at DPT 18–19, under the threshold of 20, and must stay
     openable and editable.
-* **It authors no other geometry and loads no classifier.** Marker CRUD and the per-marker
-  classification display went with the v4 reduction. See the note at the top of this file.
+* **It authors no cars and loads no classifier.** Car authoring is [#32]; marker CRUD and the
+  per-marker classification display went with the v4 reduction. See the note at the top of this file.
 
 ---
 

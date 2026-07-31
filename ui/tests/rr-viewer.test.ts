@@ -124,6 +124,50 @@ describe('rr-viewer', () => {
     });
   });
 
+  describe('sensors', () => {
+    const sensors = [
+      { id: 'S1abcdefghi', x: 100, y: 100 },
+      { id: 'S2abcdefghi', x: 400, y: 300, name: 'Yard throat' },
+    ];
+    const calibrationPoints = [
+      { px: { x: 100, y: 100 }, world: { x: 0, y: 0, z: 0 } },
+      { px: { x: 400, y: 300 }, world: { x: 0, y: 250, z: 0 } },
+    ];
+
+    it('draws one labelled symbol per sensor', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .sensors=${sensors} .resolution=${resolution}></rr-viewer>
+      `);
+      const drawn = el.shadowRoot!.querySelectorAll('.sensor');
+      expect(drawn.length).to.equal(2);
+      // Its name when it has one, its id when it does not.
+      expect(drawn[0].querySelector('text')!.textContent).to.contain('S1abcdefghi');
+      expect(drawn[1].querySelector('text')!.textContent).to.contain('Yard throat');
+    });
+
+    it('draws them distinctly from calibration crosshairs, and alongside them', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer
+          .sensors=${sensors}
+          .calibrationPoints=${calibrationPoints}
+          .resolution=${resolution}
+        ></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelectorAll('.sensor').length).to.equal(2);
+      expect(el.shadowRoot!.querySelectorAll('.calibration-point').length).to.equal(2);
+      // Shape, not just colour: nothing in a crosshair is a polygon.
+      expect(el.shadowRoot!.querySelectorAll('.sensor polygon').length).to.equal(2);
+      expect(el.shadowRoot!.querySelector('.calibration-point polygon')).to.not.exist;
+    });
+
+    it('draws none by default, so the live view is unaffected', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelector('.sensor')).to.not.exist;
+    });
+  });
+
   // The viewer reports pointer gestures but still authors nothing: v3's marker
   // add/move/delete and its draggable {p0, p1} pair went with the v4 reduction
   // (#19) and do not come back. Placing anything is the editor's job — the

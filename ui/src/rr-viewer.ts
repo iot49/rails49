@@ -3,7 +3,8 @@ import { customElement, property, state, query } from 'lit/decorators.js';
 import { renderMarker, markerDefs, markerStyles } from './marker.js';
 import type { MarkerData } from './marker.js';
 import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMarker.js';
-import type { CalibrationPoint, Point } from '@occupancy/r49';
+import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
+import type { CalibrationPoint, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 export const viewerStyles = css`
@@ -113,7 +114,8 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * `preserveAspectRatio="xMidYMid meet"`, so the viewBox maps 1:1 onto image
  * pixel coordinates. Changing either half misplaces every marker.
  *
- * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `resolution`.
+ * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `sensors`,
+ * `resolution`.
  *
  * @fires rr-pointer-down - Pointer pressed. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-move - Pointer moved. Detail: {@link ViewerPointerDetail}
@@ -123,7 +125,7 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  */
 @customElement('rr-viewer')
 export class RrViewer extends LitElement {
-  static styles = [viewerStyles, markerStyles, calibrationMarkerStyles];
+  static styles = [viewerStyles, markerStyles, calibrationMarkerStyles, sensorMarkerStyles];
 
   @property({ type: String }) src: string | null = null;
   @property({ attribute: false }) stream: MediaStream | null = null;
@@ -135,6 +137,15 @@ export class RrViewer extends LitElement {
    * writes one. Empty in the live view, which has no reason to show them.
    */
   @property({ attribute: false }) calibrationPoints: readonly CalibrationPoint[] = [];
+  /**
+   * The layout's sensors, drawn as labelled diamonds.
+   *
+   * Display only, like `calibrationPoints`. Sensors are per **layout**, not per
+   * image, so the same list is drawn over every frame — that is the point of
+   * placing one. Empty in the live view today; when it renders L1 state it will
+   * pass the same list.
+   */
+  @property({ attribute: false }) sensors: readonly Sensor[] = [];
   @property({ type: Object }) resolution = { width: 1920, height: 1080 };
 
   @state() private symbolSize = MARKER_SIZE_PX;
@@ -293,6 +304,8 @@ export class RrViewer extends LitElement {
             // must stay inside — a point near an edge draws its label inwards.
             renderCalibrationPoint(p, i, this.symbolSize, this.resolution)
           )}
+
+          ${this.sensors.map(s => renderSensor(s, this.symbolSize, this.resolution))}
         </svg>
       </div>
     `;
