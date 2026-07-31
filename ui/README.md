@@ -43,7 +43,7 @@ rr-app                          ← shell: owns the archive and the view mode
 │   └── rr-settings-dialog      ← layout metadata (sl-dialog)
 ├── rr-editor-view              ← editor mode; images + DPT readout, authors nothing
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
-│   ├── rr-viewer               ← SHARED: media + read-only SVG overlay
+│   ├── rr-viewer               ← SHARED: media + SVG overlay; reports pointer gestures
 │   │   └── marker.ts           ← module, not an element
 │   └── rr-thumbnail-bar        ← horizontal image selector strip
 └── rr-live-view                ← live mode; owns the classifier
@@ -59,7 +59,13 @@ rr-app                          ← shell: owns the archive and the view mode
 > and are a separate effort. What the editor does today is open an archive,
 > manage its images, edit layout metadata, and report DPT.
 >
+> What [#27] added is the **provisioning** for that effort, not any of it:
+> `rr-viewer` reports pointer gestures in image pixels, and `geometry.ts` holds
+> the car-width, rectangle and hit-testing arithmetic every tool will need. No
+> component listens to those events yet, and nothing new is authored.
+>
 > [#19]: https://github.com/iot49/rails49/issues/19
+> [#27]: https://github.com/iot49/rails49/issues/27
 
 ## State and data flow
 
@@ -212,7 +218,8 @@ Horizontal strip of image thumbnails, with drag-and-drop reordering.
 
 ### `rr-viewer` ⭐ shared by both views
 
-Displays media — image or video — under a **read-only** SVG marker overlay.
+Displays media — image or video — under an SVG marker overlay, and reports pointer gestures in
+image pixel coordinates.
 
 | Property | Type | Description |
 |---|---|---|
@@ -221,12 +228,45 @@ Displays media — image or video — under a **read-only** SVG marker overlay.
 | `markers` | `MarkerData[]` | Markers to draw |
 | `resolution` | `{ width, height }` | Native media resolution → the SVG viewBox |
 
-**Emits:** nothing.
+**Emits:** `rr-pointer-down`, `rr-pointer-move`, `rr-pointer-up`, `rr-pointer-cancel`
+(`ViewerPointerDetail`), and `rr-pointer-contextmenu` (`ViewerContextMenuDetail`). All five fire in
+both `src` and `stream` mode. They are declared in `HTMLElementEventMap`, so a listener anywhere up
+the tree gets the detail typed without a cast.
 
-**It authors nothing.** `interactive`, `activeTool`, `calibration`, the pointer handlers, and the
-four events they fired (`rr-marker-add`, `rr-marker-move`, `rr-marker-delete`,
-`rr-calibration-move`) were all removed in the v4 reduction — v4 has neither point markers nor a
-draggable `{p0, p1}` pair. The editor spec's tools will reintroduce a `screenToSvg()` of their own.
+| Detail field | Type | Description |
+|---|---|---|
+| `point` | `Point` | Position **in image pixels** — the SVG viewBox frame, never screen coordinates |
+| `imagePxPerScreenPx` | `number` | Converts a screen-space tolerance to image pixels; feeds `geometry.ts`'s `HitTolerance` |
+| `originalEvent` | `PointerEvent` / `MouseEvent` | For `pointerId`, `buttons`, and modifier keys |
+
+**Coordinates are converted with `createSVGPoint` + inverse `getScreenCTM()`**, never by subtracting
+`getBoundingClientRect()` by hand: the rect ignores the letterbox that `preserveAspectRatio` creates,
+so the hand-rolled version is correct only while the viewport happens to match the image's aspect
+ratio, and drifts silently as soon as it does not. `imagePxPerScreenPx` comes off the same matrix for
+the same reason. Where no CTM is available — jsdom, a detached element — **nothing is emitted**
+rather than a coordinate derived from a missing transform.
+
+`point` may fall **outside** the image bounds: the overlay covers the letterbox bars, and a captured
+drag keeps reporting after the pointer leaves the element. Clamping is the consumer's call.
+
+**Pointer capture is taken on `pointerdown`** and released on up or cancel, so a drag that wanders
+off the element still delivers its end. `pointercancel` is reported as its own event rather than
+folded into `up`, because a consumer that commits an edit on `up` must not commit a gesture the
+browser took away.
+
+**The overlay is now the hit target** — `pointer-events` on the SVG went from `none` to `auto`. That
+makes the `touch-action: none` already on the same rule *effective*, where before touches fell
+through to the `<img>`/`<video>` underneath: pinch-zoom over the media is suppressed on touch
+devices, and dragging the photo no longer starts the browser's native image drag. Deliberate — the
+labeling surface has to own its gestures — but it is the one user-visible consequence of the change,
+and the labeling device is a phone.
+
+**It still authors nothing.** `interactive`, `activeTool`, `calibration`, and the four events that
+mutated (`rr-marker-add`, `rr-marker-move`, `rr-marker-delete`, `rr-calibration-move`) were removed
+in the v4 reduction and do not come back — v4 has neither point markers nor a draggable `{p0, p1}`
+pair. The viewer reports where the pointer is; deciding what that means is the editor's job, and the
+arithmetic it needs is in `geometry.ts`. The right-click is **not** `preventDefault()`ed here, since
+whether the native menu is suppressed depends on editor state.
 
 **Methods:** `getVideoElement()`, `getImageElement()` — `rr-live-view` uses these to feed the
 classifier the live frame source.
@@ -273,6 +313,39 @@ centered without manual offsets. An unrecognized `type` falls back to `other`.
 > The rendering is kept rather than deleted because sensor state and L0 boxes will both want a
 > per-marker visual — but until something sets them, the validation ring and the tooltip do not
 > appear. Don't read the table above as describing live behaviour.
+
+---
+
+### `geometry.ts`
+
+The editor's geometry, as pure functions. A module rather than anything inside a component, and that
+placement is the point: jsdom neither lays out nor paints, so arithmetic living in a Lit element is
+untestable until `@web/test-runner` is stood up, while the same arithmetic here is covered today.
+
+| Export | Description |
+|---|---|
+| `carWidthPx(dpt)` | Car width in image pixels: `dpt × STANDARD_WIDTH / STANDARD_GAUGE` |
+| `carCorners(p0, p1, dpt)` | The four corners of the oriented rectangle, in polygon order from the `p0` side |
+| `hitTest(scene, at, tolerance)` | The `HitTarget` under an image-pixel coordinate, or `null` |
+| `HitScene` | `{ cars, sensors, calibrationPoints }` — everything grabbable for one image of one layout |
+| `HitTarget` | `car-endpoint` / `coupler` (both carrying `ends`), `sensor` (`id`), `calibration` (`index`) |
+| `HitTolerance` | `{ screenPx, imagePxPerScreenPx }` |
+
+**Both constants come from `@occupancy/config`.** The scale ratio cancels out of the width formula —
+a car is 2.09 track-widths wide in **every** scale — so no scale lookup belongs anywhere in `ui/`,
+and no gauge arithmetic is reimplemented here.
+
+**The grab radius is in screen pixels**, converted with the `imagePxPerScreenPx` that `rr-viewer`
+puts in every pointer event. A grab radius is a property of the mouse and the finger, not of the
+photograph: an 8-megapixel image and a 720p one must feel the same.
+
+**Nearest wins**, whatever its kind; an exact tie goes to the denser geometry (car ends, sensors,
+calibration points, in that order). Only handles are hit — the body of a car is not grabbable,
+because the only edits a span supports are to its two ends.
+
+**A coupler is exact coincidence, not proximity.** Nothing about a coupling is stored; it is two or
+more car ends at the identical pixel, which chaining and the shared handle both guarantee by writing
+the same value. Fusing endpoints that merely look close would move geometry the user never joined.
 
 ---
 
