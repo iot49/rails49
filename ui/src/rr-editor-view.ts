@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { R49Archive, getDPT } from '@occupancy/r49';
 import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
+import type { EditHistory } from './history.js';
 
 import './rr-viewer.js';
 import './rr-toolbar.js';
@@ -24,6 +25,16 @@ import './rr-thumbnail-bar.js';
 @customElement('rr-editor-view')
 export class RREditorView extends LitElement {
   @property({ attribute: false }) archive: R49Archive | null = null;
+  /**
+   * The undo stack, owned by `rr-app`. Every mutation below goes through it —
+   * an edit recorded nowhere leaves a stack that is wrong rather than short,
+   * and nothing in the compiler catches that.
+   */
+  @property({ attribute: false }) history: EditHistory | null = null;
+  @property({ type: Boolean }) canUndo = false;
+  @property({ type: Boolean }) canRedo = false;
+  @property({ attribute: false }) undoLabel: string | null = null;
+  @property({ attribute: false }) redoLabel: string | null = null;
   @state() private _currentImageIndex = 0;
   @state() private _imageUrls: Map<string, string> = new Map();
 
@@ -102,6 +113,29 @@ export class RREditorView extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Rebuilds the blob URLs from the archive and optionally selects an image.
+   *
+   * Called by `rr-app` after undo or redo: the manifest changed underneath this
+   * component, and an entry scoped to another image must bring that image into
+   * view before the change lands. See `history.ts`.
+   */
+  public async syncFromArchive(revealFilename?: string): Promise<void> {
+    if (!this.archive) return;
+    await this._refreshImageUrls();
+    const images = this.archive.getManifest().images;
+    if (revealFilename) {
+      const index = images.findIndex(img => img.filename === revealFilename);
+      if (index >= 0) this._currentImageIndex = index;
+    }
+    this._currentImageIndex = Math.max(0, Math.min(this._currentImageIndex, images.length - 1));
+  }
+
+  /** Tells `rr-app` to re-render the undo affordances. */
+  private _notifyHistoryChange() {
+    this.dispatchEvent(new CustomEvent('rr-history-change', { bubbles: true, composed: true }));
+  }
+
   private _onImageSelect(e: CustomEvent) {
     this._currentImageIndex = e.detail.index;
   }
@@ -119,7 +153,9 @@ export class RREditorView extends LitElement {
         if (file) {
           const buffer = await file.arrayBuffer();
           const filename = `img_${make_id(2)}.jpg`;
-          await this.archive!.addImage(filename, new Uint8Array(buffer));
+          await this._record('add image', () =>
+            this.archive!.addImage(filename, new Uint8Array(buffer))
+          );
           await this._refreshImageUrls();
           this._currentImageIndex = this.archive!.getManifest().images.length - 1;
         }
@@ -129,7 +165,7 @@ export class RREditorView extends LitElement {
       try {
         const data = await captureFromCamera();
         const filename = `capture_${make_id(3)}.jpg`;
-        await this.archive.addImage(filename, data);
+        await this._record('add image', () => this.archive!.addImage(filename, data));
         await this._refreshImageUrls();
         this._currentImageIndex = this.archive.getManifest().images.length - 1;
       } catch (err) {
@@ -144,13 +180,18 @@ export class RREditorView extends LitElement {
     const manifest = this.archive.getManifest();
     const image = manifest.images[index];
     if (image) {
-      this.archive.removeImage(image.filename);
+      // `retain` is what makes the removal reversible: removeImage() drops the
+      // bytes from the zip, so they have to be read out before it runs. Without
+      // it the entry restores a manifest row naming an image that is not there.
+      await this._record('delete image', () => this.archive!.removeImage(image.filename), {
+        retain: [image.filename],
+      });
       await this._refreshImageUrls();
       this._currentImageIndex = Math.max(0, Math.min(this._currentImageIndex, manifest.images.length - 1));
     }
   }
 
-  private _onImageReorder(e: CustomEvent) {
+  private async _onImageReorder(e: CustomEvent) {
     if (!this.archive) return;
     const { from, to } = e.detail;
 
@@ -163,8 +204,21 @@ export class RREditorView extends LitElement {
       this._currentImageIndex++;
     }
 
-    this.archive.reorderImages(from, to);
+    await this._record('reorder images', () => this.archive!.reorderImages(from, to));
     this.requestUpdate();
+  }
+
+  /**
+   * Runs an image mutation through the undo stack, or directly when no history
+   * is attached (tests that mount this component on its own).
+   */
+  private async _record(label: string, mutate: () => unknown, options?: { retain?: string[] }) {
+    if (!this.history) {
+      await mutate();
+      return;
+    }
+    await this.history.record(label, { kind: 'images' }, mutate, options);
+    this._notifyHistoryChange();
   }
 
   /**
@@ -186,7 +240,12 @@ export class RREditorView extends LitElement {
 
     return html`
       <div class="sidebar">
-        <rr-toolbar></rr-toolbar>
+        <rr-toolbar
+          .canUndo=${this.canUndo}
+          .canRedo=${this.canRedo}
+          .undoLabel=${this.undoLabel}
+          .redoLabel=${this.redoLabel}
+        ></rr-toolbar>
       </div>
 
       <div class="main-content">

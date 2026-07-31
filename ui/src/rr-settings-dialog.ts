@@ -91,6 +91,14 @@ export class RRSettingsDialog extends LitElement {
     this._dialog.hide();
   }
 
+  /**
+   * Text fields commit on `sl-change` (blur or Enter), not `sl-input`.
+   *
+   * Per keystroke, each character would become its own undo entry, so Cmd+Z
+   * would chew backwards through a name one letter at a time while the user is
+   * trying to reverse an edit from minutes ago. One entry per editing session
+   * is the unit the user perceives.
+   */
   private _onLayoutChange<K extends keyof LayoutFields>(field: K, value: LayoutFields[K]) {
     this.dispatchEvent(new CustomEvent('rr-layout-change', {
       detail: { layout: { [field]: value } },
@@ -108,9 +116,9 @@ export class RRSettingsDialog extends LitElement {
           <sl-tab-panel name="layout">
             <div class="settings-grid">
               <div class="label">Name</div>
-              <sl-input 
-                value=${this.layout?.name || ''} 
-                @sl-input=${(e: Event) => this._onLayoutChange('name', (e.target as SlInput).value)}
+              <sl-input
+                value=${this.layout?.name || ''}
+                @sl-change=${(e: Event) => this._onLayoutChange('name', (e.target as SlInput).value)}
               ></sl-input>
 
               <div class="label">Scale</div>
@@ -131,14 +139,14 @@ export class RRSettingsDialog extends LitElement {
               <sl-input
                 id="layout-description"
                 value=${this.layout?.description || ''}
-                @sl-input=${(e: Event) => this._onLayoutChange('description', (e.target as SlInput).value)}
+                @sl-change=${(e: Event) => this._onLayoutChange('description', (e.target as SlInput).value)}
               ></sl-input>
 
               <div class="label">Contact</div>
               <sl-input
                 id="layout-contact"
                 value=${this.layout?.contact || ''}
-                @sl-input=${(e: Event) => this._onLayoutChange('contact', (e.target as SlInput).value)}
+                @sl-change=${(e: Event) => this._onLayoutChange('contact', (e.target as SlInput).value)}
               ></sl-input>
             </div>
           </sl-tab-panel>

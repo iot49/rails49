@@ -42,7 +42,7 @@ rr-app                          ← shell: owns the archive and the view mode
 ├── rr-header                   ← app bar: status slot, view toggle, settings gear
 │   └── rr-settings-dialog      ← layout metadata (sl-dialog)
 ├── rr-editor-view              ← editor mode; images + DPT readout, authors nothing
-│   ├── rr-toolbar              ← vertical icon bar (file ops only)
+│   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
 │   ├── rr-viewer               ← SHARED: media + read-only SVG overlay
 │   │   └── marker.ts           ← module, not an element
 │   └── rr-thumbnail-bar        ← horizontal image selector strip
@@ -73,9 +73,10 @@ rr-app ─────────── rr-editor-view ────────
    └─────────────── rr-live-view ───────────── rr-viewer / rr-stats-bar
 ```
 
-* **`rr-app` owns:** the archive, the view mode, the status string, and file new/open/save.
+* **`rr-app` owns:** the archive, the **undo history**, the view mode, the status string, and file
+  new/open/save.
 * **`rr-editor-view` owns:** the current image index and blob URLs for the images. It mutates the
-  archive only through image add/remove/reorder.
+  archive only through image add/remove/reorder — each wrapped in `history.record`.
 * **`rr-live-view` owns:** the camera stream, the classifier, and the classification loop. It never
   mutates the archive.
 * **Only the live view loads a classifier.** The editor's use of it was displaying a per-marker
@@ -83,6 +84,11 @@ rr-app ─────────── rr-editor-view ────────
 
 Lit does not observe mutations *inside* `R49Archive`, so handlers that edit the manifest in place
 call `this.requestUpdate()` explicitly.
+
+**Every manifest mutation goes through `history.record`** (see `history.ts`), so an edit made by
+reaching into `.archive` directly leaves an undo stack that is wrong rather than short. Children
+report a recorded edit upward with `rr-history-change`, which is what re-renders the toolbar's
+enabled state.
 
 ---
 
@@ -92,10 +98,24 @@ call `this.requestUpdate()` explicitly.
 
 Application shell. Owns the archive and routes between the two views.
 
-**Internal state** (no public properties): `_archive`, `_viewMode` (`'editor' | 'live'`), `_status`.
-Starts with no archive loaded.
+**Internal state** (no public properties): `_archive`, `_history`, `_viewMode` (`'editor' | 'live'`),
+`_status`. Starts with no archive loaded.
 
-**Handles:** `rr-view-toggle`, `rr-layout-change`, `rr-file-new`, `rr-file-open`, `rr-file-save`.
+**Handles:** `rr-view-toggle`, `rr-layout-change`, `rr-file-new`, `rr-file-open`, `rr-file-save`,
+`rr-undo`, `rr-redo`, `rr-history-change`.
+
+**Keyboard:** Cmd/Ctrl+Z and Cmd+Shift+Z / Ctrl+Y, bound on `window`, **editor view only**. The
+handler bails when a field has focus, testing `event.composedPath()[0]` rather than `event.target` —
+Shoelace inputs are custom elements, so `target` is retargeted to the host and the naive check would
+hijack Cmd+Z mid-typing.
+
+* `rr-file-new` and `rr-file-open` **confirm before discarding unsaved changes** (`_history.isDirty`),
+  since replacing the archive takes the undo stack with it. This is the one destructive act undo
+  cannot cover.
+* `rr-file-save` marks the history position saved rather than clearing it — undoing past a save is
+  legitimate, because the bytes on disk are unaffected.
+* Undo and redo reveal what they changed: an entry scoped to another image calls
+  `rr-editor-view.syncFromArchive(filename)`, which selects that image before the change lands.
 
 * `rr-file-new` builds an empty **v4** manifest — layout `'New Layout'`, scale `N`, resolution
   1920×1080, empty calibration points and no sensors.
@@ -140,6 +160,10 @@ description, and contact.
 
 **Emits:** `rr-layout-change` with `{ layout: Partial<Layout> }` — one changed field per event.
 
+Text fields fire on **`sl-change`** (blur or Enter), not `sl-input`. Per keystroke, each character
+would become its own undo entry, so Cmd+Z would chew backwards through a name one letter at a time.
+One entry per editing session is the unit the user perceives.
+
 The "Ref Size (mm)" input is gone: it wrote v3's single `size_mm`, and v4's calibration points each
 carry their own world coordinate instead.
 
@@ -151,9 +175,20 @@ Classifier selection is **not implemented**: there is no classifier tab, and the
 
 ### `rr-toolbar`
 
-Vertical palette for the editor. **File actions only** — no properties.
+Vertical palette for the editor: file actions and undo/redo.
 
-**Emits:** `rr-file-new`, `rr-file-open`, `rr-file-save`.
+| Property | Type | Description |
+|---|---|---|
+| `canUndo` | `boolean` | Enables the undo button |
+| `canRedo` | `boolean` | Enables the redo button |
+| `undoLabel` | `string \| null` | Phrase for the tooltip — "Undo delete image" |
+| `redoLabel` | `string \| null` | As above, for redo |
+
+**Emits:** `rr-file-new`, `rr-file-open`, `rr-file-save`, `rr-undo`, `rr-redo`.
+
+The buttons are not a duplicate of the keyboard shortcuts. Their **disabled state** is the only
+signal separating "the stack is empty" from "the undo landed on an image you are not looking at",
+and touch devices have no Cmd+Z at all.
 
 The v3 labeling tools (`track`, `train`, `coupling`, `other`, `delete`, `calibrate`) and the
 `rr-tool-select` event they fired are gone, along with `activeTool` and `disabled`. Car, sensor and
@@ -245,13 +280,23 @@ centered without manual offsets. An unrecognized `type` falls back to `other`.
 
 Orchestrates the editor: images and a DPT readout.
 
-| Property | Type |
-|---|---|
-| `archive` | `R49Archive \| null` |
+| Property | Type | Description |
+|---|---|---|
+| `archive` | `R49Archive \| null` | |
+| `history` | `EditHistory \| null` | The undo stack; every mutation below runs through it |
+| `canUndo` / `canRedo` | `boolean` | Passed through to `rr-toolbar` |
+| `undoLabel` / `redoLabel` | `string \| null` | Passed through to `rr-toolbar` |
+
+**Emits:** `rr-history-change` after recording an edit.
+
+**Method:** `syncFromArchive(revealFilename?)` — rebuilds the blob URLs and optionally selects an
+image. Called by `rr-app` after undo or redo, which is how an entry scoped to another image brings
+that image into view before the change lands.
 
 * Creates blob URLs for every image in the manifest, revoking the previous set on reload.
-* Image add (camera or file), delete, and reorder go through the corresponding `R49Archive` methods.
-  These are its **only** mutations of the archive.
+* Image add (camera or file), delete, and reorder go through the corresponding `R49Archive` methods,
+  each wrapped in `history.record`. These are its **only** mutations of the archive. Deletion passes
+  `retain` so the image's bytes survive for undo.
 * **DPT readout** (`.dpt-bar`). Shows `getDPT()` to one decimal, or "Not calibrated" with a warning
   style when it returns `null` — a real v4 state, reported rather than blocked on.
 * **It authors no geometry and loads no classifier.** Marker CRUD, the calibration seeding, and the
@@ -306,6 +351,32 @@ Camera helpers, shared by both views.
 | `DEFAULT_CAMERA_CONSTRAINTS` | 1920×1080 ideal, rear-facing, no audio |
 | `getCameraStream(constraints?)` | `getUserMedia` wrapper; returns a `MediaStream` |
 | `captureFromCamera()` | Opens the camera, grabs one JPEG frame as a `Uint8Array`, and always stops the tracks — with a 5 s timeout |
+
+---
+
+### `history.ts`
+
+The editor's undo stack. A plain module, not an element: `rr-app` owns one instance and passes it
+down. It is deliberately **not** part of `@occupancy/r49`, which is a parser/serializer — an edit
+history is an editing-session concept, coupled here to view state that means nothing to the training
+exporter or to `lib/r49/tests/fixtures.test.ts`.
+
+| Export | Description |
+|---|---|
+| `EditHistory` | `attach`, `record`, `undo`, `redo`, `markSaved`; `canUndo`/`canRedo`/`undoLabel`/`redoLabel`/`isDirty`/`size`/`bytes` |
+| `HistoryTarget` | `{ kind: 'layout' }`, `{ kind: 'image', filename }`, or `{ kind: 'images' }` |
+| `HistoryEntry` | What `undo`/`redo` return, so the caller can reveal what changed |
+| `DEFAULT_HISTORY_BUDGET_BYTES` | 256 MB. A UI constant, **not** a `config.yaml` value — nothing outside `ui/` can read it |
+
+Entries are **scoped snapshots** — `before`/`after` clones of the one subtree touched — so undo and
+redo are one operation with the fields swapped, and there is no per-command inverse to author
+wrongly. Retention is bounded by bytes rather than entry count, because entries range from a
+kilobyte to a whole JPEG; eviction truncates the oldest end and never punches a hole.
+
+What is built and what is not: this covers layout metadata and image add/remove/reorder, which are
+the only manifest mutations the reduced editor has. The per-gesture drag commits and the chain
+interception described in `../SPEC.md` § Undo and redo arrive with car authoring — there is nothing
+yet for them to attach to.
 
 ---
 
