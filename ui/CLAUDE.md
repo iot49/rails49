@@ -20,20 +20,39 @@ ticket at a time. It opens an archive, manages its images, edits layout metadata
 **authors calibration points** (#28) — click a pixel, type its world coordinate, one `layout`
 history entry per placement or edit — which it now also **drags** (#30), at one entry per gesture,
 and **deletes** through the right-click context menu (#29). #31 added the **tool palette**, the
-**calibration gate**, and **sensor authoring**.
+**calibration gate**, and **sensor authoring**; #32 added **car authoring** — two clicks on the
+visible ends, one `image` entry per car, drawn as a chord inside the DPT-derived width rectangle.
 v3's point-marker authoring and two-point calibration dragging are gone for good, and
 `src/prototype/` with them: what came back is a different mechanism, built to carry the coupler case.
 
-So a missing affordance is usually a deferral, not a bug. Car authoring (chain-clicked spans,
-shared coupler handles, the width rectangle, #32) and the completeness affordance (#36) are
-specified in `../SPEC.md` § Labeling Workflow and belong to their own tickets. Don't reconstruct
-them piecemeal to close a gap you notice here.
+So a missing affordance is usually a deferral, not a bug. Chaining and shared coupler handles (#33),
+reclassify (#35) and the completeness affordance (#36) are specified in `../SPEC.md` § Labeling
+Workflow and belong to their own tickets. Don't reconstruct them piecemeal to close a gap you notice
+here. Three such gaps are deliberate and are stated in the code:
 
-Two consequences of arriving in that order, which the code states where it matters: the hit-test
-scene contains calibration points and sensors, because they are the only objects the editor can
-create, and a right-click is always the idle branch of a state-dependent gesture, because no chain
-can be live until cars can be authored. The `car` tool is in the palette and authors nothing — #32
-plugs into it.
+* A click on an **existing car end** starts no car. Abutting cars are what chaining is for, so a car
+  is authored one at a time until #33.
+* A **coupler** opens no context menu. Its rows would have to name *which* of the coupled cars the
+  verb acts on, which is #33's to design; both cars' free ends still open one. Dragging a coupler
+  already works — it is one entry moving both ends, which is what `dragHandles` was shaped for.
+* There is **no rubber band** on a placement in progress: the first click takes an anchor with no
+  on-screen feedback until #33 draws one.
+* **Undo is not intercepted by a placement.** `SPEC.md` § Undo and redo wants a live chain to be a
+  wall Cmd+Z cannot cross ("at a chain's start … it clears the anchor and drops to idle"), which
+  needs `rr-app` — the owner of undo — to ask the editor first. That protocol arrives with the chain
+  it protects (#33); today an undo during a placement simply reverses the previous edit, and the
+  anchor is dropped by the reveal that follows.
+
+The `EditorMode` union is where the state-dependent gestures dispatch. It has two members —
+`idle` opens the context menu, `placing-car` ends the placement — and chaining extends the second
+rather than adding a third. A half-placed car is **view state**: it writes nothing, so every way of
+abandoning one (right-click, tool change, image change, a lost DPT, a new archive) costs the
+manifest and the undo stack nothing.
+
+**Cars are per image and sensors are per layout**, and the hit-test scene is where that becomes a
+gesture's business: switching images swaps the cars and leaves the sensors. A car edit therefore
+targets `{ kind: 'image', filename }` and a sensor edit targets `layout` — the drag's history entry
+picks its target from what the press grabbed.
 
 ### The calibration gate
 
@@ -144,10 +163,12 @@ The v3 machinery that *mutated* — marker add/move/delete, the draggable `{p0, 
 the v4 reduction and does not come back. Deciding what a gesture means is the editor's job; the
 arithmetic it needs is in `geometry.ts`.
 
-It draws what it is given: `markers`, then `calibrationPoints` (crosshairs from
-`calibrationMarker.ts`) and `sensors` (diamonds from `sensorMarker.ts`), all rendered from the
-manifest and never written by the viewer. `rr-editor-view` is what turns an `rr-pointer-up` into a
-point or a sensor.
+It draws what it is given: `markers`, then `cars` (chords and width rectangles from `carMarker.ts`),
+then `calibrationPoints` (crosshairs from `calibrationMarker.ts`) and `sensors` (diamonds from
+`sensorMarker.ts`), all rendered from the manifest and never written by the viewer. Cars are drawn
+**first** because their rectangles are the only area fills on the overlay, and a point or a sensor
+sitting on a car must not be tinted over. `rr-editor-view` is what turns an `rr-pointer-up` into a
+point, a sensor or a car.
 
 ### `geometry.ts` holds the arithmetic, because a component cannot be tested
 
@@ -161,9 +182,10 @@ Four rules it encodes, each of which is wrong somewhere if reimplemented:
 * **No scale lookup.** The ratio cancels out of `DPT × STANDARD_WIDTH / STANDARD_GAUGE`, so a car is
   2.09 track-widths wide in every scale. Both constants come from `@occupancy/config`.
 * **Objects are drawn at world sizes; annotations at screen sizes.** A sensor is one track width
-  across (`trackWidthPx`, which *is* DPT, since `getDPT` returns px/mm × gauge_mm) and a car will be
-  2.09, so both shrink with the photograph and a sensor's footprint is comparable to a car's. Labels,
-  crosshairs and markers stay constant on screen — they annotate the image rather than measure it.
+  across (`trackWidthPx`, which *is* DPT, since `getDPT` returns px/mm × gauge_mm) and a car is 2.09,
+  so both shrink with the photograph and a sensor's footprint is comparable to a car's. Labels,
+  crosshairs, markers and a car's endpoint handles stay constant on screen — they annotate the image
+  rather than measure it.
   `rr-viewer` holds both: `dpt` for the world sizes, `symbolSize` for the screen ones.
 * **Tolerances are screen pixels**, converted with the viewer's `imagePxPerScreenPx`. A grab radius
   belongs to the mouse, not to the photograph — but it is a **floor, not a cap**: an object drawn at
@@ -217,13 +239,19 @@ Custom elements break the SVG namespace when nested in `<svg>`, so markers are t
 styles in the host's `static styles`, renderer per marker. The module boundary is the encapsulation.
 
 `calibrationMarker.ts` follows the same shape with two exports (`renderCalibrationPoint`,
-`calibrationMarkerStyles`; it needs no defs), and `sensorMarker.ts` with three (`renderSensor`,
-`sensorLabelText`, `sensorMarkerStyles`). A calibration point is a **cyan crosshair labelled with its
-world coordinate**; a sensor is an **amber diamond labelled with its name, or its id when it has
-none**. The difference is shape as much as colour, and it is a requirement rather than taste:
-`SPEC.md` § Reference points says the two must be unmistakable, because they are authored by
-different tools and mean different things. Both labels flip inwards at a frame edge through the same
-`placeLabel`.
+`calibrationMarkerStyles`; it needs no defs), `sensorMarker.ts` with three (`renderSensor`,
+`sensorLabelText`, `sensorMarkerStyles`), and `carMarker.ts` with two (`renderCar`,
+`carMarkerStyles`). A calibration point is a **cyan crosshair labelled with its world coordinate**; a
+sensor is an **amber diamond labelled with its name, or its id when it has none**; a car is a
+**magenta chord inside a translucent width rectangle**. The difference is shape as much as colour,
+and it is a requirement rather than taste: `SPEC.md` § Reference points says they must be
+unmistakable, because they are authored by different tools and mean different things. Both labels
+flip inwards at a frame edge through the same `placeLabel`.
+
+`renderCar` takes the **DPT**, not a width: the 2.09-track-widths derivation lives in `geometry.ts`
+and a caller passing a number would be a second place to get it wrong. A `null` DPT draws the chord
+and its handles and **no rectangle** — there is no derived width to claim, and the cars already
+authored must stay visible after a calibration point is deleted.
 
 ### Absolute `/ui/` paths
 

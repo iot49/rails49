@@ -5,8 +5,10 @@ import type { MarkerData } from './marker.js';
 import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMarker.js';
 import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
 import type { SensorSymbolSize } from './sensorMarker.js';
+import { renderCar, carMarkerStyles } from './carMarker.js';
+import type { CarSymbolSize } from './carMarker.js';
 import { sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
-import type { CalibrationPoint, Point, Sensor } from '@occupancy/r49';
+import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 export const viewerStyles = css`
@@ -57,6 +59,17 @@ export const viewerStyles = css`
  * difference would read as a difference in importance.
  */
 const LABEL_SIZE_RATIO = 0.42;
+
+/**
+ * A car endpoint handle's diameter, as a fraction of the screen-constant symbol
+ * size.
+ *
+ * A handle is where the pointer grabs, so it is a **screen** size like every
+ * other annotation — the rectangle around it is the world size. Smaller than a
+ * crosshair on purpose: two of them sit at every coupling, and a symbol that
+ * covered the car ends would hide the feature the labeler is aiming at.
+ */
+const CAR_HANDLE_SIZE_RATIO = 0.3;
 
 /**
  * A pointer gesture, in **image pixel coordinates**.
@@ -124,7 +137,7 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * pixel coordinates. Changing either half misplaces every marker.
  *
  * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `sensors`,
- * `dpt`, `resolution`.
+ * `cars`, `dpt`, `resolution`.
  *
  * @fires rr-pointer-down - Pointer pressed. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-move - Pointer moved. Detail: {@link ViewerPointerDetail}
@@ -134,7 +147,13 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  */
 @customElement('rr-viewer')
 export class RrViewer extends LitElement {
-  static styles = [viewerStyles, markerStyles, calibrationMarkerStyles, sensorMarkerStyles];
+  static styles = [
+    viewerStyles,
+    markerStyles,
+    calibrationMarkerStyles,
+    sensorMarkerStyles,
+    carMarkerStyles,
+  ];
 
   @property({ type: String }) src: string | null = null;
   @property({ attribute: false }) stream: MediaStream | null = null;
@@ -155,6 +174,16 @@ export class RrViewer extends LitElement {
    * pass the same list.
    */
   @property({ attribute: false }) sensors: readonly Sensor[] = [];
+  /**
+   * The current image's car labels, drawn as a chord inside a width rectangle.
+   *
+   * Display only, like `calibrationPoints` and `sensors`. Cars are per
+   * **image**, so this is the labels of the image `src` is showing and switching
+   * images swaps the whole list — nothing is carried between images
+   * (`SPEC.md` § No copy-forward). Empty in the live view, which shows
+   * detections rather than labels.
+   */
+  @property({ attribute: false }) cars: readonly CarLabel[] = [];
   /**
    * The layout's DPT, or `null` when calibration does not resolve one.
    *
@@ -353,6 +382,18 @@ export class RrViewer extends LitElement {
     };
   }
 
+  /**
+   * The two sizes a car is drawn at: the DPT its rectangle is derived from, and
+   * a screen-constant handle.
+   *
+   * The DPT is passed rather than a width, because the derivation — 2.09 track
+   * widths, in every scale — belongs in one place (`geometry.ts` § `carWidthPx`),
+   * and `null` is a real state the renderer answers by drawing no rectangle.
+   */
+  private carSize(): CarSymbolSize {
+    return { dpt: this.dpt, handlePx: this.symbolSize * CAR_HANDLE_SIZE_RATIO };
+  }
+
   render() {
     return html`
       <div class="viewport">
@@ -371,6 +412,11 @@ export class RrViewer extends LitElement {
           ${markerDefs()}
 
           ${this.markers.map(m => renderMarker(m, this.symbolSize))}
+
+          <!-- Cars first: their width rectangles are the only area fills here,
+               so drawing them underneath keeps a crosshair or a sensor placed
+               on a car visible instead of tinted over. -->
+          ${this.cars.map(c => renderCar(c, this.carSize()))}
 
           ${this.calibrationPoints.map((p, i) =>
             // `resolution` is the viewBox, so it is also the frame the label

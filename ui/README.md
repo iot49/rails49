@@ -41,13 +41,14 @@ Non-element modules use plain camelCase filenames with no prefix.
 rr-app                          ← shell: owns the archive and the view mode
 ├── rr-header                   ← app bar: status slot, view toggle, settings gear
 │   └── rr-settings-dialog      ← layout metadata (sl-dialog)
-├── rr-editor-view              ← editor mode; images, DPT readout, calibration points, sensors
+├── rr-editor-view              ← editor mode; images, DPT readout, calibration points, sensors, cars
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
 │   ├── rr-tool-palette         ← active tool, and the calibration gate on the labeling ones
 │   ├── rr-viewer               ← SHARED: media + SVG overlay; reports pointer gestures
 │   │   ├── marker.ts           ← module, not an element
 │   │   ├── calibrationMarker.ts ← module: the labelled crosshair
-│   │   └── sensorMarker.ts     ← module: the labelled diamond
+│   │   ├── sensorMarker.ts     ← module: the labelled diamond
+│   │   └── carMarker.ts        ← module: the chord and its width rectangle
 │   ├── rr-thumbnail-bar        ← horizontal image selector strip
 │   ├── rr-calibration-dialog   ← asks for a point's x/y/z in mm (sl-dialog)
 │   ├── rr-sensor-dialog        ← asks for a sensor's optional name (sl-dialog)
@@ -58,7 +59,7 @@ rr-app                          ← shell: owns the archive and the view mode
         └── marker.ts
 ```
 
-> **The editor authors calibration points and sensors.** v3's point-marker
+> **The editor authors calibration points, sensors and cars.** v3's point-marker
 > placement and two-point calibration dragging were removed in the v4 reduction
 > ([#19]); v4 stores neither. [#27] added the provisioning — `rr-viewer`
 > reporting pointer gestures in image pixels, and `geometry.ts` holding the
@@ -71,12 +72,18 @@ rr-app                          ← shell: owns the archive and the view mode
 > **calibration gate** — while DPT is `null` the labeling tools are disabled and
 > the reason is stated — and **sensor authoring** on top of the same shared
 > paths: click to place, click or the menu to name, drag to move, menu to delete.
+> [#32] added **car authoring**: two clicks on the visible ends write one span
+> per image, drawn as a chord inside the translucent width rectangle that DPT
+> derives — which is what the gate exists for.
 >
-> Still absent, each with its own ticket: car authoring (chain-clicked two-point
-> spans, [#32]) and the completeness affordance ([#36]). They are specified in
-> `../SPEC.md` § Labeling Workflow. Because no chain can be live, a right-click
-> is still always the idle branch, and the `car` tool selects but authors
-> nothing.
+> Still absent, each with its own ticket: **chaining and shared coupler handles**
+> ([#33]), reclassify ([#35]) and the completeness affordance ([#36]), all
+> specified in `../SPEC.md` § Labeling Workflow. So a car is authored one at a
+> time: a click on an existing car end starts nothing, because abutting cars are
+> what chaining is for. Right-click is now genuinely state-dependent — it ends a
+> placement in progress and opens the menu otherwise — but a **coupler** opens
+> no menu yet, since naming which of the coupled cars a verb acts on belongs
+> with [#33].
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -85,6 +92,8 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#30]: https://github.com/iot49/rails49/issues/30
 > [#31]: https://github.com/iot49/rails49/issues/31
 > [#32]: https://github.com/iot49/rails49/issues/32
+> [#33]: https://github.com/iot49/rails49/issues/33
+> [#35]: https://github.com/iot49/rails49/issues/35
 > [#36]: https://github.com/iot49/rails49/issues/36
 
 ## State and data flow
@@ -102,10 +111,13 @@ rr-app ─────────── rr-editor-view ────────
 * **`rr-app` owns:** the archive, the **undo history**, the view mode, the status string, and file
   new/open/save.
 * **`rr-editor-view` owns:** the current image index, blob URLs for the images, **the active tool**,
-  the click that is waiting on a coordinate or a name, and what the context menu is open on. It
-  mutates the archive through image add/remove/reorder, through calibration-point placement, edits
-  and deletion, and through sensor placement, naming, drag and deletion — each wrapped in
-  `history.record` (or in one `beginGesture` per drag).
+  the **car placement in progress** (`EditorMode`), the click that is waiting on a coordinate or a
+  name, and what the context menu is open on. It mutates the archive through image
+  add/remove/reorder, through calibration-point placement, edits and deletion, through sensor
+  placement, naming, drag and deletion, and through car placement, drag and deletion — each wrapped
+  in `history.record` (or in one `beginGesture` per drag). A half-placed car is **view state**: it
+  writes nothing until its second click, so abandoning one leaves both the manifest and the stack
+  untouched.
 * **`rr-live-view` owns:** the camera stream, the classifier, and the classification loop. It never
   mutates the archive.
 * **Only the live view loads a classifier.** The editor's use of it was displaying a per-marker
@@ -255,8 +267,8 @@ number" — and it opens and closes live, so an undone calibration disables the 
 > § Labeling Workflow ("sensors can be placed at any time"). `needsDpt` is per tool in the source, so
 > that is one flag to flip if it is revisited.
 
-The `car` tool selects but authors nothing: car authoring is [#32]. The palette is what that ticket
-plugs into.
+The `car` tool authors a two-click span through `rr-editor-view` ([#32]); this element only says
+which tool a click means.
 
 ---
 
@@ -300,6 +312,7 @@ image pixel coordinates.
 | `markers` | `MarkerData[]` | Markers to draw |
 | `calibrationPoints` | `readonly CalibrationPoint[]` | Crosshairs to draw; empty in the live view |
 | `sensors` | `readonly Sensor[]` | Diamonds to draw. Per **layout**, so the same list draws over every image; empty in the live view |
+| `cars` | `readonly CarLabel[]` | Car spans to draw: a chord inside its width rectangle. Per **image**, so switching images swaps the whole list; empty in the live view |
 | `dpt` | `number \| null` | The scale the **world-sized** symbols are drawn at. `null` falls them back to `symbolSize` |
 | `resolution` | `{ width, height }` | Native media resolution → the SVG viewBox |
 
@@ -354,16 +367,20 @@ viewBox therefore maps 1:1 onto image pixel coordinates, so a marker lands in th
 either mode. Changing one half of that pair silently misplaces every marker.
 
 **Scaling — two kinds, and mixing them up misdraws everything.** A `ResizeObserver` recomputes
-`symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, keeping markers, crosshairs and
-every **label** a constant *screen* size at any zoom or window size. A **sensor's diamond** is not
-one of those: it is drawn one **track width** across, which in image pixels *is* `dpt`
-(`geometry.ts` § `trackWidthPx`), so it shrinks with the photograph exactly as the cars around it
-will. That is what makes a sensor's footprint comparable to a car's — the reason for drawing it at a
-world size at all.
+`symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, keeping markers, crosshairs,
+car endpoint handles and every **label** a constant *screen* size at any zoom or window size. A
+**sensor's diamond** is not one of those: it is drawn one **track width** across, which in image
+pixels *is* `dpt` (`geometry.ts` § `trackWidthPx`), so it shrinks with the photograph exactly as the
+cars around it do. A **car's width rectangle** is the same kind of size, 2.09 track widths of it,
+which is what makes a sensor's footprint comparable to a car's.
 
-With `dpt` null the diamond falls back to `symbolSize`. An archive can carry sensors and no
-calibration, since a calibration point can be deleted at any time, and a sensor that vanished at a
-size nothing can compute would be unfindable and ungrabbable.
+With `dpt` null the diamond falls back to `symbolSize` and the width rectangle is **not drawn at
+all** — a car with no derived width has none to claim, where a sensor with no size would simply be
+unfindable. An archive can carry both and no calibration, since a calibration point can be deleted
+at any time; the chord and its handles keep every car visible and grabbable meanwhile.
+
+**Cars are drawn first**, under the crosshairs and diamonds: their rectangles are the only area
+fills on the overlay, and a calibration point or a sensor sitting on a car must not be tinted over.
 
 **The measurement happens in `firstUpdated()` as well as in the `ResizeObserver`.** The observer's
 callback defers through `requestAnimationFrame`, and a frame that never arrives — a hidden pane, a
@@ -544,6 +561,42 @@ name a human chose and stops matching as sensors come and go. A blank name is tr
 
 ---
 
+### `carMarker.ts`
+
+The car's own SVG, with the same shape and the same rules as the two markers above. **Both exports
+must be used together** — styles in the host's `static styles`, the renderer once per label.
+
+| Export | Type | Description |
+|---|---|---|
+| `renderCar(car, size)` | `(CarLabel, CarSymbolSize) => SVGTemplateResult` | The translucent width rectangle, the chord between the two ends, and a handle at each end. The group carries `data-label-id` |
+| `CarSymbolSize` | `{ dpt, handlePx }` | The **DPT the rectangle is derived from** — not a width — and a screen-constant handle size |
+| `carMarkerStyles` | `CSSResult` | Rectangle, chord and handle colours; the translucent fill; non-scaling strokes |
+
+**The rectangle is why the car tool is gated on calibration.** Two clicks say where the ends are and
+nothing about whether the label covers the car; the width does, and the width is *derived* from DPT
+rather than stored — 2.09 track widths, in every scale (`geometry.ts` § `carWidthPx`). So it is
+feedback, not decoration, and the fill is translucent because it is read **against the car
+underneath it**.
+
+**The DPT is passed, not a width.** The derivation lives in `geometry.ts` and a caller handing over
+a number would be a second place to get the 2.09 wrong. `null` is a real state — a calibration point
+can be deleted at any time — and it means no rectangle: the chord and the two handles still draw, so
+the labels already authored stay visible and grabbable.
+
+**Magenta**, against the crosshair's cyan and the diamond's amber, and picked to be rare in a
+photograph of a layout. Three objects, three tools, three meanings; `../SPEC.md` § Reference points'
+requirement that they be unmistakable extends to this one.
+
+**Nothing renders a coupling.** It is two ends at the identical pixel, so the two handles draw on
+top of each other and read as the one shared handle they are. There is no frame parameter, because a
+car carries no text label — the class taxonomy shows up in the context menu ([#35]), not on the
+photograph.
+
+**Handles are a screen size, the rectangle is a world size.** A handle is where the pointer grabs,
+so it belongs to the mouse; the rectangle measures the car. Same split as `SensorSymbolSize`.
+
+---
+
 ### `rr-calibration-dialog`
 
 Asks for a calibration point's world coordinate in millimetres — the second half of the gesture whose
@@ -612,8 +665,8 @@ zero) the clamp is the identity and the menu lands at the cursor.
 
 ### `rr-editor-view`
 
-Orchestrates the editor: images, a DPT readout, the active tool, calibration and sensor authoring,
-and the right-click menu.
+Orchestrates the editor: images, a DPT readout, the active tool, calibration, sensor and car
+authoring, and the right-click menu.
 
 | Property | Type | Description |
 |---|---|---|
@@ -644,17 +697,19 @@ that image into view before the change lands.
     the history entry it will commit — so no motion event re-decides anything and the entry's
     snapshot predates the first moved pixel. The **press** position is what a click uses: where the
     user aimed, and where a drag grabs.
-  * The hit-test scene contains calibration points and sensors — the two objects this editor can
-    create. Cars join it with the tool that authors them ([#32]).
+  * The hit-test scene contains the layout's calibration points and sensors and the **current
+    image's** cars — the three objects this editor creates. That split is the per-image/per-layout
+    rule as a gesture sees it: switching images swaps the cars and leaves the sensors.
 * **Dragging** ([#30]). A press on a calibration point followed by motion past `CLICK_SLOP_SCREEN_PX`
   moves it, and the DPT readout follows live, mid-gesture. The history entry is opened at
   pointer-down and committed at pointer-up, **never per motion event**, so a drag across the image is
   one Cmd+Z and not two hundred; a drag returned to its origin records **nothing**, suppressed by
   value comparison in `EditHistory` rather than by trusting that the user meant it.
   * The gesture moves a **list** of handles from `dragHandles`, which is what lets one entry cover
-    more than one object — the coupler case a car drag will need. Calibration and sensor handles are
-    written today; a car end joins them with [#32]. Both live in `layout`, so one entry covers a
-    gesture whatever it grabbed, and only the entry's *label* differs.
+    more than one object: a drag on two coincident car ends moves both, as **one** entry, so a
+    coupling survives the edit. The entry's **target follows what was grabbed** — a car end is in
+    one image record, a sensor and a calibration point in `layout` — because that is the subtree the
+    gesture writes, and mis-declaring it is the one class of bug scoped snapshots admit.
   * `dragging` is **sticky**: a gesture that moved never falls through to the click path, even if it
     ended back inside the slop. Without it every swipe over the image would place a point, and the
     labeling device is a phone.
@@ -675,15 +730,17 @@ that image into view before the change lands.
     while the dialog is open and slides that index onto a different point, the commit is dropped
     rather than applied to whatever now sits there.
 * **Right-click, and delete** ([#29]). `rr-pointer-contextmenu` is dispatched on the editor's state —
-  a `switch` over an `EditorMode` union whose only member today is `idle`, because right-click is
-  state-dependent by design (`../SPEC.md` § Right-click is state-dependent): idle opens the menu,
-  chaining a train will end the chain instead. Written as a branch so that is a case to add rather
-  than a rewrite.
+  a `switch` over the `EditorMode` union — because right-click is state-dependent by design
+  (`../SPEC.md` § Right-click is state-dependent): **idle** opens the menu and **placing-car** ends
+  the placement. Chaining a train ([#33]) extends the second case rather than adding a third.
   * The **idle** branch hit-tests at `DEFAULT_GRAB_RADIUS_SCREEN_PX` and opens `rr-context-menu` at
-    the cursor: **delete** for a calibration point, **name and delete** for a sensor. Empty image
-    opens nothing, and neither does an object with no verbs — a list of disabled rows is a worse
-    answer than the absence of one. Cars get their rows from the same switch when the tool that
-    creates them exists.
+    the cursor: **delete** for a calibration point or a car, **name and delete** for a sensor. Empty
+    image opens nothing, and neither does an object with no verbs — a list of disabled rows is a
+    worse answer than the absence of one. A **coupler** is that case today: its rows would have to
+    say *which* of the coupled cars a verb acts on, and that belongs with the chaining that makes
+    couplers routine ([#33]). Both cars' free ends still open a menu.
+  * The **placing-car** branch ends the placement and opens nothing — the same gesture that will end
+    a chain. Nothing was written, so nothing is undone.
   * **The browser's own menu is suppressed here, not in `rr-viewer`**, and for every right-click the
     viewer reports rather than only the ones that open something: inside the labeling surface a
     right-click is the editor's gesture whatever it lands on, and over empty image it will end a
@@ -707,10 +764,12 @@ that image into view before the change lands.
     such guard: it carries an `id`, so the hit names it exactly however the list is replaced
     underneath — the delete is a filter by id, not a splice by position.
 * **The active tool, and the gate** ([#31]). `rr-tool-palette` reports `rr-tool-select`; this
-  component holds the tool and dispatches a click on it. A click on **empty image** runs the tool —
-  calibration opens the dialog, sensor places a point, car does nothing until [#32]. A click **on an
+  component holds the tool and dispatches a click on it. A **placement in progress wins outright** —
+  the second click of a car is what completes it. Otherwise a click on **empty image** runs the tool
+  (calibration opens the dialog, sensor places a point, car takes an anchor) and a click **on an
   object** edits that object *whatever the tool is*, because the thing under the cursor is less
-  ambiguous than the mode: a coordinate for a calibration point, a name for a sensor.
+  ambiguous than the mode: a coordinate for a calibration point, a name for a sensor, and **nothing
+  at all** for a car end, whose position is the drag's business and whose class is the menu's.
   * The gate is enforced in `willUpdate`, not at the one place a point is deleted: **the DPT can also
     vanish through an undo**, which `rr-app` applies straight into the archive with no handler here
     seeing it. A gated tool is demoted to calibration; placing a second point re-enables it. An
@@ -737,8 +796,24 @@ that image into view before the change lands.
   * **Below `MIN_DPT`**, the bar takes the `below-minimum` warning style and says so. It **blocks
     nothing** — the six fixture archives sit at DPT 18–19, under the threshold of 20, and must stay
     openable and editable.
-* **It authors no cars and loads no classifier.** Car authoring is [#32]; marker CRUD and the
-  per-marker classification display went with the v4 reduction. See the note at the top of this file.
+* **Car authoring** ([#32]). **Two clicks on the visible car ends**, and the straight chord between
+  them: no snapping, because v4 stores no track to snap to, and the photograph is what shows the
+  labeler where the car actually is. The first click takes an **anchor** and writes nothing; the
+  second writes `{ id, class: 'stock', provenance: 'human', p0, p1 }` into that image's `labels` as
+  **one `history.record` entry targeting `{ kind: 'image', filename }`**. The `id` is a `make_id`
+  snowflake from its own node id — label ids and sensor ids are separate namespaces — and
+  `proposed_by` is **absent**, which the schema requires on a human label.
+  * Width is **derived, never stored**: `rr-viewer` gets `dpt` and draws 2.09 track widths of
+    rectangle around the chord. That rectangle is the whole reason calibration gates this tool.
+  * The anchor is **view state**: abandoning a placement — right-click, a tool change, an image
+    change, a lost DPT, a new archive — writes nothing and records nothing.
+  * A click on an **existing car end** starts nothing. Abutting cars are what chaining is for
+    ([#33]); until then a car is authored one at a time.
+  * Endpoints **drag** and the menu **deletes**, through the same paths as everything else, keyed by
+    label `id`. Deleting one car of a train leaves no residue — a train is derived from coincident
+    endpoints, so nothing else names the car that went.
+* **It loads no classifier.** Marker CRUD and the per-marker classification display went with the v4
+  reduction. See the note at the top of this file.
 
 ---
 

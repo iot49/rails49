@@ -82,8 +82,8 @@ const GATE_REASON = 'Calibrate first — the labeling tools need DPT.';
  * > layout is calibrated anyway. `needsDpt` is per tool so it is one flag to
  * > flip if that is revisited.
  *
- * The `car` tool selects but authors nothing yet — car authoring is #32. The
- * palette is what that ticket plugs into.
+ * The `car` tool authors a two-click span through `rr-editor-view` (#32); this
+ * element only says which tool a click means.
  *
  * **Properties:** `tool`, `calibrated`.
  *

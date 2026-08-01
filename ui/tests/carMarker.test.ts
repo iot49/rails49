@@ -1,0 +1,128 @@
+import { describe, it, expect } from 'vitest';
+import { render, svg } from 'lit';
+import type { CarLabel } from '@occupancy/r49';
+import { renderCar, carMarkerStyles } from '../src/carMarker.js';
+import { carWidthPx } from '../src/geometry.js';
+
+/** Render a lit SVGTemplateResult into a detached <svg> and return it. */
+function renderSvg(template: ReturnType<typeof svg>): SVGElement {
+  const container = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  render(template, container);
+  return container;
+}
+
+/** A hand-drawn car — the only kind this editor authors. */
+type HumanCar = Extract<CarLabel, { provenance: 'human' }>;
+
+const car = (over: Partial<HumanCar> = {}): HumanCar => ({
+  id: 'C1abcdefghi',
+  class: 'stock',
+  provenance: 'human',
+  p0: { x: 100, y: 200 },
+  p1: { x: 300, y: 200 },
+  ...over,
+});
+
+/** A calibrated symbol: DPT 90, handles at a fixed screen size. */
+const size = (dpt: number | null, handlePx = 12) => ({ dpt, handlePx });
+
+/** The polygon's points, as `[x, y]` pairs. */
+function polygonPoints(el: SVGElement): number[][] {
+  return el
+    .querySelector('polygon')!
+    .getAttribute('points')!
+    .split(' ')
+    .map(pair => pair.split(',').map(Number));
+}
+
+describe('renderCar()', () => {
+  it('draws the chord between the two clicked ends', () => {
+    const el = renderSvg(renderCar(car(), size(90)));
+    const line = el.querySelector('line')!;
+
+    expect(line.getAttribute('x1')).toBe('100');
+    expect(line.getAttribute('y1')).toBe('200');
+    expect(line.getAttribute('x2')).toBe('300');
+    expect(line.getAttribute('y2')).toBe('200');
+  });
+
+  it('draws the width rectangle, one car width across', () => {
+    // The rectangle is the whole point of the calibration gate: it is what
+    // tells the user whether the label covers the car.
+    const el = renderSvg(renderCar(car(), size(90)));
+    const ys = polygonPoints(el).map(([, y]) => y);
+
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(carWidthPx(90), 6);
+  });
+
+  it('sizes the rectangle from DPT, so it shrinks with the photograph', () => {
+    // Width is derived, never stored — 2.09 track widths in every scale.
+    const wide = renderSvg(renderCar(car(), size(90)));
+    const narrow = renderSvg(renderCar(car(), size(20)));
+
+    const spread = (el: SVGElement) => {
+      const ys = polygonPoints(el).map(([, y]) => y);
+      return Math.max(...ys) - Math.min(...ys);
+    };
+    expect(spread(wide) / spread(narrow)).toBeCloseTo(90 / 20, 6);
+  });
+
+  it('orients the rectangle along the span', () => {
+    // A diagonal car: the offset is perpendicular to the chord, so neither the
+    // x nor the y extent alone is the car width.
+    const el = renderSvg(renderCar(car({ p1: { x: 200, y: 300 } }), size(90)));
+    const [a, b] = polygonPoints(el);
+
+    // The p0-side and p1-side corners are one span apart, unchanged by the
+    // offset, which is what makes the shape a rectangle rather than a wedge.
+    expect(Math.hypot(b[0] - a[0], b[1] - a[1])).toBeCloseTo(Math.hypot(100, 100), 6);
+  });
+
+  it('draws a handle at each end, at the screen-constant size', () => {
+    const el = renderSvg(renderCar(car(), size(90, 12)));
+    const handles = [...el.querySelectorAll('circle')];
+
+    expect(handles).toHaveLength(2);
+    expect(handles.map(h => [h.getAttribute('cx'), h.getAttribute('cy')])).toEqual([
+      ['100', '200'],
+      ['300', '200'],
+    ]);
+    // A handle is annotation, not a measurement: it is where the user grabs.
+    expect(Number(handles[0].getAttribute('r'))).toBeCloseTo(6, 6);
+  });
+
+  it('drops the rectangle, not the car, when no DPT resolves', () => {
+    // A calibration point can be deleted at any time, and the cars already
+    // labelled must stay visible and grabbable — there is simply no width to
+    // draw, since width is derived from DPT rather than stored.
+    const el = renderSvg(renderCar(car(), size(null)));
+
+    expect(el.querySelector('polygon')).toBeNull();
+    expect(el.querySelector('line')).not.toBeNull();
+    expect(el.querySelectorAll('circle')).toHaveLength(2);
+  });
+
+  it('keys the group on the label id, never on position', () => {
+    const el = renderSvg(renderCar(car(), size(90)));
+    expect(el.querySelector('g')!.getAttribute('data-label-id')).toBe('C1abcdefghi');
+  });
+
+  it('survives a zero-length span', () => {
+    // The two clicks can land on the same pixel; the axis is then genuinely
+    // undefined and `carCorners` collapses the rectangle onto the point.
+    const el = renderSvg(renderCar(car({ p1: { x: 100, y: 200 } }), size(90)));
+
+    expect(polygonPoints(el)).toEqual([
+      [100, 200],
+      [100, 200],
+      [100, 200],
+      [100, 200],
+    ]);
+  });
+
+  it('ships styles for what it renders', () => {
+    const css = carMarkerStyles.cssText;
+    expect(css).toContain('.car');
+    expect(css).toContain('polygon');
+  });
+});

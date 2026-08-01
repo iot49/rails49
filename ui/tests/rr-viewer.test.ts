@@ -219,6 +219,95 @@ describe('rr-viewer', () => {
     });
   });
 
+  describe('cars', () => {
+    const cars = [
+      { id: 'C1abcdefghi', class: 'stock', provenance: 'human' as const,
+        p0: { x: 100, y: 100 }, p1: { x: 300, y: 100 } },
+      { id: 'C2abcdefghi', class: 'stock', provenance: 'human' as const,
+        p0: { x: 300, y: 100 }, p1: { x: 500, y: 100 } },
+    ];
+
+    /** The width rectangle's extent across the span, in image pixels. */
+    function rectangleSpan(el: RrViewer, index = 0): number {
+      const ys = [...el.shadowRoot!.querySelectorAll('.car polygon')][index]
+        .getAttribute('points')!
+        .split(' ')
+        .map(pair => Number(pair.split(',')[1]));
+      return Math.max(...ys) - Math.min(...ys);
+    }
+
+    it('draws one chord and one width rectangle per car', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .cars=${cars} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelectorAll('.car').length).to.equal(2);
+      expect(el.shadowRoot!.querySelectorAll('.car polygon').length).to.equal(2);
+      expect(el.shadowRoot!.querySelectorAll('.car line').length).to.equal(2);
+    });
+
+    it('draws none by default, so the live view is unaffected', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelector('.car')).to.not.exist;
+    });
+
+    it('sizes the rectangle from DPT — 2.09 track widths, live', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .cars=${cars} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+      const wide = rectangleSpan(el);
+
+      el.dpt = 20;
+      await el.updateComplete;
+
+      expect(wide / rectangleSpan(el)).to.be.closeTo(90 / 20, 1e-6);
+    });
+
+    it('keeps the cars and drops the rectangles with no DPT', async () => {
+      // Deleting a calibration point is allowed at any time, and the labels
+      // already authored have to stay visible and grabbable.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .cars=${cars} .dpt=${null} .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelectorAll('.car').length).to.equal(2);
+      expect(el.shadowRoot!.querySelector('.car polygon')).to.not.exist;
+      expect(el.shadowRoot!.querySelectorAll('.car circle').length).to.equal(4);
+    });
+
+    it('leaves the endpoint handles a screen size when the DPT changes', async () => {
+      // A handle is where the pointer grabs — it belongs to the mouse, not to
+      // the photograph — where the rectangle around it is a world size.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .cars=${cars} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+      const r = el.shadowRoot!.querySelector('.car circle')!.getAttribute('r');
+
+      el.dpt = 18;
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.car circle')!.getAttribute('r')).to.equal(r);
+    });
+
+    it('draws cars under the crosshairs and diamonds', async () => {
+      // The rectangles are the only area fills the overlay carries, so a
+      // calibration point or a sensor on a car must not be tinted over.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer
+          .cars=${cars}
+          .sensors=${[{ id: 'S1abcdefghi', x: 200, y: 100 }]}
+          .calibrationPoints=${[{ px: { x: 200, y: 100 }, world: { x: 0, y: 0, z: 0 } }]}
+          .dpt=${90}
+          .resolution=${resolution}
+        ></rr-viewer>
+      `);
+      const groups = [...el.shadowRoot!.querySelectorAll('g')].map(g => g.getAttribute('class'));
+
+      expect(groups.indexOf('car')).to.be.lessThan(groups.indexOf('calibration-point'));
+      expect(groups.indexOf('car')).to.be.lessThan(groups.indexOf('sensor'));
+    });
+  });
+
   // The viewer reports pointer gestures but still authors nothing: v3's marker
   // add/move/delete and its draggable {p0, p1} pair went with the v4 reduction
   // (#19) and do not come back. Placing anything is the editor's job — the

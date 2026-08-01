@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fixture, html } from '@open-wc/testing';
 import { R49Archive, getDPT } from '@occupancy/r49';
-import type { CalibrationPoint, Point, Sensor, WorldPoint } from '@occupancy/r49';
+import type { CalibrationPoint, CarLabel, Point, Sensor, WorldPoint } from '@occupancy/r49';
 import { EditHistory } from '../src/history.js';
 import '../src/rr-editor-view.js';
 import { RREditorView } from '../src/rr-editor-view.js';
@@ -1300,6 +1300,494 @@ describe('rr-editor-view', () => {
       const reopened = await R49Archive.load(await archive.export());
 
       expect(reopened.getManifest().layout.sensors).to.deep.equal(sensors());
+    });
+  });
+
+  describe('car authoring', () => {
+    /** A calibrated archive with the car tool live. */
+    async function mountWithCarTool(history?: EditHistory) {
+      calibrate();
+      const el = await mount(history);
+      await selectTool(el, 'car');
+      return el;
+    }
+
+    /** A hand-drawn car — the only kind this editor authors. */
+    type HumanCar = Extract<CarLabel, { provenance: 'human' }>;
+
+    /** The current image's labels — cars are per image. */
+    function cars(index = 0): CarLabel[] {
+      return archive.getManifest().images[index].labels;
+    }
+
+    /** Adds a second image, so the per-image rules have something to switch to. */
+    function addSecondImage() {
+      archive.getManifest().images.push({
+        filename: 'img2.jpg',
+        labeled_complete: false,
+        labels: [],
+      });
+    }
+
+    /** Selects an image the way `rr-thumbnail-bar` reports one. */
+    async function selectImage(el: RREditorView, index: number) {
+      el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
+        new CustomEvent('rr-image-select', { detail: { index }, bubbles: true, composed: true })
+      );
+      await el.updateComplete;
+    }
+
+    it('creates a car from two clicks on the visible ends', async () => {
+      const el = await mountWithCarTool();
+
+      await clickAt(el, { x: 200.4, y: 300.6 });
+      // The first click names one end and writes nothing.
+      expect(cars()).to.have.length(0);
+
+      await clickAt(el, { x: 500, y: 300 });
+
+      expect(cars()).to.have.length(1);
+      // The click names a pixel, so both ends are whole ones.
+      expect(cars()[0].p0).to.deep.equal({ x: 200, y: 301 });
+      expect(cars()[0].p1).to.deep.equal({ x: 500, y: 300 });
+    });
+
+    it('creates it as a human-authored car at the taxonomy root', async () => {
+      const el = await mountWithCarTool();
+      await clickAt(el, { x: 200, y: 300 });
+      await clickAt(el, { x: 500, y: 300 });
+
+      const [car] = cars();
+      expect(car.class).to.equal('stock');
+      expect(car.provenance).to.equal('human');
+      // The schema forbids the key on a human label; a default of `human` on
+      // model output is the loop provenance exists to make measurable.
+      expect('proposed_by' in car).to.be.false;
+      expect(car.id).to.have.length(11);
+    });
+
+    it('gives every car its own id', async () => {
+      const el = await mountWithCarTool();
+      for (const y of [100, 200, 300]) {
+        await clickAt(el, { x: 100, y });
+        await clickAt(el, { x: 400, y });
+      }
+
+      expect(cars()).to.have.length(3);
+      expect(new Set(cars().map(c => c.id)).size).to.equal(3);
+    });
+
+    it('records one entry per car, targeting the image it is on', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithCarTool(history);
+
+      await clickAt(el, { x: 200, y: 300 });
+      expect(history.size).to.equal(0);
+
+      await clickAt(el, { x: 500, y: 300 });
+
+      expect(history.size).to.equal(1);
+      expect(history.undoLabel).to.contain('car');
+
+      const entry = await history.undo();
+      expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
+      expect(cars()).to.have.length(0);
+
+      await history.redo();
+      expect(cars()).to.have.length(1);
+    });
+
+    it('hands the cars and the DPT to the viewer', async () => {
+      // The width rectangle is derived from DPT, never stored, so the viewer
+      // needs the number as well as the spans.
+      const el = await mountWithCarTool();
+      await clickAt(el, { x: 200, y: 300 });
+      await clickAt(el, { x: 500, y: 300 });
+
+      const viewer = el.shadowRoot!.querySelector('rr-viewer')!;
+      expect(viewer.cars).to.deep.equal(cars());
+      expect(viewer.dpt).to.equal(getDPT(archive.getManifest()));
+    });
+
+    it('writes nothing for a placement the user abandons', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithCarTool(history);
+
+      await clickAt(el, { x: 200, y: 300 });
+      await selectTool(el, 'sensor');
+
+      expect(cars()).to.have.length(0);
+      expect(history.size).to.equal(0);
+
+      // And the anchor is gone: the next click is the sensor tool's, not the
+      // second half of a car the user stopped drawing.
+      await clickAt(el, { x: 500, y: 300 });
+      expect(cars()).to.have.length(0);
+      expect(sensors()).to.have.length(1);
+    });
+
+    it('ends a placement on right-click, opening no menu', async () => {
+      // The same gesture that will end a chain (#33). Nothing was written, so
+      // nothing is undone.
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mountWithCarTool(history);
+
+      await clickAt(el, { x: 200, y: 300 });
+      await rightClickAt(el, { x: 500, y: 300 });
+
+      expect(menuOf(el).open).to.be.false;
+      expect(cars()).to.have.length(0);
+      expect(history.size).to.equal(0);
+
+      // The next click starts a new car rather than completing the old anchor.
+      await clickAt(el, { x: 600, y: 600 });
+      await clickAt(el, { x: 800, y: 600 });
+      expect(cars()[0].p0).to.deep.equal({ x: 600, y: 600 });
+    });
+
+    it('completes the car even when the second click lands on another object', async () => {
+      // A placement in progress outranks the object under the cursor: the
+      // second click is what gives the car its other end, and interpreting it
+      // as an edit would strand the anchor.
+      const el = await mountWithCarTool();
+      const show = stubDialog(el);
+
+      await clickAt(el, { x: 200, y: 300 });
+      // (100, 0) is a calibration point.
+      await clickAt(el, { x: 100, y: 0 });
+
+      expect(cars()).to.have.length(1);
+      expect(cars()[0].p1).to.deep.equal({ x: 100, y: 0 });
+      expect(show).not.toHaveBeenCalled();
+    });
+
+    it('starts no car from a click on an existing car end', async () => {
+      // The object under the cursor wins when no placement is live, and a car
+      // end has nothing a click can edit — so the click does nothing at all
+      // rather than stacking a second label on the one being aimed at.
+      // Abutting cars are authored by **chaining** (#33), not by clicking a
+      // free anchor onto an existing end.
+      const el = await mountWithCarTool();
+      await clickAt(el, { x: 100, y: 100 });
+      await clickAt(el, { x: 400, y: 100 });
+
+      await clickAt(el, { x: 400, y: 100 });
+      await clickAt(el, { x: 700, y: 100 });
+
+      expect(cars()).to.have.length(1);
+    });
+
+    describe('dragging an endpoint', () => {
+      /** One car spanning the frame, authored by hand rather than by click. */
+      function seedCar(over: Partial<HumanCar> = {}): HumanCar {
+        const car: HumanCar = {
+          id: 'C1abcdefghi',
+          class: 'stock',
+          provenance: 'human',
+          p0: { x: 100, y: 100 },
+          p1: { x: 400, y: 100 },
+          ...over,
+        };
+        archive.getManifest().images[0].labels.push(car);
+        return car;
+      }
+
+      it('moves the end that was grabbed, keeping the grab offset', async () => {
+        seedCar();
+        const el = await mountWithCarTool();
+
+        // Pressed three pixels off the end: it translates by the delta rather
+        // than teleporting under the cursor.
+        await drag(el, [
+          { x: 103, y: 102 },
+          { x: 200, y: 150 },
+          { x: 203, y: 202 },
+        ]);
+
+        expect(cars()[0].p0).to.deep.equal({ x: 200, y: 200 });
+        expect(cars()[0].p1).to.deep.equal({ x: 400, y: 100 });
+      });
+
+      it('records one entry per gesture, targeting the image', async () => {
+        seedCar();
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+
+        const path: Point[] = [{ x: 400, y: 100 }];
+        for (let i = 1; i <= 100; i++) path.push({ x: 400 + i, y: 100 });
+        await drag(el, path);
+
+        expect(cars()[0].p1).to.deep.equal({ x: 500, y: 100 });
+        expect(history.size).to.equal(1);
+        expect(history.undoLabel).to.contain('car');
+
+        const entry = await history.undo();
+        expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
+        expect(cars()[0].p1).to.deep.equal({ x: 400, y: 100 });
+      });
+
+      it('keeps the label whole — id, class and provenance', async () => {
+        seedCar();
+        const el = await mountWithCarTool();
+
+        await drag(el, [
+          { x: 100, y: 100 },
+          { x: 150, y: 160 },
+        ]);
+
+        expect(cars()[0]).to.deep.equal({
+          id: 'C1abcdefghi',
+          class: 'stock',
+          provenance: 'human',
+          p0: { x: 150, y: 160 },
+          p1: { x: 400, y: 100 },
+        });
+      });
+
+      it('records nothing for a drag returned to its origin', async () => {
+        seedCar();
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+
+        await drag(el, [
+          { x: 100, y: 100 },
+          { x: 300, y: 300 },
+          { x: 100, y: 100 },
+        ]);
+
+        expect(history.size).to.equal(0);
+        expect(cars()[0].p0).to.deep.equal({ x: 100, y: 100 });
+      });
+
+      it('leaves the layout alone, and the calibration points with it', async () => {
+        seedCar();
+        const el = await mountWithCarTool();
+        const before = structuredClone(points());
+
+        await drag(el, [
+          { x: 100, y: 100 },
+          { x: 250, y: 250 },
+        ]);
+
+        expect(points()).to.deep.equal(before);
+      });
+
+      it('moves both cars of a coupling, as one entry', async () => {
+        // A coupling is exact coincidence and nothing about it is stored, so
+        // the shared handle has to move both ends or the train comes apart.
+        seedCar();
+        seedCar({ id: 'C2abcdefghi', p0: { x: 400, y: 100 }, p1: { x: 700, y: 100 } });
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+
+        await drag(el, [
+          { x: 400, y: 100 },
+          { x: 450, y: 200 },
+        ]);
+
+        expect(cars()[0].p1).to.deep.equal({ x: 450, y: 200 });
+        expect(cars()[1].p0).to.deep.equal({ x: 450, y: 200 });
+        expect(history.size).to.equal(1);
+      });
+
+      it('addresses the car by id across a history apply', async () => {
+        // Applying a snapshot replaces the objects wholesale: anything holding
+        // an object reference would be pointing at a stale car here.
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        const id = cars()[0].id;
+
+        await history.undo();
+        await history.redo();
+        await el.updateComplete;
+
+        await drag(el, [
+          { x: 400, y: 100 },
+          { x: 500, y: 100 },
+        ]);
+
+        expect(cars()).to.have.length(1);
+        expect(cars()[0].id).to.equal(id);
+        expect(cars()[0].p1).to.deep.equal({ x: 500, y: 100 });
+      });
+    });
+
+    describe('deleting', () => {
+      async function mountWithTwoCars(history?: EditHistory) {
+        const el = await mountWithCarTool(history);
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await clickAt(el, { x: 100, y: 500 });
+        await clickAt(el, { x: 400, y: 500 });
+        return el;
+      }
+
+      it('offers delete on a car end', async () => {
+        const el = await mountWithTwoCars();
+
+        await rightClickAt(el, { x: 402, y: 101 });
+
+        expect(menuOf(el).open).to.be.true;
+        expect(menuItems(el)).to.deep.equal(['delete']);
+      });
+
+      it('deletes that car and leaves the others untouched', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithTwoCars(history);
+        const before = structuredClone(cars());
+
+        await rightClickAt(el, { x: 100, y: 100 });
+        await choose(el, 'delete');
+
+        expect(cars()).to.deep.equal([before[1]]);
+        expect(history.undoLabel).to.contain('car');
+      });
+
+      it('undo restores it with the same id, and the same everything else', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithTwoCars(history);
+        const before = structuredClone(cars());
+
+        await rightClickAt(el, { x: 100, y: 100 });
+        await choose(el, 'delete');
+
+        const entry = await history.undo();
+        expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
+        expect(cars()).to.deep.equal(before);
+
+        await history.redo();
+        expect(cars()).to.deep.equal([before[1]]);
+      });
+
+      it('drops a delete whose car went away underneath the open menu', async () => {
+        const el = await mountWithTwoCars();
+        const before = structuredClone(cars());
+
+        await rightClickAt(el, { x: 100, y: 100 });
+        // An undo landing while the menu is up.
+        archive.getManifest().images[0].labels = [before[1]];
+        await choose(el, 'delete');
+
+        expect(cars()).to.deep.equal([before[1]]);
+      });
+    });
+
+    describe('per image', () => {
+      it('shows the selected image\'s cars, and records nothing for the switch', async () => {
+        addSecondImage();
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        const placed = history.size;
+
+        await selectImage(el, 1);
+
+        // Selection is view state: nothing in the manifest changed.
+        expect(history.size).to.equal(placed);
+        expect(el.shadowRoot!.querySelector('rr-viewer')!.cars).to.deep.equal([]);
+
+        await clickAt(el, { x: 200, y: 200 });
+        await clickAt(el, { x: 500, y: 200 });
+
+        // Labels are not carried between images.
+        expect(cars(0)).to.have.length(1);
+        expect(cars(1)).to.have.length(1);
+        expect(cars(1)[0].p0).to.deep.equal({ x: 200, y: 200 });
+
+        await selectImage(el, 0);
+        expect(el.shadowRoot!.querySelector('rr-viewer')!.cars).to.deep.equal(cars(0));
+      });
+
+      it('abandons a placement when the image changes', async () => {
+        // The anchor is a pixel on the image it was clicked on.
+        addSecondImage();
+        const el = await mountWithCarTool();
+
+        await clickAt(el, { x: 100, y: 100 });
+        await selectImage(el, 1);
+        await clickAt(el, { x: 400, y: 100 });
+
+        expect(cars(0)).to.have.length(0);
+        expect(cars(1)).to.have.length(0);
+      });
+
+      it('abandons a placement when an undo reveals another image', async () => {
+        // `rr-app` calls syncFromArchive() after an undo whose entry targets a
+        // different image. The anchor would otherwise survive the jump and the
+        // next click would write a car with one end from each frame.
+        addSecondImage();
+        const el = await mountWithCarTool();
+
+        await selectImage(el, 1);
+        await clickAt(el, { x: 100, y: 100 });
+        await el.syncFromArchive('img1.jpg');
+        await el.updateComplete;
+
+        await clickAt(el, { x: 400, y: 100 });
+
+        expect(cars(0)).to.have.length(0);
+        expect(cars(1)).to.have.length(0);
+      });
+
+      it('grabs only the cars of the image on screen', async () => {
+        addSecondImage();
+        const el = await mountWithCarTool();
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        const before = structuredClone(cars(0));
+
+        await selectImage(el, 1);
+        await drag(el, [
+          { x: 100, y: 100 },
+          { x: 300, y: 300 },
+        ]);
+
+        expect(cars(0)).to.deep.equal(before);
+      });
+    });
+
+    it('round-trips through a save and reopen', async () => {
+      const el = await mountWithCarTool();
+      await clickAt(el, { x: 100, y: 100 });
+      await clickAt(el, { x: 400, y: 100 });
+      await clickAt(el, { x: 100, y: 500 });
+      await clickAt(el, { x: 400, y: 500 });
+
+      // Reopening validates against the v4 schema — a label the schema refused
+      // would throw here rather than compare unequal.
+      const reopened = await R49Archive.load(await archive.export());
+
+      expect(reopened.getManifest().images[0].labels).to.deep.equal(cars());
+      expect(reopened.getManifest().images[0].labels).to.have.length(2);
+    });
+
+    it('authors nothing while the gate is closed', async () => {
+      // The car tool cannot be live without a DPT — the palette disables it and
+      // `willUpdate` demotes it — so a click means calibration instead.
+      const el = await mount();
+      await selectTool(el, 'car');
+      const show = stubDialog(el);
+
+      await clickAt(el, { x: 100, y: 100 });
+      await clickAt(el, { x: 400, y: 100 });
+
+      expect(paletteOf(el).tool).to.equal('calibration');
+      expect(cars()).to.have.length(0);
+      expect(show).toHaveBeenCalled();
     });
   });
 
