@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "autoPort": true,
+  "configurations": [
+    {
+      "name": "ui",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@occupancy/ui", "dev:http", "--port", "5174", "--strictPort"],
+      "port": 5174
+    },
+    {
+      "name": "ui-https",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@occupancy/ui", "dev", "--port", "5175", "--strictPort"],
+      "port": 5175,
+      "url": "https://localhost:5175"
+    }
+  ]
+}
