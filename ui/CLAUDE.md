@@ -11,172 +11,20 @@ without discussion.**
 
 | File | What it is | Trust it for |
 | :--- | :--- | :--- |
-| `../SPEC.md` | Requirements and rationale for the **whole project**, not just `ui/` — the **target**. Its § Format is now built (manifest v4, car spans, sensors, provenance); the v4 **editor** and the **detector** are not. | *why*, and what to build next |
+| `../SPEC.md` | Requirements and rationale for the **whole project** — the **target** | *why*, and what to build next |
 | `README.md` | Per-component contracts: properties, events, hierarchy — describes only what is built | the shape of existing components |
 | `src/` | What actually ships | ground truth |
 
-**The editor was reduced to what v4 supports and no further** (#19), and is now being rebuilt one
-ticket at a time. It opens an archive, manages its images, edits layout metadata, reports DPT, and
-**authors calibration points** (#28) — click a pixel, type its world coordinate, one `layout`
-history entry per placement or edit — which it now also **drags** (#30), at one entry per gesture,
-and **deletes** through the right-click context menu (#29). #31 added the **tool palette**, the
-**calibration gate**, and **sensor authoring**; #32 added **car authoring** — two clicks on the
-visible ends, one `image` entry per car, drawn as a chord inside the DPT-derived width rectangle;
-#33 made those clicks a **chain**; #35 added **reclassify**, the context menu's submenu generated
-from the authored vocabulary; #36 added the **completeness affordance**. v3's point-marker authoring
-and two-point calibration dragging are gone for good, and `src/prototype/` with them: what came back
-is a different mechanism, built to carry the coupler case.
-
-#41 fixed the viewer's two independent letterboxes, which had been misplacing every object as the
-window was resized.
-
-Every authoring surface v4 asks for is now built, which is not the same as the editor being
-finished: it is still being rebuilt one ticket at a time, and #37 (reveal after undo) is open.
-**So a missing affordance is usually a deferral, not a bug.** One such gap is deliberate and is
-stated in the code:
-
-* A click on an **existing car end** starts no car *while idle* — a car end has nothing a click can
-  edit, and starting one there would stack a label on the object being aimed at. A chain's second
-  click lands wherever it is aimed, existing end included, which is how a car is coupled onto a
-  train that is already drawn.
-
-### Chaining, and what hangs off it (#33)
-
-Every click after the first is **simultaneously the end of the current car and the start of the
-next**. The coincidence a train is derived from is exact because the same pixel is written as one
-car's `p1` and handed straight on as the next one's `p0` — chaining does not record a train, it
-guarantees the coincidence. **One entry per car, never one for the train**: a mis-click on the last
-coupler of a twelve-car consist must cost one car.
-
-The `EditorMode` union is where the state-dependent gestures dispatch: `idle` opens the context
-menu, `placing-car` ends the chain. A chain is **view state** — its anchor writes nothing, so every
-way of abandoning one (right-click, tool change, image change, a lost DPT, a new archive) costs the
-manifest and the undo stack nothing, and the cars it already wrote stay, each on its own entry.
-
-Three things hang off that state, and each is load-bearing rather than decoration:
-
-* The **rubber band** (`rr-viewer`'s `pendingCar`) is what makes a live chain visible, and that
-  visibility is what pays for right-click *and* undo meaning something else while one is live. It
-  draws the whole car it would commit, rectangle included, because the rectangle is the only
-  feedback that a label covers the car. The cursor is tracked **only** while a chain is live; every
-  other gesture reads its position off the event that carried it.
-  > On **touch** the band is the anchor's handle and nothing more until the next tap: a finger
-  > reports no position between taps, so there is no cursor to draw to. That is the platform rather
-  > than a gap to close — the anchor handle is still the signal that a chain is live, where #32 drew
-  > nothing at all — but the labeling device is a phone, so it is worth knowing the band is a
-  > mouse-only affordance.
-* **Undo is intercepted**, through `rr-editor-view.interceptUndo()`, which `rr-app` awaits before it
-  touches the stack — `rr-app` owns undo and cannot see this state, so the protocol is one question
-  asked rather than chain state pushed up. A live chain consumes **every** undo (the wall): further
-  along it undoes the last car and walks the anchor back, at the chain's start it clears the anchor
-  and touches no history. The anchor steps back only if that undo actually removed the chain's car —
-  an edit made between two clicks sits on top of the stack and is nothing to do with the chain.
-  > The **toolbar's undo affordance does not know about the wall**: while a chain is live it still
-  > reads the stack's `undoLabel`, so the button can name the entry underneath while the press will
-  > take a chain car instead. Pressing it does the right thing — it goes through the same `_undo` —
-  > but the label lags the state. Fixing it means feeding chain state up to `rr-toolbar`, which no
-  > ticket asks for.
-* A **coupling renders as one shared handle**. `rr-viewer` derives the couplings from the cars it
-  was handed (`geometry.ts` § `couplerPoints`, exact coincidence — the same rule the hit-test grabs
-  by) and the cars leave their own handles off at those ends: two circles stacked on one pixel would
-  only *look* like one. Dragging it is one entry moving every end under it, which is what
-  `dragHandles` was shaped for.
-
-A **coupler now opens a context menu**, one delete row per car that meets there, each named by the
-direction that car runs (`geometry.ts` § `cardinalDirection`). It has to: chaining makes couplings
-the normal case, and the middle car of a three-car train has no free end at all, so the joint is the
-only way to reach it. Two cars coupled end to end run in opposite directions, so the rows can never
-read the same. **Reclassify follows the same rule** and for the same reason — a verb that could not
-reach a coupled car could not reach most cars — which is why every row acting on a car names it in
-the row id (`delete-car:<id>`, `reclassify:<id>:<class>`), coupled or not. A row that only opens a
-submenu is `reclassify-group:…`: a separate prefix, because an id identifies a row and two rows
-sharing one defeats that the first time something looks a row up.
-
-### The vocabulary, and where a class name may live (#35)
-
-`vocabulary.ts` reads `detector.vocabulary` out of `config.yaml` through the generated
-`@occupancy/config`, and is the **only place in `ui/` a class name comes from** — including the class
-a new car is created as, which is the taxonomy's root rather than a literal `'stock'`. Adding a
-subtype to `config.yaml` and running `pnpm config:generate` changes the reclassify submenu with no
-code edit; that is the whole point of the module, and a hardcoded class anywhere in `ui/` breaks it
-while still typechecking.
-
-Three things it decides, each stated in `SPEC.md` § Parameters live in `config.yaml`:
-
-* **The root is required in the stored class and never rendered.** A label maps to the longest entry
-  of `detector.classes` that is a segment-prefix of its class, so an unrooted `loco.steam` matches
-  nothing and is dropped from the export — the unlabeled-car-as-background failure the completeness
-  rule exists to prevent. So the menu offers the root's *children*, and every row carries the full
-  dotted class.
-* **A nested object is a subtype; anything else is a property.** `width_mm` is an optional per-class
-  override sitting beside subtypes in the same mapping. Telling them apart structurally is what
-  avoids a reserved list of key names that `config.yaml` would have to know about.
-* **Conformance is a warning here, never a parse error.** `class` is a plain string at the format
-  layer, because a format that refused to open files because someone pruned `config.yaml` would
-  punish config edits. A car whose class names no entry draws in red with the class beside it, and
-  the archive opens exactly as before. The exporter is where the same mismatch becomes fatal.
-
-A **submenu row is opened, never chosen** — Shoelace does not select a parent, and `rr-context-menu`
-gives it no `value` either — so a subtype that has subtypes of its own repeats itself as the first
-row of its own submenu ("loco (unspecified)"). "A loco whose kind I cannot tell from the photograph"
-is a real answer and has to stay reachable.
-
-A second click on the **anchor's own pixel** writes no car — a span with no length has neither an
-axis to draw along nor two ends to couple — and the chain stays where it was.
-
-**Cars are per image and sensors are per layout**, and the hit-test scene is where that becomes a
-gesture's business: switching images swaps the cars and leaves the sensors. A car edit therefore
-targets `{ kind: 'image', filename }` and a sensor edit targets `layout` — the drag's history entry
-picks its target from what the press grabbed.
-
-### Completeness, and the one direction the rule runs (#36)
-
-`labeled_complete` is the only place in the format where a human asserts something about **absence**
-— no car in this image is unlabeled — and it is the one gate on detector training. The editor gives
-it one deliberate control for the image on screen (`.complete-bar`, above the thumbnail bar, where
-the strip's badges read the same flag for every other image), and `rr-editor-view._onCompleteToggle`
-is the **only** place `true` is ever written. Nothing computed may stand in for it: an image whose
-labels are all `proposed` is byte-identical whether the user checked every one or clicked accept-all
-blind, so an accept-all must never set it. An image marked complete with **zero** cars is an
-all-background sample, and warns about nothing.
-
-**Deleting a car clears it**, in the same entry — `SPEC.md` § Labeling completeness settles the
-question `SPEC.md` § Undo and redo left open, on the asymmetry of what a wrong answer costs rather
-than on what the user probably meant. Nothing can tell a label deleted off background from one
-deleted off a car still in the photograph; a flag that survived the second case exports an image
-teaching the detector that cars are background, which nothing downstream detects, while a flag
-cleared in the first costs one click in front of a bar that shows the state. That is not the
-never-set rule being bent: **setting** is the claim only a human may make, **clearing** withdraws it
-and asks again. Deletion alone clears it — adding a car increases coverage, a drag moves a label
-under live rectangle feedback, and reclassify changes a name rather than a coverage.
-
-The thumbnail bar's badge is a **readout, not a second control**. A toggle on a 64px thumbnail would
-let a click aimed at selecting an image assert completeness by landing a few pixels off, and this is
-the one flag nothing but a human may set.
-
-### The calibration gate
-
-`rr-tool-palette` chooses the tool a click means, and **disables the labeling tools while DPT is
-unresolved, stating why**. Car width is derived from DPT rather than stored, so an uncalibrated
-archive cannot draw the width rectangle that is the only feedback a label covers the car. The stated
-reason names **DPT**, not that rectangle: the rectangle is the car tool's reason, and a sensor is a
-single point that would draw fine uncalibrated.
-
-The gate is on **existence, never completion** (`SPEC.md` § Labeling Workflow): `getDPT` returning a
-number *is* the gate. It is enforced twice on purpose — the palette disables the buttons, and
-`rr-editor-view.willUpdate` demotes a live tool back to calibration — because the DPT can vanish
-through an **undo**, which `rr-app` applies straight into the archive with no editor handler seeing
-it. Enforcing it only where a point is deleted would leave the sensor tool live over an archive that
-no longer resolves a scale.
-
-> The **sensor** tool is gated with the car tool, which goes one step beyond `SPEC.md` § Labeling
-> Workflow ("sensors can be placed at any time") — a sensor point needs no DPT to draw. #31 asked for
-> both. `needsDpt` is per tool in `rr-tool-palette.ts`, so that is one flag if it is revisited.
-
-Sensors are **per layout**, carry **no provenance** (no model can propose where a human wants an
-answer), and their ids are snowflakes in a namespace never compared with label ids. A sensor is
-placed unnamed and named afterwards: `name` is optional passthrough, never auto-generated, and the
-UI shows the `id` in its place.
+The editor was reduced to what v4 supports (#19) — v3's point-marker authoring and `src/prototype/`
+are gone for good — and rebuilt one ticket at a time: calibration points (place, drag, delete via
+context menu), the tool palette and calibration gate, sensor authoring, car authoring, chaining,
+reclassify, and the completeness affordance are all built. Every authoring surface v4 asks for
+exists, but the editor is not finished — check GitHub Issues for what is open. **A missing
+affordance is usually a deferral, not a bug.** One gap is deliberate and stated in the code: a
+click on an existing car end starts no car *while idle* — a car end has nothing a click can edit,
+and starting one there would stack a label on the object being aimed at. A chain's second click
+lands wherever it is aimed, existing end included; that is how a car is coupled onto a train
+already drawn.
 
 Where README and the code disagree, the code wins and README is the thing to correct:
 **a change to a component's properties or events belongs in README in the same commit.**
@@ -216,169 +64,215 @@ handlers in `rr-editor-view`, which mutate the archive without going through `rr
 
 Nothing enforces this. A component that reaches into `.archive` directly still typechecks, still
 renders, and leaves a stack that is *wrong* rather than merely short: undo then reverses the edit
-before it, which is worse than having no undo, because the binding has taught the user to trust it.
-
-Two rules follow from entries being scoped snapshots:
+before it, which is worse than having no undo. Rules, from entries being scoped snapshots:
 
 * **Declare the subtree you actually touch** (`layout`, one `image`, or the `images` array).
-  Mis-declaring it is the only class of bug this design admits, and `tests/history.test.ts` fuzzes a
-  round-trip specifically to catch it.
+  Mis-declaring it is the only class of bug this design admits; `tests/history.test.ts` fuzzes a
+  round-trip specifically to catch it. Cars are per **image** and sensors are per **layout**, so a
+  car edit targets `{ kind: 'image', filename }` and a sensor edit targets `layout` — a drag picks
+  its target from what the press grabbed.
 * **Key on label `id`, never on object identity.** Applying a snapshot replaces objects wholesale.
+* An edit that **removes images** must pass `options.retain` with their filenames — the bytes are
+  gone from the zip by the time the entry could look for them. Additions are captured automatically.
+* **A drag uses `beginGesture`, not `record`**: a drag mutates on every pointer-move and must still
+  be one Cmd+Z. Snapshot at pointer-down, mutate freely, `commit()` at pointer-up records one entry
+  — or none, when the subtree came back byte-identical. One entry covering several objects falls
+  out of the target being a subtree (a coupler drag's two cars share one image record). Undo and
+  redo are **refused while a gesture is open** — the drag has already mutated outside the stack —
+  so every ending path (a repeated `pointerId`, `disconnectedCallback`, `attach`) must close one.
 
-An edit that *removes* images must pass `options.retain` with their filenames — the bytes are gone
-from the zip by the time the entry could look for them. Additions are captured automatically.
+`SPEC.md` § Undo and redo carries the reasoning.
 
-**A drag uses `beginGesture`, not `record`.** `record` brackets one mutation; a drag mutates on every
-pointer-move and must still be one Cmd+Z. So the snapshot is taken at pointer-down, the caller
-mutates freely, and `commit()` at pointer-up records one entry — or none, when the subtree came back
-byte-identical. That one entry can cover several objects falls out of the target being a subtree: a
-coupler drag's two cars share one image record. Undo and redo are **refused while a gesture is open**,
-because the drag has already mutated outside the stack and an older snapshot applied over it would
-leave the commit comparing against a `before` that never existed — which makes an abandoned gesture
-expensive, so every ending path (a repeated `pointerId`, `disconnectedCallback`, `attach`) has to
-close one.
+### Chaining (#33)
 
-`SPEC.md` § Undo and redo carries the reasoning, including the part the editor spec still has to
-build: the chain interception that makes a live chain a wall Cmd+Z cannot cross.
+* Every click after the first is simultaneously the end of the current car and the start of the
+  next: the same pixel is written as one car's `p1` and handed on as the next one's `p0`, so the
+  coincidence a coupling is derived from is exact by construction — chaining records no train.
+  **One history entry per car, never one for the train**: a mis-click on the last coupler of a
+  twelve-car consist must cost one car.
+* A chain is **view state**. Its anchor writes nothing, so every way of abandoning one (right-click,
+  tool change, image change, a lost DPT, a new archive) costs the manifest and the undo stack
+  nothing; the cars already written stay, each on its own entry.
+* The `EditorMode` union is where state-dependent gestures dispatch: `idle` opens the context menu,
+  `placing-car` ends the chain.
+* The **rubber band** (`rr-viewer`'s `pendingCar`) draws the whole car it would commit, rectangle
+  included — the rectangle is the only feedback that a label covers the car. The cursor is tracked
+  **only** while a chain is live. On touch there is no cursor between taps, so the band is just the
+  anchor's handle — a platform limit, not a gap to close, but worth knowing since the labeling
+  device is a phone.
+* **Undo is intercepted** through `rr-editor-view.interceptUndo()`, which `rr-app` awaits before
+  touching the stack (`rr-app` owns undo and cannot see chain state). A live chain consumes
+  **every** undo: further along it undoes the last car and walks the anchor back — but only if
+  that undo actually removed the chain's car — and at the chain's start it clears the anchor and
+  touches no history. Known cosmetic lag: the toolbar's undo label reads the stack's `undoLabel`
+  and does not know about this wall; fixing it means feeding chain state to `rr-toolbar`, which no
+  ticket asks for.
+* A **coupling renders as one shared handle**, derived by `rr-viewer` from exact coincidence
+  (`geometry.ts` § `couplerPoints` — the same rule the hit-test grabs by); the cars leave their own
+  handles off at those ends. Dragging it is one entry moving every end under it.
+* A second click on the **anchor's own pixel** writes no car — a zero-length span has neither an
+  axis nor two ends — and the chain stays where it was.
+
+### The vocabulary (#35)
+
+`vocabulary.ts` reads `detector.vocabulary` out of `config.yaml` through the generated
+`@occupancy/config` and is the **only place in `ui/` a class name comes from** — including the class
+a new car is created as, which is the taxonomy's root rather than a literal `'stock'`. A hardcoded
+class anywhere in `ui/` breaks the config→menu path while still typechecking. Rules, each stated in
+`SPEC.md` § Parameters live in `config.yaml`:
+
+* **The root is required in the stored class and never rendered.** An unrooted class is a
+  segment-prefix of no `detector.classes` entry and is dropped from the export — the
+  unlabeled-car-as-background failure the completeness rule exists to prevent. So the menu offers
+  the root's *children*, and every row carries the full dotted class.
+* **A nested object is a subtype; anything else (`width_mm`) is a property.** The distinction is
+  structural, which is what avoids a reserved list of key names.
+* **Conformance is a warning here, never a parse error.** A car whose class names no vocabulary
+  entry draws in red with the class beside it, and the archive opens exactly as before — a format
+  that refused files over a pruned `config.yaml` would punish config edits. The exporter is where
+  the same mismatch becomes fatal.
+* A **submenu row is opened, never chosen** (Shoelace does not select a parent), so a subtype with
+  subtypes of its own repeats itself as the first row of its own submenu ("loco (unspecified)") —
+  "kind unknown from the photograph" is a real answer and must stay reachable.
+
+### Completeness (#36)
+
+`labeled_complete` is the only place in the format where a human asserts something about **absence**
+— no car in this image is unlabeled — and it is the one gate on detector training.
+
+* `rr-editor-view._onCompleteToggle` is the **only** place `true` is ever written, one history entry
+  per toggle. Nothing computed may stand in for it: an image whose labels are all `proposed` is
+  byte-identical whether the user checked every one or clicked accept-all blind, so an accept-all
+  must never set it.
+* **Deleting a car clears the flag, in the same entry** (`SPEC.md` § Labeling completeness). Nothing
+  can tell a label deleted off background from one deleted off a car still in the photograph, and a
+  flag surviving the second case exports an image teaching the detector that cars are background.
+  Setting is the claim only a human may make; clearing withdraws it and asks again. Deletion alone
+  clears — adds, drags, and reclassify do not.
+* The thumbnail-bar badge is a **readout, not a second control**: a toggle on a 64px thumbnail would
+  let a click aimed at selecting an image assert completeness by landing a few pixels off.
+* An image marked complete with **zero** cars is a valid all-background sample and warns about
+  nothing.
+
+### The calibration gate
+
+* `rr-tool-palette` chooses the tool a click means and **disables the labeling tools while DPT is
+  unresolved, stating why** — naming DPT, not the width rectangle: car width is derived from DPT
+  rather than stored, so an uncalibrated archive cannot draw the rectangle that is the only
+  feedback a label covers the car.
+* The gate is on **existence, never completion** (`SPEC.md` § Labeling Workflow): `getDPT` returning
+  a number *is* the gate. It is enforced twice on purpose — the palette disables the buttons, and
+  `rr-editor-view.willUpdate` demotes a live tool back to calibration — because DPT can vanish
+  through an **undo**, which `rr-app` applies straight into the archive with no editor handler
+  seeing it.
+* The **sensor** tool is gated with the car tool, one step beyond `SPEC.md` § Labeling Workflow — a
+  sensor point needs no DPT to draw, but #31 asked for both. `needsDpt` is per tool in
+  `rr-tool-palette.ts` if that is revisited.
+* Sensors are **per layout**, carry **no provenance** (no model can propose where a human wants an
+  answer), and their snowflake ids live in a namespace never compared with label ids. A sensor is
+  placed unnamed: `name` is optional passthrough, never auto-generated, and the UI shows the `id`
+  in its place.
 
 ### `rr-viewer` is shared, and that is load-bearing
 
 The same component backs the editor (`src` → `<img>`) and the live view (`stream` → `<video>`).
 
-**The media and the overlay resolve to one box, by construction** (#41). Both cover the container,
-and both fit their content into it by the same rule — `object-fit: contain` against
-`preserveAspectRatio="xMidYMid meet"` — over a viewBox that is the **media's own pixel grid**. Two
-boxes fitted by one rule over one box are one box; two fitted independently coincide only by luck,
-which is what let a sensor drift off the track it was placed on as the window was resized. Both
-halves of the old pairing were wrong on their own: the media laid out at its *natural* size, so it
-stopped growing once the container was bigger than the photograph while the overlay kept growing,
-and the viewBox was `resolution`, which letterboxes to a different box the moment an image's shape
-is not the declared one.
-
-The authored frame reaches that grid through the `g.frame` scale (`geometry.ts` § `overlayFit`), so
-everything drawn and every coordinate emitted is still in `camera.resolution`'s frame — the frame
-the manifest is written in (`SPEC.md` § Output encoding), and **not** the image's own pixels. For a
-photograph of the declared shape at any pixel count the scale is uniform and nothing else changes.
-
-`camera.resolution` is per **archive** while images are per **image**, so an image can simply be a
-different shape, and no mapping is then correct — nothing records how the photo was cropped. The
-defined answer is that the frame is **stretched** to cover the photograph, which keeps every
-authored object on it, and the viewer emits `rr-media-frame` so the editor can say the mapping was a
-guess (`.frame-warning`, which blocks nothing). Silently absorbing it is what this ticket forbids.
-
-`symbolSize = SYMBOL_SIZE_SCREEN_PX / ctm.a`, recomputed by a `ResizeObserver`, keeps markers a
-constant *screen* size — off the **content group's** CTM, the same transform the pointer path uses,
-because a ratio taken from the SVG's bounding rect is wrong by the letterbox.
-
-The viewer **reports pointer gestures and authors nothing**. It emits `rr-pointer-down`/`-move`/
-`-up`/`-cancel`/`-contextmenu` with coordinates already converted to **image pixels**, so no consumer
-ever handles screen coordinates and none can convert them wrongly. The conversion uses
-`createSVGPoint` + the inverse of the **content group's** `getScreenCTM` — the group's user space is
-the authored frame, the SVG's is the media's grid — and **never a hand-rolled subtraction of
-`getBoundingClientRect()`**: the rect ignores the letterbox, so the hand-rolled version is right
-only while the viewport happens to match the image's aspect ratio. The same matrix yields
-`imagePxPerScreenPx`, which is what turns a grab radius in screen pixels into one in image pixels,
-and what `symbolSize` is measured with.
-
-The v3 machinery that *mutated* — marker add/move/delete, the draggable `{p0, p1}` pair — went with
-the v4 reduction and does not come back. Deciding what a gesture means is the editor's job; the
-arithmetic it needs is in `geometry.ts`.
-
-It draws what it is given: `markers`, then `cars` (chords and width rectangles from `carMarker.ts`),
-then `calibrationPoints` (crosshairs from `calibrationMarker.ts`) and `sensors` (diamonds from
-`sensorMarker.ts`), all rendered from the manifest and never written by the viewer. Cars are drawn
-**first** because their rectangles are the only area fills on the overlay, and a point or a sensor
-sitting on a car must not be tinted over. `rr-editor-view` is what turns an `rr-pointer-up` into a
-point, a sensor or a car.
+* **The media and the overlay resolve to one box, by construction** (#41). Both cover the container
+  and fit their content by the same rule — `object-fit: contain` against
+  `preserveAspectRatio="xMidYMid meet"` — over a viewBox that is the **media's own pixel grid**.
+  Two boxes fitted independently coincide only by luck; that drift is what let a sensor slide off
+  its track as the window was resized.
+* The authored frame (`camera.resolution`) reaches that grid through the `g.frame` scale
+  (`geometry.ts` § `overlayFit`): everything drawn and every coordinate emitted is in the frame the
+  manifest is written in (`SPEC.md` § Output encoding), **not** the image's own pixels. When an
+  image is a different shape than the declared resolution, no mapping is correct (nothing records
+  the crop); the defined answer is that the frame is **stretched** to cover the photograph, and the
+  viewer emits `rr-media-frame` so the editor can warn (`.frame-warning`, which blocks nothing).
+  Silently absorbing the mismatch is forbidden (#41).
+* The viewer **reports pointer gestures and authors nothing**. It emits `rr-pointer-down`/`-move`/
+  `-up`/`-cancel`/`-contextmenu` with coordinates already converted to **image pixels**, via
+  `createSVGPoint` + the inverse of the **content group's** `getScreenCTM` (the group's user space
+  is the authored frame) — **never a hand-rolled subtraction of `getBoundingClientRect()`**, which
+  ignores the letterbox and is right only when the viewport matches the image's aspect ratio. The
+  same matrix yields `imagePxPerScreenPx`, which converts grab radii and measures `symbolSize`.
+  Deciding what a gesture means is the editor's job; the arithmetic is in `geometry.ts`. The v3
+  machinery that mutated does not come back.
+* `symbolSize = SYMBOL_SIZE_SCREEN_PX / ctm.a`, recomputed by a `ResizeObserver` off the **content
+  group's** CTM (a ratio from the SVG's bounding rect is wrong by the letterbox), keeps annotations
+  a constant screen size.
+* It draws what it is given — `markers`, `cars`, `calibrationPoints`, `sensors` — from the manifest,
+  never writing it. Cars draw **first**: their rectangles are the overlay's only area fills, and a
+  point or sensor on a car must not be tinted over.
 
 ### `geometry.ts` holds the arithmetic, because a component cannot be tested
 
-Car width from DPT, a span's oriented rectangle, and hit-testing live in a pure module. jsdom does
-not lay out or paint, so anything left inside a Lit element is untestable until `@web/test-runner` is
-stood up — which nothing has done. Put new editor geometry here, not in the component that happens to
-need it first.
-
-Four rules it encodes, each of which is wrong somewhere if reimplemented:
+jsdom does not lay out or paint, so anything left inside a Lit element is untestable until
+`@web/test-runner` is stood up — which nothing has done. Put new editor geometry here, not in the
+component that happens to need it first. Rules it encodes, each wrong somewhere if reimplemented:
 
 * **No scale lookup.** The ratio cancels out of `DPT × STANDARD_WIDTH / STANDARD_GAUGE`, so a car is
   2.09 track-widths wide in every scale. Both constants come from `@occupancy/config`.
-* **Objects are drawn at world sizes; annotations at screen sizes.** A sensor is one track width
-  across (`trackWidthPx`, which *is* DPT, since `getDPT` returns px/mm × gauge_mm) and a car is 2.09,
-  so both shrink with the photograph and a sensor's footprint is comparable to a car's. Labels,
-  crosshairs, markers and a car's endpoint handles stay constant on screen — they annotate the image
-  rather than measure it.
-  `rr-viewer` holds both: `dpt` for the world sizes, `symbolSize` for the screen ones.
-* **Tolerances are screen pixels**, converted with the viewer's `imagePxPerScreenPx`. A grab radius
-  belongs to the mouse, not to the photograph — but it is a **floor, not a cap**: an object drawn at
-  a world size is grabbable across the whole symbol, because a symbol wider than its own hit area
-  reads as a bug the first time a click on it misses. `sensorDiameterPx` is shared by the renderer
-  and the hit-test so the two cannot drift apart.
-* **A coupler is exact coincidence.** Nothing about a coupling is stored; it is car ends at the
-  identical pixel, which chaining and the shared handle guarantee. A proximity test would fuse cars
-  the user placed separately. `hitTest` and `couplerPoints` apply that one rule to the pointer and
-  to the renderer, so what draws as a coupling is exactly what grabs as one.
-
-`DEFAULT_GRAB_RADIUS_SCREEN_PX` and `CLICK_SLOP_SCREEN_PX` live here for the same reason: one radius
-for every tool, because it describes the pointing device and not the object. A tool that grabbed at
-its own distance would read as a bug. The slop is the smaller of the two — it is hand tremor, not
-aim — and `isClick` is what keeps a swipe on a phone from placing a point.
-
-`dragHandles` turns a hit into the **list** of points a gesture moves — that list is the coupler
-case, and it is why one history entry can cover more than one object. `dragTo` applies the same delta
-to each handle's *pointer-down* position: measured from the press so the grab offset survives, and
-identical across handles so a coupler's ends stay on the same pixel.
+* **Objects draw at world sizes; annotations at screen sizes.** A sensor is one track width across
+  (`trackWidthPx` *is* DPT: px/mm × gauge_mm) and a car is 2.09, so both shrink with the
+  photograph; labels, crosshairs, markers and endpoint handles stay constant on screen. `rr-viewer`
+  holds both: `dpt` for world sizes, `symbolSize` for screen ones.
+* **Tolerances are screen pixels**, converted with `imagePxPerScreenPx` — a grab radius belongs to
+  the mouse, not the photograph — but a radius is a **floor, not a cap**: a world-sized symbol is
+  grabbable across its whole footprint. `sensorDiameterPx` is shared by renderer and hit-test so
+  the two cannot drift.
+* **A coupler is exact coincidence.** Nothing about a coupling is stored; a proximity test would
+  fuse cars placed separately. `hitTest` and `couplerPoints` apply the one rule, so what draws as a
+  coupling is exactly what grabs as one.
+* One `DEFAULT_GRAB_RADIUS_SCREEN_PX` for every tool — it describes the pointing device, not the
+  object. `CLICK_SLOP_SCREEN_PX` is smaller (hand tremor, not aim), and `isClick` keeps a swipe on
+  a phone from placing a point.
+* `dragHandles` turns a hit into the **list** of points a gesture moves — the coupler case, and why
+  one entry can cover several objects. `dragTo` applies the same delta to each handle's
+  *pointer-down* position: measured from the press so the grab offset survives, identical across
+  handles so coupled ends stay on one pixel.
 
 ### Right-click is a state branch, and the menu knows nothing
 
-`rr-editor-view` dispatches `rr-pointer-contextmenu` through a `switch` over the `EditorMode` union:
-right-click means *context menu* when idle and *end the chain* while chaining a train (`SPEC.md`
-§ Right-click is state-dependent). Undo is state-dependent against the same states, through
-`interceptUndo()`.
+* `rr-editor-view` dispatches `rr-pointer-contextmenu` through the `EditorMode` switch: context menu
+  when idle, end-the-chain while chaining (`SPEC.md` § Right-click is state-dependent). Undo is
+  state-dependent against the same states, through `interceptUndo()`.
+* The native menu is suppressed **in the editor, not in `rr-viewer`**, and for every right-click —
+  inside the labeling surface the gesture is the editor's whatever it lands on. `rr-live-view`
+  shares the viewer, does not listen, and keeps the browser's menu.
+* `rr-context-menu` renders rows and reports which was chosen; it never learns what the object is.
+  The editor hit-tests and names subject *and* rows together in one `menuFor` switch — an object it
+  cannot name a verb for opens no menu at all.
+* A **coupler** is the one subject that is two objects — chaining makes couplings the normal case,
+  and the middle car of a train has no free end — so it gets one delete row per car meeting there,
+  each named by that car's direction (`geometry.ts` § `cardinalDirection`; coupled cars run
+  opposite ways, so rows can never read the same). **Reclassify follows the same rule.** Every row
+  acting on a car carries its id (`delete-car:<id>`, `reclassify:<id>:<class>`); a row that only
+  opens a submenu uses a separate prefix (`reclassify-group:…`) — an id identifies a row, and two
+  rows sharing one defeats that.
+* Delete is **one entry scoped to what it deletes**: `layout` for a point or sensor, that image's
+  record for a car. A calibration-point subject carries the pixel it was opened on
+  (`_pointIsStillAt`, the same staleness guard the calibration dialog uses) — an undo landing while
+  either is up can slide an index onto another point. Cars and sensors carry an `id` and need no
+  guard.
+* Right-click shares the pointer stream with the left button: the editor **ignores presses and
+  releases whose `button` is not primary** (otherwise the press that opens the menu also runs the
+  click path, and a secondary release ends a left drag mid-gesture), and the menu **swallows its
+  own dismissing press** (so closing a menu over empty image places no point).
 
-The **native menu is suppressed in the editor, not in `rr-viewer`**, and for every right-click rather
-than only the ones that open something — inside the labeling surface the gesture is the editor's
-whatever it lands on, and it ends a chain over empty image. `rr-live-view` shares the viewer and
-does not listen, so its right-click stays the browser's.
+### Markers are modules, not elements
 
-`rr-context-menu` renders rows and reports which one was chosen; it never learns what the object is.
-The editor hit-tests, names the verbs in one `menuFor` switch — subject *and* rows together, so an
-object it cannot name a verb for opens no menu at all — and interprets the selection. A **coupler**
-is the one subject that is two objects, so its rows carry which car they mean in the row `id`
-(`delete-car:<id>`, never shown) and say which in the label, by direction. Delete is **one entry
-scoped to what it deletes** — `layout` for a point or a sensor, that image's record for a car — and
-the subject carries the pixel it was opened on, the same staleness guard the calibration dialog uses
-(`_pointIsStillAt`): an undo landing while either is up can slide an index onto another point. A car
-and a sensor need no such guard: they carry an `id`, so the hit names one however the list is
-replaced underneath.
+Custom elements break the SVG namespace when nested in `<svg>`, so `marker.ts`,
+`calibrationMarker.ts`, `sensorMarker.ts` and `carMarker.ts` are plain-export modules whose exports
+(renderer, defs where needed, styles) **must be used together** — the module boundary is the
+encapsulation. Each object type is unmistakable in both shape and colour, a requirement rather than
+taste (`SPEC.md` § Reference points: authored by different tools, meaning different things); README
+carries the exact exports and glyphs. Two rules that don't show in the README table:
 
-Two consequences of right-click sharing the pointer stream with the left button, both of which look
-like nothing until they are missing: the editor **ignores presses and releases whose `button` is not
-primary** — otherwise the press that opens the menu also runs the click path and the calibration
-dialog comes up behind it, and the release of a secondary button ends a left drag mid-gesture — and
-the menu **swallows its own dismissing press**, so closing a menu over empty image does not place a
-point.
-
-### `marker.ts` and `calibrationMarker.ts` are modules, not elements
-
-Custom elements break the SVG namespace when nested in `<svg>`, so markers are three plain exports —
-`renderMarker`, `markerDefs`, `markerStyles` — that **must be used together**: defs in the SVG,
-styles in the host's `static styles`, renderer per marker. The module boundary is the encapsulation.
-
-`calibrationMarker.ts` follows the same shape with two exports (`renderCalibrationPoint`,
-`calibrationMarkerStyles`; it needs no defs), `sensorMarker.ts` with three (`renderSensor`,
-`sensorLabelText`, `sensorMarkerStyles`), and `carMarker.ts` with four (`renderCar`,
-`renderCoupler`, `renderPendingCar`, `carMarkerStyles`). A calibration point is a **cyan crosshair
-labelled with its world coordinate**; a sensor is an **amber diamond labelled with its name, or its
-id when it has none**; a car is a **magenta chord inside a translucent width rectangle**, its
-coupled ends drawn once as a shared handle and the chain in flight dashed. The difference is shape
-as much as colour, and it is a requirement rather than taste: `SPEC.md` § Reference points says they
-must be unmistakable, because they are authored by different tools and mean different things. Both
-labels flip inwards at a frame edge through the same `placeLabel`.
-
-`renderCar` takes the **DPT**, not a width: the 2.09-track-widths derivation lives in `geometry.ts`
-and a caller passing a number would be a second place to get it wrong. A `null` DPT draws the chord
-and its handles and **no rectangle** — there is no derived width to claim, and the cars already
-authored must stay visible after a calibration point is deleted.
+* `renderCar` takes the **DPT**, not a width — the 2.09 derivation lives in `geometry.ts`, and a
+  caller passing a number would be a second place to get it wrong. A `null` DPT draws the chord and
+  handles with **no rectangle**: there is no derived width to claim, and authored cars must stay
+  visible after a calibration point is deleted.
+* Labels flip inwards at a frame edge through the shared `placeLabel`.
 
 ### Absolute `/ui/` paths
 
@@ -388,16 +282,15 @@ authored must stay visible after a calibration point is deleted.
 
 ### Classifier loading lives only in the live view
 
-`rr-live-view.ts` is now the sole place that constructs a `BrowserClassifier`. It branches on the
-hostname: if it is `__RAILS_DOMAIN__` (injected at build time) or `*.pages.dev`, it points
+`rr-live-view.ts` is the sole place that constructs a `BrowserClassifier`. It branches on the
+hostname: `__RAILS_DOMAIN__` (injected at build time) or `*.pages.dev` points
 `ort.env.wasm.wasmPaths` at the jsDelivr CDN, because `bin/deploy.sh` strips the 26 MB of `.wasm`
 from the bundle; otherwise `/ui/ort/`. Then `load('/ui/models/model_int8.ort')`, whose filename must
 agree with `ui/vite.config.ts` (see the root `CLAUDE.md`).
 
-`rr-editor-view.ts` used to carry a byte-identical copy. It went with the v4 reduction (#19): the
-only thing the editor did with a classifier was decorate point markers with a prediction, and v4 has
-no point markers. **Do not reintroduce it there** — the duplication was a standing hazard, and
-nothing in the reduced editor needs inference.
+`rr-editor-view.ts` used to carry a byte-identical copy; it went with the v4 reduction (#19).
+**Do not reintroduce it there** — the duplication was a standing hazard, and nothing in the reduced
+editor needs inference.
 
 Vite copies the model into the bundle only if `classifier/resnet/models/` exists, so builds and
 typechecks must keep working with no local model present.
@@ -429,30 +322,26 @@ those rather than hardcoding new colors.
 
 Vitest in **jsdom**, `@open-wc/testing` fixtures, `tests/<module>.test.ts` mirroring `src/<module>.ts`.
 `tests/setup.ts` polyfills what jsdom lacks globally (`ResizeObserver`, `Element.animate`,
-`matchMedia`, `URL.createObjectURL`). Two modules have no test file yet — `capture.ts` and
-`rr-settings-dialog.ts`; touching either is a chance to add one.
+`matchMedia`, `URL.createObjectURL`). `capture.ts` and `rr-settings-dialog.ts` have no test file
+yet; touching either is a chance to add one.
 
-What jsdom means in practice:
-
-* **It does not lay out or paint.** `getBoundingClientRect()` is all zeros and SVG geometry
+* **jsdom does not lay out or paint.** `getBoundingClientRect()` is all zeros and SVG geometry
   (`createSVGPoint`, `getScreenCTM`) is absent, so `tests/rr-viewer.test.ts` stubs both per test —
-  a scale plus an offset, standing in for a letterboxed viewport — and polyfills `PointerEvent` as a
-  `MouseEvent` carrying a `pointerId`. This is why the arithmetic lives in `geometry.ts`: what the
-  stub proves is that the viewer converts through the transform it is given, not that the transform
-  is right. Assert DOM structure, attributes, computed values, and emitted events. Do not claim a
-  test verifies visual appearance; it cannot.
-* Camera (`getUserMedia`), ONNX sessions, and `PointerEvent` are mocked or polyfilled per test file.
+  a scale plus an offset, standing in for a letterboxed viewport — and polyfills `PointerEvent` as
+  a `MouseEvent` carrying a `pointerId`. The stub proves the viewer converts through the transform
+  it is given, not that the transform is right — which is why the arithmetic lives in
+  `geometry.ts`. Assert DOM structure, attributes, computed values, and emitted events; never claim
+  a test verifies visual appearance.
+* Camera (`getUserMedia`) and ONNX sessions are mocked per test file.
+* The drag tests dispatch `rr-pointer-*` events shaped the way `rr-viewer` emits them, so they
+  cover the editor's half of a gesture — one entry, no-op suppression, the sticky drag flag — and
+  **not** pointer capture, which is the browser's and the viewer's. A drag leaving the viewer is
+  exercised as coordinates outside the image, which is what the editor actually sees.
+* Real in-browser coverage — visual regression, genuine pointer interaction — is a stated goal but
+  **is not wired up**: `@web/test-runner` sits in `devDependencies` with no config file and runs
+  nothing. Standing it up (or removing the dependency) is real work; until then, be accurate about
+  what the suite proves.
 
-This is also the ceiling on what the drag tests prove. They dispatch `rr-pointer-*` events shaped the
-way `rr-viewer` emits them, so they cover the editor's half of a gesture — one entry, the no-op
-suppression, the sticky drag flag — and **not** the pointer capture, which is the browser's and the
-viewer's. A drag leaving the viewer is exercised as coordinates outside the image, which is what the
-editor actually sees.
-
-Real in-browser coverage — visual regression and genuine pointer interaction — is a stated goal but
-**is not wired up**. `@web/test-runner` sits in `devDependencies` with no config file and runs
-nothing. Standing it up (or removing the dependency) is real work; until then, be accurate about what
-the suite proves.
-
-Run `pnpm test` from the repo root after changes here: it covers `lib/*` too, and `ui` consumes those
-packages as TypeScript source, so a library change breaks the UI at typecheck rather than at publish.
+Run `pnpm test` from the repo root after changes here: it covers `lib/*` too, and `ui` consumes
+those packages as TypeScript source, so a library change breaks the UI at typecheck rather than at
+publish.
