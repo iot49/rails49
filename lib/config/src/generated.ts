@@ -77,4 +77,4 @@ export const DETECTOR_CLASSES = ["stock"] as const;
  * class it sits under (`width_mm` is the one such property today). That
  * is what tells a subtype from a property with no reserved key names.
  */
-export const DETECTOR_VOCABULARY = { "stock": { "loco": { "steam": {}, "diesel": {}, "electric": {} } } } as const;
+export const DETECTOR_VOCABULARY = { "stock": { "loco": { "steam": {}, "diesel": {}, "electric": {} }, "passenger": {}, "freight": {} } } as const;

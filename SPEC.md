@@ -475,6 +475,8 @@ detector:
         steam: {}
         diesel: {}
         electric: {}
+      passenger: {}
+      freight: {}
 ```
 
 `vocabulary` is the authoring taxonomy — what the context menu offers and what a label's `class` must match. `classes` **is** the YOLO class list, verbatim and index-ordered. A label maps to the longest entry of `classes` that is a segment-prefix of its class, so `stock` matches `stock.loco.steam` but never `stockyard`; the same rule resolves an overriding `width_mm`. Adding a subtype to `classes` therefore re-maps every already-labeled car of that subtype with **no relabeling**.

@@ -104,3 +104,5 @@ detector:
         steam: {}
         diesel: {}
         electric: {}
+      passenger: {}
+      freight: {}
