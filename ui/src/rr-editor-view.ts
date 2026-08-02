@@ -13,14 +13,18 @@ import { MIN_DPT } from '@occupancy/config';
 import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
 import {
+  cardinalDirection,
   dragHandles,
   dragTo,
   hitTest,
   isClick,
+  samePoint,
   CLICK_SLOP_SCREEN_PX,
   DEFAULT_GRAB_RADIUS_SCREEN_PX,
 } from './geometry.js';
 import type { DragHandle, HitScene, HitTarget, HitTolerance } from './geometry.js';
+import type { PendingCar } from './carMarker.js';
+import { revealTarget } from './history.js';
 import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
 import type { ViewerContextMenuDetail, ViewerPointerDetail } from './rr-viewer.js';
 import type { CalibrationCommitDetail, RRCalibrationDialog } from './rr-calibration-dialog.js';
@@ -90,30 +94,55 @@ type PendingCalibration =
   | { readonly kind: 'edit'; readonly index: number; readonly px: Point };
 
 /**
+ * One car a live chain has already written, and the anchor it grew from.
+ *
+ * The chain is **view state** and the car is not: the car is in the manifest
+ * with its own history entry, and this only remembers enough to walk the chain
+ * backwards — which car to expect an undo to remove, and where the anchor sat
+ * before it (`SPEC.md` § Undo and redo).
+ *
+ * Keyed by label `id` like everything else the editor holds across an await:
+ * applying a history snapshot replaces the objects wholesale.
+ */
+interface ChainLink {
+  /** The car this step wrote. */
+  readonly carId: string;
+  /** The anchor that car started from — where undo puts the anchor back. */
+  readonly anchor: Point;
+}
+
+/**
  * What the editor is in the middle of — the state the gestures that mean two
  * things are dispatched on.
  *
  * Right-click is state-dependent by design (`SPEC.md` § Right-click is
  * state-dependent): idle opens the context menu on whatever is under the
- * cursor, while a car is being placed it ends the placement instead. Undo is
- * state-dependent in the same way and against the same states — the chain
- * interception is still ahead (#33), and this union is where it lands.
+ * cursor, while a chain is live it ends the chain instead. Undo is
+ * state-dependent in the same way and against the same states — see
+ * {@link RREditorView.interceptUndo}.
  *
- * `placing-car` is a car with one end: the first click named it, and the second
- * click completes the label (#32). It is **view state and never history** — an
- * uncommitted placement writes nothing, so abandoning one leaves the manifest
- * and the stack untouched. Chaining (#33) extends this case rather than adding
- * another, since every click after the first is simultaneously an end and the
- * next anchor.
+ * `placing-car` is a chain in progress, whether it has written a car yet or
+ * not: the first click takes an anchor, and **every click after it is
+ * simultaneously the end of the current car and the start of the next** (#33).
+ * A single car is simply a chain that was ended after one. The state itself is
+ * **view state and never history** — an anchor writes nothing, so abandoning
+ * one leaves the manifest and the stack untouched.
  *
  * One gesture meaning two things is a real cost, accepted because the two
- * states differ by whether a placement is in progress — which the rubber band
- * (#33) makes loudly visible.
+ * states differ by whether a chain is in progress — which the rubber band
+ * makes loudly visible.
  */
 type EditorMode =
   | { readonly kind: 'idle' }
-  /** One end placed, waiting for the click that gives the car its other end. */
-  | { readonly kind: 'placing-car'; readonly anchor: Point };
+  /**
+   * A chain in flight: the end the next click will draw from, and the cars this
+   * chain has already written, oldest first.
+   */
+  | {
+      readonly kind: 'placing-car';
+      readonly anchor: Point;
+      readonly chain: readonly ChainLink[];
+    };
 
 /**
  * What the open context menu acts on.
@@ -164,6 +193,39 @@ const SENSOR_ITEMS: readonly ContextMenuItem[] = [
 const CAR_ITEMS: readonly ContextMenuItem[] = [{ id: 'delete', label: 'Delete car' }];
 
 /**
+ * Prefix of a row that deletes **one named car**, as the coupler's menu does.
+ *
+ * The other rows act on the subject the menu was opened on, which is one
+ * object. A coupling is two — the whole point of it — so its rows have to carry
+ * which car they mean, and the id is where that goes: `id` is never shown, so a
+ * machine-readable one costs the user nothing.
+ */
+const DELETE_CAR_ROW_PREFIX = 'delete-car:';
+
+/** The car a `delete-car:` row names, or null for any other row. */
+function carIdOfDeleteRow(id: string): string | null {
+  return id.startsWith(DELETE_CAR_ROW_PREFIX) ? id.slice(DELETE_CAR_ROW_PREFIX.length) : null;
+}
+
+/**
+ * How a coupler's menu names one of the cars that meet there.
+ *
+ * Cars carry no name and both of these end on the identical pixel, so the only
+ * thing that tells them apart is **which way each one runs** from the coupling.
+ * Two cars coupled end to end run in opposite directions, and opposite vectors
+ * always land in opposite quarters (`geometry.ts` § `cardinalDirection`), so
+ * the rows can never read the same. A car whose two ends coincide has no
+ * direction and gets the plain verb.
+ */
+function deleteCarRow(car: CarLabel, end: 'p0' | 'p1'): ContextMenuItem {
+  const direction = cardinalDirection(car[end], end === 'p0' ? car.p1 : car.p0);
+  return {
+    id: `${DELETE_CAR_ROW_PREFIX}${car.id}`,
+    label: direction ? `Delete car to the ${direction}` : 'Delete car',
+  };
+}
+
+/**
  * What a right-click found: the object the menu will act on, and the rows it
  * offers for it — or null when there is nothing to offer.
  *
@@ -171,11 +233,11 @@ const CAR_ITEMS: readonly ContextMenuItem[] = [{ id: 'delete', label: 'Delete ca
  * must not open a menu at all: a list of disabled rows is a worse answer than
  * the absence of one.
  *
- * A **coupler** opens nothing, and that is a deferral rather than an oversight:
- * its rows would have to name *which* of the coupled cars a verb acts on, and
- * that disambiguation belongs with the chaining that makes couplers routine
- * (#33). A coupler is reachable today only by dragging one car end onto
- * another's exact pixel, and the free ends of both cars still open a menu.
+ * A **coupler** offers one delete per car that meets there, named by the
+ * direction that car runs (#33). It has to: chaining makes couplings the normal
+ * case, and the middle car of a three-car train has *no* free end — deleting it
+ * is reachable only through the joint. Ends of the same car are listed once,
+ * since one row per car is what the verb acts on.
  */
 function menuFor(
   hit: HitTarget,
@@ -197,8 +259,19 @@ function menuFor(
       const car = scene.cars.find(c => c.id === end.id);
       return car ? { subject: { hit, px: car[end.end] }, items: CAR_ITEMS } : null;
     }
-    default:
-      return null;
+    case 'coupler': {
+      const items: ContextMenuItem[] = [];
+      const named = new Set<string>();
+      let at: Point | null = null;
+      for (const end of hit.ends) {
+        const car = scene.cars.find(c => c.id === end.id);
+        if (!car || named.has(car.id)) continue;
+        named.add(car.id);
+        at ??= car[end.end];
+        items.push(deleteCarRow(car, end.end));
+      }
+      return at && items.length > 0 ? { subject: { hit, px: at }, items } : null;
+    }
   }
 }
 
@@ -260,11 +333,17 @@ interface LiveGesture {
  * clicks on the visible car ends and writes the span between them (#32). A
  * click **on an existing object** edits that object whatever the tool is — a
  * coordinate for a calibration point, a name for a sensor — because the object
- * under the cursor is less ambiguous than the mode; a car placement in
- * progress outranks even that, since its second click is what completes the
- * label. Dragging moves whatever it grabbed, as one entry per gesture (#30),
- * and right-click opens the context menu on it (#29): delete for any of the
- * three, and naming for a sensor.
+ * under the cursor is less ambiguous than the mode; a chain in progress
+ * outranks even that, since its next click is what completes the car. Dragging
+ * moves whatever it grabbed, as one entry per gesture (#30), and right-click
+ * opens the context menu on it (#29): delete for any of the three, naming for a
+ * sensor, and one delete per car at a coupling.
+ *
+ * The car tool **chains** (#33): every click after the first is simultaneously
+ * the end of the current car and the start of the next, a rubber band shows the
+ * chain in flight, and right-click ends it. Two gestures mean something else
+ * while a chain is live — that right-click, and undo, which `rr-app` offers
+ * here first through {@link interceptUndo}.
  *
  * **Objects are keyed by `id`, never by object identity** — cars by label id,
  * sensors by sensor id, calibration points by position because they carry no
@@ -311,8 +390,25 @@ export class RREditorView extends LitElement {
   private _gesture: LiveGesture | null = null;
   /** What the context menu is open on, or null when it is closed. */
   private _menuSubject: MenuSubject | null = null;
-  /** Which state the state-dependent gestures dispatch on. See {@link EditorMode}. */
-  private _mode: EditorMode = { kind: 'idle' };
+  /**
+   * Which state the state-dependent gestures dispatch on. See
+   * {@link EditorMode}.
+   *
+   * Reactive because the **rubber band** is drawn from it: the band is what
+   * makes a live chain visible, and the visibility is what pays for right-click
+   * and undo meaning something else while one is in progress.
+   */
+  @state() private _mode: EditorMode = { kind: 'idle' };
+  /**
+   * Where the pointer last was, in whole image pixels, or null before it has
+   * moved over the image.
+   *
+   * Tracked **only while a chain is live**, because it is only the rubber
+   * band's far end: every other gesture reads its position off the event that
+   * carried it. Following the pointer at rest otherwise would re-render the
+   * editor on every mouse move for nothing.
+   */
+  @state() private _cursor: Point | null = null;
 
   @query('rr-calibration-dialog') private _calibrationDialog!: RRCalibrationDialog;
   @query('rr-sensor-dialog') private _sensorDialog!: RRSensorDialog;
@@ -439,18 +535,22 @@ export class RREditorView extends LitElement {
   }
 
   /**
-   * Drops a car placement in progress, wherever it is dropped from.
+   * Ends a chain in progress, wherever it is ended from.
    *
    * One method rather than an assignment at each site, because **every** way
    * out of the editor's current state has to close it — a tool change, an image
    * change, a lost DPT, a new archive, a reveal after undo, a right-click — and
    * a state whose exits are scattered is a state that eventually leaks one. It
    * writes nothing and records nothing: an anchor is view state, so an
-   * abandoned placement costs the manifest and the undo stack nothing
-   * (`SPEC.md` § Undo and redo).
+   * abandoned chain costs the manifest and the undo stack nothing (`SPEC.md`
+   * § Undo and redo) — however many cars it wrote, since each of those is its
+   * own committed entry and none of them is undone by the chain ending.
+   *
+   * The cursor goes with it: it exists only to draw the rubber band.
    */
   private _abandonPlacement() {
     this._mode = { kind: 'idle' };
+    this._cursor = null;
   }
 
   /**
@@ -490,12 +590,27 @@ export class RREditorView extends LitElement {
    * view before the change lands. See `history.ts`.
    */
   public async syncFromArchive(revealFilename?: string): Promise<void> {
-    if (!this.archive) return;
     // An undo can select another image, and an anchor is a pixel on the image
     // it was clicked on: carried across, the next click would write a car with
     // one end from each frame. Labels are never carried between images
     // (`SPEC.md` § No copy-forward).
+    //
+    // A chain undoing *itself* does not come through here — it keeps its chain
+    // by construction, and calls {@link _reveal} directly.
     this._abandonPlacement();
+    await this._reveal(revealFilename);
+  }
+
+  /**
+   * Rebuilds the blob URLs and brings `revealFilename` into view, leaving the
+   * editor's own state alone.
+   *
+   * The half of {@link syncFromArchive} that serves the history's navigation
+   * invariant — undo may move the user, but it may never change something they
+   * cannot see.
+   */
+  private async _reveal(revealFilename?: string): Promise<void> {
+    if (!this.archive) return;
     await this._refreshImageUrls();
     const images = this.archive.getManifest().images;
     if (revealFilename) {
@@ -503,6 +618,63 @@ export class RREditorView extends LitElement {
       if (index >= 0) this._currentImageIndex = index;
     }
     this._currentImageIndex = Math.max(0, Math.min(this._currentImageIndex, images.length - 1));
+  }
+
+  /**
+   * Undo, offered to the editor before it reaches the stack.
+   *
+   * **A live chain is a wall undo cannot cross** (`SPEC.md` § Undo and redo):
+   * while one is in progress this consumes every undo, so the reflexive "wrong
+   * place, undo" at the start of a train can never reach back and delete the
+   * last car of the *previous* one. What it does inside the wall depends on
+   * where in the chain it lands:
+   *
+   * * **At a chain's start** — an anchor and no car yet — it clears the anchor
+   *   and drops to idle. Nothing was written, so nothing is undone.
+   * * **Further along**, it undoes the entry the last car was recorded as and
+   *   walks the anchor back to where that car began, leaving the chain live one
+   *   step shorter. One car per undo, because a chain records one entry per car
+   *   and never one for the train: a mis-click on the last coupler of a
+   *   twelve-car consist must not cost the consist.
+   *
+   * The anchor steps back **only if that undo actually removed the car** this
+   * chain recorded. An edit made mid-chain — a calibration point dragged
+   * between clicks — sits on top of the stack and is what an undo reverses;
+   * stepping the anchor back for it would move the chain for an edit that was
+   * nothing to do with it.
+   *
+   * Called by `rr-app`, which owns undo and cannot see this state. The next
+   * press proceeds into real history normally.
+   *
+   * @returns true when the chain consumed the undo.
+   */
+  public async interceptUndo(): Promise<boolean> {
+    const mode = this._mode;
+    if (mode.kind !== 'placing-car') return false;
+
+    const link = mode.chain[mode.chain.length - 1];
+    if (!link) {
+      this._abandonPlacement();
+      return true;
+    }
+
+    const entry = (await this.history?.undo()) ?? null;
+    if (entry) {
+      this._notifyHistoryChange();
+      await this._reveal(revealTarget(entry));
+    }
+    // The reveal can have dropped the chain from under this — an undo that
+    // removes a calibration point takes the DPT with it, and the gate ends the
+    // chain. Nothing to step back to then.
+    if (this._mode.kind === 'placing-car' && !this._car(link.carId)) {
+      this._mode = { kind: 'placing-car', anchor: link.anchor, chain: mode.chain.slice(0, -1) };
+    }
+    return true;
+  }
+
+  /** The car with this id on the image on screen, or undefined once it is gone. */
+  private _car(id: string): CarLabel | undefined {
+    return this._currentImage()?.labels.find(car => car.id === id);
   }
 
   /** Tells `rr-app` to re-render the undo affordances. */
@@ -733,6 +905,14 @@ export class RREditorView extends LitElement {
    * snapshot, so the manifest is free to be written on every event.
    */
   private _onViewerPointerMove(e: CustomEvent<ViewerPointerDetail>) {
+    // The rubber band's far end, and the one thing here that is not part of a
+    // press: a chain is placed by clicks, so its band has to follow a pointer
+    // with no button down. Rounded, because the band previews the pixel the
+    // next click will write.
+    if (this._mode.kind === 'placing-car') {
+      this._cursor = { x: Math.round(e.detail.point.x), y: Math.round(e.detail.point.y) };
+    }
+
     const gesture = this._current(e);
     if (!gesture) return;
 
@@ -785,7 +965,7 @@ export class RREditorView extends LitElement {
     const px = { x: Math.round(gesture.origin.x), y: Math.round(gesture.origin.y) };
 
     if (this._mode.kind === 'placing-car') {
-      await this._completeCar(this._mode.anchor, px);
+      await this._completeCar(this._mode, px);
       return;
     }
 
@@ -845,44 +1025,74 @@ export class RREditorView extends LitElement {
         return;
       case 'car':
         if (!this._calibrated() || !this._currentImage()) return;
-        // The first of two clicks: it names one end and writes nothing. An
-        // abandoned placement therefore costs the manifest and the undo stack
+        // The first click of a chain: it names one end and writes nothing. An
+        // abandoned chain therefore costs the manifest and the undo stack
         // nothing at all.
-        this._mode = { kind: 'placing-car', anchor: px };
+        this._mode = { kind: 'placing-car', anchor: px, chain: [] };
+        this._cursor = px;
         return;
     }
   }
 
   /**
-   * The second click: write the car, as one entry scoped to its image.
+   * A click that closes one car and **opens the next**: write the car, then
+   * take its far end as the anchor of the car after it.
    *
-   * A car is the straight chord between two free clicks on the visible ends
-   * (`SPEC.md` § Authoring cars) — no snapping, because v4 stores no track to
-   * snap to, and the photograph shows the labeler where the car actually is.
-   * Width is **not** stored: it is derived from DPT at render time, which is
-   * what the calibration gate buys.
+   * That is the whole of chaining (`SPEC.md` § Authoring cars). The coincidence
+   * a train is derived from is guaranteed because the same pixel is written as
+   * one car's `p1` and handed straight on as the next one's `p0` — nothing
+   * about the train itself is stored, and nothing needs to be.
+   *
+   * A car is the straight chord between two free clicks on the visible ends —
+   * no snapping, because v4 stores no track to snap to, and the photograph
+   * shows the labeler where the car actually is. Width is **not** stored: it is
+   * derived from DPT at render time, which is what the calibration gate buys.
    *
    * `provenance: 'human'` with **no** `proposed_by` — the schema forbids the
    * key on a human label, because a default of `human` on model output is the
    * exact feedback loop provenance exists to make measurable. `class` is the
    * taxonomy root; refinement is the context menu's job (#35).
    *
-   * The mode drops to idle either way, so a click that lands with no image —
-   * the last one was deleted underneath the placement — abandons rather than
-   * leaving an anchor pointing at a frame that is gone.
+   * **One entry per car, never one for the train**: a mis-click on the last
+   * coupler of a twelve-car consist must cost one car, and undo must not invent
+   * an aggregate the format refuses to have (`SPEC.md` § Undo and redo).
+   *
+   * Two clicks on the **same pixel** describe no car and write none — a span
+   * with no length has neither an axis to draw along nor two ends to couple —
+   * and the chain simply stays where it was, waiting for a real second end.
+   *
+   * The chain ends outright if there is no image to write to: the last one was
+   * deleted underneath it, and an anchor pointing at a frame that is gone is
+   * worse than no anchor.
    */
-  private async _completeCar(anchor: Point, px: Point) {
-    this._abandonPlacement();
+  private async _completeCar(mode: Extract<EditorMode, { kind: 'placing-car' }>, px: Point) {
     const image = this._currentImage();
-    if (!image) return;
+    if (!image) {
+      this._abandonPlacement();
+      return;
+    }
+
+    const { anchor } = mode;
+    if (samePoint(px, anchor)) return;
 
     const car: CarLabel = {
       id: make_id(CAR_NODE_ID),
       class: NEW_CAR_CLASS,
       provenance: 'human',
-      p0: anchor,
-      p1: px,
+      p0: { ...anchor },
+      p1: { ...px },
     };
+    // The chain advances before the write, so the band the next mouse move
+    // draws already starts at the coupling this click just made. The anchor is
+    // a **copy** of the pixel, never the object the label holds: the editor
+    // keeps no reference to anything a history snapshot will replace, and the
+    // coincidence is in the values rather than in the identity.
+    this._mode = {
+      kind: 'placing-car',
+      anchor: { ...px },
+      chain: [...mode.chain, { carId: car.id, anchor }],
+    };
+    this._cursor = { ...px };
     await this._record('place car', { kind: 'image', filename: image.filename }, () => {
       this._writeImage(image.filename, { labels: [...image.labels, car] });
     });
@@ -948,9 +1158,8 @@ export class RREditorView extends LitElement {
    * listen, so its right-click stays the browser's.
    *
    * The state branch is the point of this handler (`SPEC.md` § Right-click is
-   * state-dependent): idle opens the menu, and a car placement in progress
-   * **ends the placement instead** — the same gesture that will end a chain
-   * (#33), which a one-car placement is the first click of.
+   * state-dependent): idle opens the menu, and a live chain **ends instead**.
+   * The next click starts a new train.
    */
   private _onViewerContextMenu(e: CustomEvent<ViewerContextMenuDetail>) {
     e.detail.originalEvent.preventDefault();
@@ -965,8 +1174,9 @@ export class RREditorView extends LitElement {
         void this._openContextMenu(e.detail);
         return;
       case 'placing-car':
-        // Nothing was written, so nothing is undone: the anchor is view state.
-        // No menu opens either — one gesture means one thing per state.
+        // The chain's cars stay: each is its own committed entry, and ending a
+        // chain undoes nothing. Only the anchor goes, and an anchor is view
+        // state. No menu opens either — one gesture means one thing per state.
         this._abandonPlacement();
         return;
     }
@@ -1010,6 +1220,13 @@ export class RREditorView extends LitElement {
     this._menuSubject = null;
     if (!subject || !this.archive) return;
 
+    // A coupler's rows name their own car, because the subject is two of them.
+    const carId = carIdOfDeleteRow(e.detail.id);
+    if (carId !== null) {
+      await this._deleteCar(carId);
+      return;
+    }
+
     switch (e.detail.id) {
       case 'delete':
         await this._deleteSubject(subject);
@@ -1031,7 +1248,7 @@ export class RREditorView extends LitElement {
    */
   private _pointIsStillAt(index: number, px: Point): boolean {
     const point = this.archive?.getManifest().layout.calibration.points[index];
-    return point !== undefined && point.px.x === px.x && point.px.y === px.y;
+    return point !== undefined && samePoint(point.px, px);
   }
 
   /**
@@ -1068,26 +1285,37 @@ export class RREditorView extends LitElement {
         });
         return;
       }
-      case 'car-endpoint': {
-        // Keyed by label `id`, like the sensor above: the hit names one car
-        // however the array is replaced underneath, and the same id is what
-        // undo restores it under. Deleting one car of a train leaves no
-        // residue — a train is derived from coincident endpoints, so there is
-        // nothing else that names the car that went.
-        const { id } = subject.hit.ends[0];
-        const image = this._currentImage();
-        if (!image || !image.labels.some(car => car.id === id)) return;
-
-        await this._record('delete car', { kind: 'image', filename: image.filename }, () => {
-          this._writeImage(image.filename, {
-            labels: image.labels.filter(car => car.id !== id),
-          });
-        });
+      case 'car-endpoint':
+        await this._deleteCar(subject.hit.ends[0].id);
         return;
-      }
       default:
         return;
     }
+  }
+
+  /**
+   * Deletes one car, as one entry scoped to the image it is on.
+   *
+   * Keyed by label `id`, like a sensor: the id names one car however the array
+   * is replaced underneath, and the same id is what undo restores it under. A
+   * car that is already gone — an undo landed while the menu was up — is
+   * dropped rather than deleted from underneath the user, which is the
+   * staleness guard `_pointIsStillAt` gives a point that has no id.
+   *
+   * Deleting one car of a train leaves **no residue**: a train is derived from
+   * coincident endpoints, so nothing else names the car that went, and the
+   * cars either side of it simply stop being coupled to it. Taking the middle
+   * car of three leaves two.
+   */
+  private async _deleteCar(id: string) {
+    const image = this._currentImage();
+    if (!image || !image.labels.some(car => car.id === id)) return;
+
+    await this._record('delete car', { kind: 'image', filename: image.filename }, () => {
+      this._writeImage(image.filename, {
+        labels: image.labels.filter(car => car.id !== id),
+      });
+    });
   }
 
   /**
@@ -1335,6 +1563,18 @@ export class RREditorView extends LitElement {
     </div>`;
   }
 
+  /**
+   * The rubber band, or null when no chain is live.
+   *
+   * Before the pointer has moved it is the anchor twice over, which draws the
+   * anchor's handle and nothing else — the feedback that the first click of a
+   * chain landed, where #32 had none.
+   */
+  private _pendingCar(): PendingCar | null {
+    if (this._mode.kind !== 'placing-car') return null;
+    return { anchor: this._mode.anchor, to: this._cursor ?? this._mode.anchor };
+  }
+
   render() {
     const manifest = this.archive?.getManifest();
     const currentImage = manifest?.images[this._currentImageIndex];
@@ -1370,6 +1610,7 @@ export class RREditorView extends LitElement {
               .calibrationPoints=${manifest.layout.calibration.points}
               .sensors=${manifest.layout.sensors}
               .cars=${currentImage?.labels ?? []}
+              .pendingCar=${this._pendingCar()}
               .dpt=${getDPT(manifest)}
               @rr-pointer-down=${this._onViewerPointerDown}
               @rr-pointer-move=${this._onViewerPointerMove}

@@ -70,6 +70,46 @@ describe('rr-app', () => {
     expect(notifySpy).toHaveBeenCalledWith('Saved to disk', 'success', 'download');
   });
 
+  describe('undo, offered to the editor first', () => {
+    /** An app showing the editor, with the editor's interception stubbed. */
+    async function mount(intercepts: boolean) {
+      const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+      (el as any)._archive = archive;
+      await el.updateComplete;
+      const view = el.renderRoot.querySelector('rr-editor-view')!;
+      const intercept = vi.spyOn(view, 'interceptUndo').mockResolvedValue(intercepts);
+      const undo = vi.spyOn((el as any)._history, 'undo');
+      return { el, intercept, undo };
+    }
+
+    it('leaves the stack alone when a live chain consumes it', async () => {
+      // A live chain is a wall undo cannot cross (SPEC.md § Undo and redo).
+      const { el, intercept, undo } = await mount(true);
+
+      await (el as any)._undo();
+
+      expect(intercept).toHaveBeenCalled();
+      expect(undo).not.toHaveBeenCalled();
+    });
+
+    it('goes to the stack when the editor does not consume it', async () => {
+      const { el, intercept, undo } = await mount(false);
+
+      await (el as any)._undo();
+
+      expect(intercept).toHaveBeenCalled();
+      expect(undo).toHaveBeenCalled();
+    });
+
+    it('offers redo to nobody — only undo is state-dependent', async () => {
+      const { el, intercept } = await mount(true);
+
+      await (el as any)._redo();
+
+      expect(intercept).not.toHaveBeenCalled();
+    });
+  });
+
   it('reports a save failure', async () => {
     const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
     (el as any)._archive = archive;

@@ -53,6 +53,19 @@ export interface HistoryEntry {
   readonly bytes: number;
 }
 
+/**
+ * The image an entry has to bring into view before it lands, or `undefined`
+ * when it touches nothing image-scoped.
+ *
+ * The navigation invariant in one function (`SPEC.md` § Undo and redo): undo may
+ * move the user, but it may never change something they cannot see. Two callers
+ * need it — `rr-app` for an ordinary undo, `rr-editor-view` for the one a live
+ * chain intercepts — and one rule stated twice is one rule that can drift.
+ */
+export function revealTarget(entry: HistoryEntry): string | undefined {
+  return entry.target.kind === 'image' ? entry.target.filename : undefined;
+}
+
 interface MutableEntry extends HistoryEntry {
   before: string;
   after: string;

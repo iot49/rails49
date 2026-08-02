@@ -507,12 +507,106 @@ export function dragTo(handle: DragHandle, delta: Point): Point {
   return { x: Math.round(handle.from.x + delta.x), y: Math.round(handle.from.y + delta.y) };
 }
 
+/**
+ * Every pixel where two or more car ends meet — the couplings of a scene,
+ * derived rather than read, because nothing about a coupling is stored.
+ *
+ * The renderer's half of what {@link hitTest} answers for the pointer, and by
+ * the same rule: **exact coincidence**, never proximity. That shared rule is
+ * what makes the shared handle honest — the one place a click lands on two
+ * cars is the one place one handle is drawn.
+ *
+ * Each coupling appears **once**, however many ends meet there, which is what
+ * "renders as one shared handle" comes down to. In scene order, so a chained
+ * train's couplings come back in the order it was authored.
+ *
+ * A car whose two ends are the same pixel counts as a coupling of itself: there
+ * is one point on screen, so there is one handle. The editor refuses to author
+ * such a car, so it can only arrive from outside.
+ */
+export function couplerPoints(cars: readonly CarLabel[]): readonly Point[] {
+  const seen = new Map<string, { readonly at: Point; ends: number }>();
+  for (const car of cars) {
+    for (const end of [car.p0, car.p1]) {
+      const key = `${end.x},${end.y}`;
+      const found = seen.get(key);
+      if (found) found.ends += 1;
+      else seen.set(key, { at: { x: end.x, y: end.y }, ends: 1 });
+    }
+  }
+  return [...seen.values()].filter(entry => entry.ends > 1).map(entry => entry.at);
+}
+
+/**
+ * Whether two pixels are the same pixel.
+ *
+ * The **one** encoding of the coincidence rule, shared by everything that has
+ * to agree on what a coupling is: the hit-test, the renderer's list, and the
+ * staleness guards. Exact, never a tolerance — see {@link hitTest}.
+ */
+export function samePoint(a: Point, b: Point): boolean {
+  return a.x === b.x && a.y === b.y;
+}
+
+/**
+ * Whether `at` is exactly one of `points` — how a renderer asks whether an end
+ * is coupled, against the list {@link couplerPoints} returned.
+ */
+export function isCoincident(at: Point, points: readonly Point[]): boolean {
+  return points.some(point => samePoint(point, at));
+}
+
+/**
+ * Which of a car's ends are coupled, and so are drawn once as a shared handle
+ * rather than twice as two ends.
+ *
+ * Here rather than in the renderer that needs it, like every other piece of
+ * editor geometry: a coupling is a property of the *scene*, and one car cannot
+ * see it on its own.
+ */
+export interface CoupledEnds {
+  readonly p0: boolean;
+  readonly p1: boolean;
+}
+
+/** {@link CoupledEnds} for one car, against the scene's {@link couplerPoints}. */
+export function coupledEnds(car: CarLabel, couplers: readonly Point[]): CoupledEnds {
+  return { p0: isCoincident(car.p0, couplers), p1: isCoincident(car.p1, couplers) };
+}
+
+/** Which way one point lies from another, to the nearest quarter turn. */
+export type CardinalDirection = 'left' | 'right' | 'up' | 'down';
+
+/**
+ * The direction of `to` seen from `from`, as a word — or `null` when the two
+ * are the same point and there is no direction to name.
+ *
+ * It exists for the **coupler's context menu**: the rows there act on one of
+ * two cars that meet at the identical pixel, and cars carry no name, so the
+ * only thing that tells them apart is which way each one runs. Two cars
+ * coupled end to end run in opposite directions from the coupling, and
+ * opposite vectors always land in opposite quarters — so the two rows can never
+ * read the same, which is the property the menu needs.
+ *
+ * **`y` grows downwards**, as it does everywhere in image pixels: a smaller `y`
+ * is `up`. An exact diagonal resolves horizontally rather than being called a
+ * tie, because a tie would have to be broken twice and could name both cars the
+ * same way.
+ */
+export function cardinalDirection(from: Point, to: Point): CardinalDirection | null {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (dx === 0 && dy === 0) return null;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+  return dy > 0 ? 'down' : 'up';
+}
+
 /** Every car end sitting exactly on `at`, in scene order. */
 function coincidentEnds(cars: readonly CarLabel[], at: Point): CarEnd[] {
   const ends: CarEnd[] = [];
   for (const label of cars) {
-    if (label.p0.x === at.x && label.p0.y === at.y) ends.push({ id: label.id, end: 'p0' });
-    if (label.p1.x === at.x && label.p1.y === at.y) ends.push({ id: label.id, end: 'p1' });
+    if (samePoint(label.p0, at)) ends.push({ id: label.id, end: 'p0' });
+    if (samePoint(label.p1, at)) ends.push({ id: label.id, end: 'p1' });
   }
   return ends;
 }

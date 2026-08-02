@@ -1329,6 +1329,16 @@ describe('rr-editor-view', () => {
       });
     }
 
+    /**
+     * Right-click over empty image: the gesture that ends a chain.
+     *
+     * Every car after the first in a train is chained onto the one before it,
+     * so authoring two *separate* cars means ending the chain in between.
+     */
+    async function endChain(el: RREditorView) {
+      await rightClickAt(el, { x: 900, y: 900 });
+    }
+
     /** Selects an image the way `rr-thumbnail-bar` reports one. */
     async function selectImage(el: RREditorView, index: number) {
       el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
@@ -1371,6 +1381,7 @@ describe('rr-editor-view', () => {
       for (const y of [100, 200, 300]) {
         await clickAt(el, { x: 100, y });
         await clickAt(el, { x: 400, y });
+        await endChain(el);
       }
 
       expect(cars()).to.have.length(3);
@@ -1465,19 +1476,358 @@ describe('rr-editor-view', () => {
     });
 
     it('starts no car from a click on an existing car end', async () => {
-      // The object under the cursor wins when no placement is live, and a car
-      // end has nothing a click can edit — so the click does nothing at all
-      // rather than stacking a second label on the one being aimed at.
-      // Abutting cars are authored by **chaining** (#33), not by clicking a
-      // free anchor onto an existing end.
+      // Once the chain has ended, the object under the cursor wins again, and
+      // a car end has nothing a click can edit — so the click does nothing at
+      // all rather than stacking a second label on the one being aimed at.
+      // Abutting cars are authored by **chaining**, not by clicking a free
+      // anchor onto an existing end.
       const el = await mountWithCarTool();
       await clickAt(el, { x: 100, y: 100 });
       await clickAt(el, { x: 400, y: 100 });
+      await endChain(el);
 
       await clickAt(el, { x: 400, y: 100 });
       await clickAt(el, { x: 700, y: 100 });
 
       expect(cars()).to.have.length(1);
+    });
+
+    describe('chaining a train', () => {
+      /** The rubber band the viewer is currently drawing, if any. */
+      function band(el: RREditorView) {
+        return el.shadowRoot!.querySelector('rr-viewer')!.pendingCar;
+      }
+
+      /** A pointer move with no button down — what the band follows. */
+      async function moveTo(el: RREditorView, point: Point) {
+        gesture(el, 'rr-pointer-move', point, 1);
+        await el.updateComplete;
+      }
+
+      it('makes every click after the first an end and the next start', async () => {
+        const el = await mountWithCarTool();
+
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await clickAt(el, { x: 700, y: 100 });
+        await clickAt(el, { x: 1000, y: 100 });
+
+        expect(cars()).to.have.length(3);
+        // Exactly coincident, not merely close: the coincidence is what a train
+        // is derived from, and chaining is what guarantees it.
+        expect(cars()[0].p1).to.deep.equal(cars()[1].p0);
+        expect(cars()[1].p1).to.deep.equal(cars()[2].p0);
+        expect(cars()[0].p1).to.deep.equal({ x: 400, y: 100 });
+      });
+
+      it('couples a chain drawn along a diagonal, pixel for pixel', async () => {
+        // The clicked pixel is rounded before it is written, so the end and the
+        // next start must be rounded the same way or the train comes apart.
+        const el = await mountWithCarTool();
+
+        await clickAt(el, { x: 100.4, y: 100.6 });
+        await clickAt(el, { x: 240.5, y: 180.5 });
+        await clickAt(el, { x: 390.2, y: 260.7 });
+
+        expect(cars()[0].p1).to.deep.equal(cars()[1].p0);
+        expect(cars()[1].p0).to.deep.equal({ x: 241, y: 181 });
+      });
+
+      it('records one entry per car, so one undo costs one car', async () => {
+        // Never one entry for the train: a mis-click on the last coupler of a
+        // twelve-car consist must not cost the consist.
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await clickAt(el, { x: 700, y: 100 });
+
+        expect(history.size).to.equal(2);
+      });
+
+      it('draws a band from the anchor to the cursor', async () => {
+        const el = await mountWithCarTool();
+        expect(band(el)).to.equal(null);
+
+        await clickAt(el, { x: 100, y: 100 });
+        // Before the pointer moves the band is the anchor twice: the handle is
+        // the feedback that the first click landed.
+        expect(band(el)).to.deep.equal({
+          anchor: { x: 100, y: 100 },
+          to: { x: 100, y: 100 },
+        });
+
+        await moveTo(el, { x: 380.4, y: 220.6 });
+        expect(band(el)).to.deep.equal({
+          anchor: { x: 100, y: 100 },
+          to: { x: 380, y: 221 },
+        });
+      });
+
+      it('re-anchors the band on the coupling each click makes', async () => {
+        const el = await mountWithCarTool();
+
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await moveTo(el, { x: 600, y: 100 });
+
+        expect(band(el)).to.deep.equal({
+          anchor: { x: 400, y: 100 },
+          to: { x: 600, y: 100 },
+        });
+      });
+
+      it('takes the band away when the chain ends', async () => {
+        const el = await mountWithCarTool();
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+
+        await endChain(el);
+
+        expect(band(el)).to.equal(null);
+      });
+
+      it('ends the chain on right-click and starts a new train on the next click', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await endChain(el);
+
+        // The chain's car stays — it was committed — and no menu opened.
+        expect(menuOf(el).open).to.be.false;
+        expect(cars()).to.have.length(1);
+        expect(history.size).to.equal(1);
+
+        await clickAt(el, { x: 100, y: 500 });
+        await clickAt(el, { x: 400, y: 500 });
+
+        expect(cars()).to.have.length(2);
+        expect(cars()[1].p0).to.deep.equal({ x: 100, y: 500 });
+      });
+
+      it('writes no car for a second click on the anchor itself', async () => {
+        // A span with no length is no car: it has no axis to draw along and no
+        // two ends to couple. The chain simply stays where it was.
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+
+        await clickAt(el, { x: 200, y: 200 });
+        await clickAt(el, { x: 200, y: 200 });
+
+        expect(cars()).to.have.length(0);
+        expect(history.size).to.equal(0);
+
+        await clickAt(el, { x: 500, y: 200 });
+        expect(cars()).to.have.length(1);
+        expect(cars()[0].p0).to.deep.equal({ x: 200, y: 200 });
+      });
+
+      it('leaves the manifest untouched for a chain that never got a second click', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithCarTool(history);
+        const before = structuredClone(archive.getManifest());
+
+        await clickAt(el, { x: 200, y: 200 });
+        await endChain(el);
+
+        expect(archive.getManifest()).to.deep.equal(before);
+        expect(history.size).to.equal(0);
+        expect(history.canUndo).to.be.false;
+      });
+
+      describe('undo, intercepted by the chain', () => {
+        it('takes one car and puts the anchor back where it began', async () => {
+          const history = new EditHistory();
+          history.attach(archive);
+          const el = await mountWithCarTool(history);
+
+          await clickAt(el, { x: 100, y: 100 });
+          await clickAt(el, { x: 400, y: 100 });
+          await clickAt(el, { x: 700, y: 100 });
+
+          expect(await el.interceptUndo()).to.be.true;
+          await el.updateComplete;
+
+          expect(cars()).to.have.length(1);
+          // It went through the stack rather than around it: the car is back
+          // one redo away.
+          expect(history.canRedo).to.be.true;
+          // The chain is still live, one step back: the next click draws from
+          // where the car that went began.
+          expect(band(el)!.anchor).to.deep.equal({ x: 400, y: 100 });
+
+          await clickAt(el, { x: 700, y: 400 });
+          expect(cars()).to.have.length(2);
+          expect(cars()[1].p0).to.deep.equal({ x: 400, y: 100 });
+        });
+
+        it('walks a whole chain back, one car at a time', async () => {
+          const history = new EditHistory();
+          history.attach(archive);
+          const el = await mountWithCarTool(history);
+
+          await clickAt(el, { x: 100, y: 100 });
+          await clickAt(el, { x: 400, y: 100 });
+          await clickAt(el, { x: 700, y: 100 });
+
+          await el.interceptUndo();
+          await el.interceptUndo();
+          await el.updateComplete;
+
+          expect(cars()).to.have.length(0);
+          // Back at the chain's start: the anchor is the first click again.
+          // The band's far end is still the last place the pointer was seen —
+          // an undo moves the anchor, not the mouse.
+          expect(band(el)).to.deep.equal({
+            anchor: { x: 100, y: 100 },
+            to: { x: 700, y: 100 },
+          });
+        });
+
+        it('is a wall: at the chain\'s start it clears the anchor and stops there', async () => {
+          // The reflexive "wrong place, undo" at the start of a train must
+          // never reach back and delete the last car of the previous one.
+          const history = new EditHistory();
+          history.attach(archive);
+          const el = await mountWithCarTool(history);
+
+          await clickAt(el, { x: 100, y: 100 });
+          await clickAt(el, { x: 400, y: 100 });
+          await endChain(el);
+          await clickAt(el, { x: 100, y: 500 });
+
+          expect(await el.interceptUndo()).to.be.true;
+          await el.updateComplete;
+
+          expect(band(el)).to.equal(null);
+          // The previous train is untouched, and its entry is still on the stack.
+          expect(cars()).to.have.length(1);
+          expect(history.size).to.equal(1);
+        });
+
+        it('lets the stack have the undo once the chain is over', async () => {
+          const history = new EditHistory();
+          history.attach(archive);
+          const el = await mountWithCarTool(history);
+
+          await clickAt(el, { x: 100, y: 100 });
+          await clickAt(el, { x: 400, y: 100 });
+          await endChain(el);
+
+          expect(await el.interceptUndo()).to.be.false;
+          expect(cars()).to.have.length(1);
+        });
+
+        it('leaves the anchor alone when the undo reversed something else', async () => {
+          // A calibration point dragged between two clicks of a chain puts its
+          // own entry on top of the stack. Undo reverses that; the chain has
+          // not lost a car, so its anchor must not move.
+          const history = new EditHistory();
+          history.attach(archive);
+          const el = await mountWithCarTool(history);
+
+          await clickAt(el, { x: 100, y: 100 });
+          await clickAt(el, { x: 400, y: 100 });
+          await drag(el, [
+            { x: 100, y: 0 },
+            { x: 120, y: 40 },
+          ]);
+
+          expect(await el.interceptUndo()).to.be.true;
+          await el.updateComplete;
+
+          expect(points()[1].px).to.deep.equal({ x: 100, y: 0 });
+          expect(cars()).to.have.length(1);
+          expect(band(el)!.anchor).to.deep.equal({ x: 400, y: 100 });
+        });
+      });
+
+      describe('the shared coupler handle', () => {
+        /** A three-car train, chained end to end along one line. */
+        async function mountWithTrain(history?: EditHistory) {
+          const el = await mountWithCarTool(history);
+          for (const x of [100, 400, 700, 1000]) {
+            await clickAt(el, { x, y: 100 });
+          }
+          await endChain(el);
+          return el;
+        }
+
+        it('drags both cars of a coupling as one entry, keeping them coupled', async () => {
+          const history = new EditHistory();
+          history.attach(archive);
+          const el = await mountWithTrain(history);
+          const entries = history.size;
+
+          await drag(el, [
+            { x: 400, y: 100 },
+            { x: 450, y: 220 },
+          ]);
+
+          expect(cars()[0].p1).to.deep.equal({ x: 450, y: 220 });
+          expect(cars()[1].p0).to.deep.equal({ x: 450, y: 220 });
+          expect(history.size).to.equal(entries + 1);
+        });
+
+        it('names both coupled cars in the menu, by the way each one runs', async () => {
+          const el = await mountWithTrain();
+
+          await rightClickAt(el, { x: 400, y: 100 });
+
+          expect(menuOf(el).open).to.be.true;
+          expect(menuItems(el)).to.deep.equal([
+            `delete-car:${cars()[0].id}`,
+            `delete-car:${cars()[1].id}`,
+          ]);
+          const labels = [...menuOf(el).shadowRoot!.querySelectorAll('sl-menu-item')].map(
+            item => item.textContent!.trim()
+          );
+          expect(labels).to.deep.equal(['Delete car to the left', 'Delete car to the right']);
+        });
+
+        it('deletes the middle car of a three-car train, leaving two and no residue', async () => {
+          const history = new EditHistory();
+          history.attach(archive);
+          const el = await mountWithTrain(history);
+          const [first, middle, last] = structuredClone(cars());
+
+          // The middle car has no free end at all — the joint is the only way
+          // to reach it, which is why a coupler opens a menu.
+          await rightClickAt(el, { x: 700, y: 100 });
+          await choose(el, `delete-car:${middle.id}`);
+
+          expect(cars()).to.deep.equal([first, last]);
+          // Nothing else named the car that went: a train is derived, so the
+          // two survivors are simply two cars now.
+          expect(cars()[0].p1).to.deep.equal({ x: 400, y: 100 });
+          expect(cars()[1].p0).to.deep.equal({ x: 700, y: 100 });
+
+          const entry = await history.undo();
+          expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
+          expect(cars()).to.deep.equal([first, middle, last]);
+        });
+
+        it('offers one row per car where three ends meet', async () => {
+          const el = await mountWithTrain();
+          // A fourth car joining the coupling at (400, 100) from below. It is
+          // chained *into* the joint: a click on an existing end starts no car,
+          // but the second click of a chain lands wherever it is aimed.
+          await clickAt(el, { x: 400, y: 400 });
+          await clickAt(el, { x: 400, y: 100 });
+          await endChain(el);
+
+          await rightClickAt(el, { x: 400, y: 100 });
+
+          expect(menuItems(el)).to.have.length(3);
+        });
+      });
     });
 
     describe('dragging an endpoint', () => {
@@ -1622,12 +1972,15 @@ describe('rr-editor-view', () => {
     });
 
     describe('deleting', () => {
+      /** Two separate cars: the chain is ended between them, so neither is coupled. */
       async function mountWithTwoCars(history?: EditHistory) {
         const el = await mountWithCarTool(history);
         await clickAt(el, { x: 100, y: 100 });
         await clickAt(el, { x: 400, y: 100 });
+        await endChain(el);
         await clickAt(el, { x: 100, y: 500 });
         await clickAt(el, { x: 400, y: 500 });
+        await endChain(el);
         return el;
       }
 
@@ -1764,6 +2117,7 @@ describe('rr-editor-view', () => {
       const el = await mountWithCarTool();
       await clickAt(el, { x: 100, y: 100 });
       await clickAt(el, { x: 400, y: 100 });
+      await endChain(el);
       await clickAt(el, { x: 100, y: 500 });
       await clickAt(el, { x: 400, y: 500 });
 

@@ -5,9 +5,9 @@ import type { MarkerData } from './marker.js';
 import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMarker.js';
 import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
 import type { SensorSymbolSize } from './sensorMarker.js';
-import { renderCar, carMarkerStyles } from './carMarker.js';
-import type { CarSymbolSize } from './carMarker.js';
-import { sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
+import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from './carMarker.js';
+import type { CarSymbolSize, PendingCar } from './carMarker.js';
+import { coupledEnds, couplerPoints, sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
 import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
@@ -66,8 +66,9 @@ const LABEL_SIZE_RATIO = 0.42;
  *
  * A handle is where the pointer grabs, so it is a **screen** size like every
  * other annotation — the rectangle around it is the world size. Smaller than a
- * crosshair on purpose: two of them sit at every coupling, and a symbol that
- * covered the car ends would hide the feature the labeler is aiming at.
+ * crosshair on purpose: a symbol that covered the car ends would hide the
+ * feature the labeler is aiming at. A coupling draws *one* handle of its own
+ * (`carMarker.ts` § `renderCoupler`) rather than two of these.
  */
 const CAR_HANDLE_SIZE_RATIO = 0.3;
 
@@ -137,7 +138,7 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * pixel coordinates. Changing either half misplaces every marker.
  *
  * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `sensors`,
- * `cars`, `dpt`, `resolution`.
+ * `cars`, `pendingCar`, `dpt`, `resolution`.
  *
  * @fires rr-pointer-down - Pointer pressed. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-move - Pointer moved. Detail: {@link ViewerPointerDetail}
@@ -184,6 +185,18 @@ export class RrViewer extends LitElement {
    * detections rather than labels.
    */
   @property({ attribute: false }) cars: readonly CarLabel[] = [];
+  /**
+   * The chain in flight — the anchor and the pointer — or `null` when none is.
+   *
+   * The **rubber band**, and the only thing this component draws that is not in
+   * the manifest. That is deliberate rather than an exception: a live chain is
+   * view state (`SPEC.md` § Undo and redo), so it is passed in as view state
+   * and written nowhere. The editor owns the state; the viewer, as ever,
+   * authors nothing.
+   *
+   * Empty in the live view, which places no cars.
+   */
+  @property({ attribute: false }) pendingCar: PendingCar | null = null;
   /**
    * The layout's DPT, or `null` when calibration does not resolve one.
    *
@@ -395,6 +408,14 @@ export class RrViewer extends LitElement {
   }
 
   render() {
+    // Derived here rather than passed in: a coupling is exact coincidence
+    // between two cars (`geometry.ts` § `couplerPoints`), so it is a property
+    // of the list this component was handed and there is nothing for a parent
+    // to compute. One handle is drawn per coincident pixel, and the cars
+    // underneath leave their own handles off — see `carMarker.ts`.
+    const couplers = couplerPoints(this.cars);
+    const carSize = this.carSize();
+
     return html`
       <div class="viewport">
         ${this.src ? html`<img .src=${this.src} />` : ''}
@@ -416,7 +437,15 @@ export class RrViewer extends LitElement {
           <!-- Cars first: their width rectangles are the only area fills here,
                so drawing them underneath keeps a crosshair or a sensor placed
                on a car visible instead of tinted over. -->
-          ${this.cars.map(c => renderCar(c, this.carSize()))}
+          ${this.cars.map(c => renderCar(c, carSize, coupledEnds(c, couplers)))}
+
+          <!-- The shared handles, over the cars they join: one per coupling,
+               where the cars themselves drew none. -->
+          ${couplers.map(at => renderCoupler(at, carSize))}
+
+          <!-- The rubber band last of the car layer, so the chain in flight is
+               legible over the train it is being added to. -->
+          ${this.pendingCar ? renderPendingCar(this.pendingCar, carSize) : ''}
 
           ${this.calibrationPoints.map((p, i) =>
             // `resolution` is the viewBox, so it is also the frame the label

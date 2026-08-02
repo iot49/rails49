@@ -21,33 +21,71 @@ ticket at a time. It opens an archive, manages its images, edits layout metadata
 history entry per placement or edit — which it now also **drags** (#30), at one entry per gesture,
 and **deletes** through the right-click context menu (#29). #31 added the **tool palette**, the
 **calibration gate**, and **sensor authoring**; #32 added **car authoring** — two clicks on the
-visible ends, one `image` entry per car, drawn as a chord inside the DPT-derived width rectangle.
-v3's point-marker authoring and two-point calibration dragging are gone for good, and
-`src/prototype/` with them: what came back is a different mechanism, built to carry the coupler case.
+visible ends, one `image` entry per car, drawn as a chord inside the DPT-derived width rectangle;
+#33 made those clicks a **chain**. v3's point-marker authoring and two-point calibration dragging
+are gone for good, and `src/prototype/` with them: what came back is a different mechanism, built to
+carry the coupler case.
 
-So a missing affordance is usually a deferral, not a bug. Chaining and shared coupler handles (#33),
-reclassify (#35) and the completeness affordance (#36) are specified in `../SPEC.md` § Labeling
-Workflow and belong to their own tickets. Don't reconstruct them piecemeal to close a gap you notice
-here. Three such gaps are deliberate and are stated in the code:
+So a missing affordance is usually a deferral, not a bug. Reclassify (#35) and the completeness
+affordance (#36) are specified in `../SPEC.md` § Labeling Workflow and belong to their own tickets.
+Don't reconstruct them piecemeal to close a gap you notice here. One such gap is deliberate and is
+stated in the code:
 
-* A click on an **existing car end** starts no car. Abutting cars are what chaining is for, so a car
-  is authored one at a time until #33.
-* A **coupler** opens no context menu. Its rows would have to name *which* of the coupled cars the
-  verb acts on, which is #33's to design; both cars' free ends still open one. Dragging a coupler
-  already works — it is one entry moving both ends, which is what `dragHandles` was shaped for.
-* There is **no rubber band** on a placement in progress: the first click takes an anchor with no
-  on-screen feedback until #33 draws one.
-* **Undo is not intercepted by a placement.** `SPEC.md` § Undo and redo wants a live chain to be a
-  wall Cmd+Z cannot cross ("at a chain's start … it clears the anchor and drops to idle"), which
-  needs `rr-app` — the owner of undo — to ask the editor first. That protocol arrives with the chain
-  it protects (#33); today an undo during a placement simply reverses the previous edit, and the
-  anchor is dropped by the reveal that follows.
+* A click on an **existing car end** starts no car *while idle* — a car end has nothing a click can
+  edit, and starting one there would stack a label on the object being aimed at. A chain's second
+  click lands wherever it is aimed, existing end included, which is how a car is coupled onto a
+  train that is already drawn.
 
-The `EditorMode` union is where the state-dependent gestures dispatch. It has two members —
-`idle` opens the context menu, `placing-car` ends the placement — and chaining extends the second
-rather than adding a third. A half-placed car is **view state**: it writes nothing, so every way of
-abandoning one (right-click, tool change, image change, a lost DPT, a new archive) costs the
-manifest and the undo stack nothing.
+### Chaining, and what hangs off it (#33)
+
+Every click after the first is **simultaneously the end of the current car and the start of the
+next**. The coincidence a train is derived from is exact because the same pixel is written as one
+car's `p1` and handed straight on as the next one's `p0` — chaining does not record a train, it
+guarantees the coincidence. **One entry per car, never one for the train**: a mis-click on the last
+coupler of a twelve-car consist must cost one car.
+
+The `EditorMode` union is where the state-dependent gestures dispatch: `idle` opens the context
+menu, `placing-car` ends the chain. A chain is **view state** — its anchor writes nothing, so every
+way of abandoning one (right-click, tool change, image change, a lost DPT, a new archive) costs the
+manifest and the undo stack nothing, and the cars it already wrote stay, each on its own entry.
+
+Three things hang off that state, and each is load-bearing rather than decoration:
+
+* The **rubber band** (`rr-viewer`'s `pendingCar`) is what makes a live chain visible, and that
+  visibility is what pays for right-click *and* undo meaning something else while one is live. It
+  draws the whole car it would commit, rectangle included, because the rectangle is the only
+  feedback that a label covers the car. The cursor is tracked **only** while a chain is live; every
+  other gesture reads its position off the event that carried it.
+  > On **touch** the band is the anchor's handle and nothing more until the next tap: a finger
+  > reports no position between taps, so there is no cursor to draw to. That is the platform rather
+  > than a gap to close — the anchor handle is still the signal that a chain is live, where #32 drew
+  > nothing at all — but the labeling device is a phone, so it is worth knowing the band is a
+  > mouse-only affordance.
+* **Undo is intercepted**, through `rr-editor-view.interceptUndo()`, which `rr-app` awaits before it
+  touches the stack — `rr-app` owns undo and cannot see this state, so the protocol is one question
+  asked rather than chain state pushed up. A live chain consumes **every** undo (the wall): further
+  along it undoes the last car and walks the anchor back, at the chain's start it clears the anchor
+  and touches no history. The anchor steps back only if that undo actually removed the chain's car —
+  an edit made between two clicks sits on top of the stack and is nothing to do with the chain.
+  > The **toolbar's undo affordance does not know about the wall**: while a chain is live it still
+  > reads the stack's `undoLabel`, so the button can name the entry underneath while the press will
+  > take a chain car instead. Pressing it does the right thing — it goes through the same `_undo` —
+  > but the label lags the state. Fixing it means feeding chain state up to `rr-toolbar`, which no
+  > ticket asks for.
+* A **coupling renders as one shared handle**. `rr-viewer` derives the couplings from the cars it
+  was handed (`geometry.ts` § `couplerPoints`, exact coincidence — the same rule the hit-test grabs
+  by) and the cars leave their own handles off at those ends: two circles stacked on one pixel would
+  only *look* like one. Dragging it is one entry moving every end under it, which is what
+  `dragHandles` was shaped for.
+
+A **coupler now opens a context menu**, one delete row per car that meets there, each named by the
+direction that car runs (`geometry.ts` § `cardinalDirection`). It has to: chaining makes couplings
+the normal case, and the middle car of a three-car train has no free end at all, so the joint is the
+only way to reach it. Two cars coupled end to end run in opposite directions, so the rows can never
+read the same.
+
+A second click on the **anchor's own pixel** writes no car — a span with no length has neither an
+axis to draw along nor two ends to couple — and the chain stays where it was.
 
 **Cars are per image and sensors are per layout**, and the hit-test scene is where that becomes a
 gesture's business: switching images swaps the cars and leaves the sensors. A car edit therefore
@@ -194,7 +232,8 @@ Four rules it encodes, each of which is wrong somewhere if reimplemented:
   and the hit-test so the two cannot drift apart.
 * **A coupler is exact coincidence.** Nothing about a coupling is stored; it is car ends at the
   identical pixel, which chaining and the shared handle guarantee. A proximity test would fuse cars
-  the user placed separately.
+  the user placed separately. `hitTest` and `couplerPoints` apply that one rule to the pointer and
+  to the renderer, so what draws as a coupling is exactly what grabs as one.
 
 `DEFAULT_GRAB_RADIUS_SCREEN_PX` and `CLICK_SLOP_SCREEN_PX` live here for the same reason: one radius
 for every tool, because it describes the pointing device and not the object. A tool that grabbed at
@@ -208,22 +247,26 @@ identical across handles so a coupler's ends stay on the same pixel.
 
 ### Right-click is a state branch, and the menu knows nothing
 
-`rr-editor-view` dispatches `rr-pointer-contextmenu` through a `switch` over an `EditorMode` union
-with one member (`idle`). That is deliberate: right-click means *context menu* when idle and *end the
-chain* while chaining a train (`SPEC.md` § Right-click is state-dependent), so the second meaning has
-to be a case to add rather than a rewrite. Undo is state-dependent against the same states.
+`rr-editor-view` dispatches `rr-pointer-contextmenu` through a `switch` over the `EditorMode` union:
+right-click means *context menu* when idle and *end the chain* while chaining a train (`SPEC.md`
+§ Right-click is state-dependent). Undo is state-dependent against the same states, through
+`interceptUndo()`.
 
 The **native menu is suppressed in the editor, not in `rr-viewer`**, and for every right-click rather
 than only the ones that open something — inside the labeling surface the gesture is the editor's
-whatever it lands on, and it will end a chain over empty image. `rr-live-view` shares the viewer and
+whatever it lands on, and it ends a chain over empty image. `rr-live-view` shares the viewer and
 does not listen, so its right-click stays the browser's.
 
 `rr-context-menu` renders rows and reports which one was chosen; it never learns what the object is.
 The editor hit-tests, names the verbs in one `menuFor` switch — subject *and* rows together, so an
-object it cannot name a verb for opens no menu at all — and interprets the selection. Delete is one
-`layout` entry and the subject carries the pixel it was opened on, the same staleness guard the
-calibration dialog uses (`_pointIsStillAt`): an undo landing while either is up can slide an index
-onto another point.
+object it cannot name a verb for opens no menu at all — and interprets the selection. A **coupler**
+is the one subject that is two objects, so its rows carry which car they mean in the row `id`
+(`delete-car:<id>`, never shown) and say which in the label, by direction. Delete is **one entry
+scoped to what it deletes** — `layout` for a point or a sensor, that image's record for a car — and
+the subject carries the pixel it was opened on, the same staleness guard the calibration dialog uses
+(`_pointIsStillAt`): an undo landing while either is up can slide an index onto another point. A car
+and a sensor need no such guard: they carry an `id`, so the hit names one however the list is
+replaced underneath.
 
 Two consequences of right-click sharing the pointer stream with the left button, both of which look
 like nothing until they are missing: the editor **ignores presses and releases whose `button` is not
@@ -240,13 +283,14 @@ styles in the host's `static styles`, renderer per marker. The module boundary i
 
 `calibrationMarker.ts` follows the same shape with two exports (`renderCalibrationPoint`,
 `calibrationMarkerStyles`; it needs no defs), `sensorMarker.ts` with three (`renderSensor`,
-`sensorLabelText`, `sensorMarkerStyles`), and `carMarker.ts` with two (`renderCar`,
-`carMarkerStyles`). A calibration point is a **cyan crosshair labelled with its world coordinate**; a
-sensor is an **amber diamond labelled with its name, or its id when it has none**; a car is a
-**magenta chord inside a translucent width rectangle**. The difference is shape as much as colour,
-and it is a requirement rather than taste: `SPEC.md` § Reference points says they must be
-unmistakable, because they are authored by different tools and mean different things. Both labels
-flip inwards at a frame edge through the same `placeLabel`.
+`sensorLabelText`, `sensorMarkerStyles`), and `carMarker.ts` with four (`renderCar`,
+`renderCoupler`, `renderPendingCar`, `carMarkerStyles`). A calibration point is a **cyan crosshair
+labelled with its world coordinate**; a sensor is an **amber diamond labelled with its name, or its
+id when it has none**; a car is a **magenta chord inside a translucent width rectangle**, its
+coupled ends drawn once as a shared handle and the chain in flight dashed. The difference is shape
+as much as colour, and it is a requirement rather than taste: `SPEC.md` § Reference points says they
+must be unmistakable, because they are authored by different tools and mean different things. Both
+labels flip inwards at a frame edge through the same `placeLabel`.
 
 `renderCar` takes the **DPT**, not a width: the 2.09-track-widths derivation lives in `geometry.ts`
 and a caller passing a number would be a second place to get it wrong. A `null` DPT draws the chord

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, svg } from 'lit';
 import type { CarLabel } from '@occupancy/r49';
-import { renderCar, carMarkerStyles } from '../src/carMarker.js';
+import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from '../src/carMarker.js';
 import { carWidthPx } from '../src/geometry.js';
 
 /** Render a lit SVGTemplateResult into a detached <svg> and return it. */
@@ -124,5 +124,111 @@ describe('renderCar()', () => {
     const css = carMarkerStyles.cssText;
     expect(css).toContain('.car');
     expect(css).toContain('polygon');
+  });
+});
+
+describe('renderCar() at a coupling', () => {
+  it('leaves out the handle of a coupled end, which the coupler draws instead', () => {
+    // A coupling renders as **one** shared handle (`SPEC.md` § Authoring cars).
+    // Two circles stacked on the same pixel would only look like one.
+    const el = renderSvg(renderCar(car(), size(90, 12), { p0: false, p1: true }));
+    const handles = [...el.querySelectorAll('circle')];
+
+    expect(handles).toHaveLength(1);
+    expect(handles[0].getAttribute('cx')).toBe('100');
+  });
+
+  it('draws no handle at all for a car coupled at both ends', () => {
+    const el = renderSvg(renderCar(car(), size(90, 12), { p0: true, p1: true }));
+    expect(el.querySelectorAll('circle')).toHaveLength(0);
+    // The car itself is untouched: a middle car of a train is still a car.
+    expect(el.querySelector('line')).not.toBeNull();
+    expect(el.querySelector('polygon')).not.toBeNull();
+  });
+
+  it('draws both handles when nothing is coupled', () => {
+    expect(renderSvg(renderCar(car(), size(90, 12))).querySelectorAll('circle')).toHaveLength(2);
+  });
+});
+
+describe('renderCoupler()', () => {
+  it('draws one handle on the shared pixel', () => {
+    const el = renderSvg(renderCoupler({ x: 300, y: 200 }, size(90, 12)));
+    const handles = [...el.querySelectorAll('circle')];
+
+    expect(handles).toHaveLength(1);
+    expect(handles[0].getAttribute('cx')).toBe('300');
+    expect(handles[0].getAttribute('cy')).toBe('200');
+  });
+
+  it('is larger than a free end, because it is a joint and not an end', () => {
+    const coupler = renderSvg(renderCoupler({ x: 300, y: 200 }, size(90, 12)));
+    const free = renderSvg(renderCar(car(), size(90, 12)));
+
+    const r = (el: SVGElement) => Number(el.querySelector('circle')!.getAttribute('r'));
+    expect(r(coupler)).toBeGreaterThan(r(free));
+  });
+
+  it('stays a screen size, so it does not grow with the photograph', () => {
+    const near = renderSvg(renderCoupler({ x: 0, y: 0 }, size(90, 24)));
+    const far = renderSvg(renderCoupler({ x: 0, y: 0 }, size(20, 24)));
+    const r = (el: SVGElement) => Number(el.querySelector('circle')!.getAttribute('r'));
+
+    expect(r(near)).toBe(r(far));
+  });
+});
+
+describe('renderPendingCar()', () => {
+  it('draws the band from the anchor to the cursor', () => {
+    const el = renderSvg(
+      renderPendingCar({ anchor: { x: 100, y: 200 }, to: { x: 400, y: 260 } }, size(90))
+    );
+    const line = el.querySelector('line')!;
+
+    expect([line.getAttribute('x1'), line.getAttribute('y1')]).toEqual(['100', '200']);
+    expect([line.getAttribute('x2'), line.getAttribute('y2')]).toEqual(['400', '260']);
+  });
+
+  it('previews the width rectangle the car will get', () => {
+    // The rectangle is the only feedback that a label covers the car, so the
+    // band shows it before the click rather than after.
+    const el = renderSvg(
+      renderPendingCar({ anchor: { x: 100, y: 200 }, to: { x: 400, y: 200 } }, size(90))
+    );
+    const ys = polygonPoints(el).map(([, y]) => y);
+
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(carWidthPx(90), 6);
+  });
+
+  it('shows the anchor alone before the pointer has moved', () => {
+    const el = renderSvg(
+      renderPendingCar({ anchor: { x: 100, y: 200 }, to: { x: 100, y: 200 } }, size(90, 12))
+    );
+
+    // One handle: the anchor. The chord and the rectangle collapse onto it,
+    // since a span with no length has no axis to draw along.
+    expect(el.querySelectorAll('circle')).toHaveLength(1);
+    expect(polygonPoints(el)).toEqual([
+      [100, 200],
+      [100, 200],
+      [100, 200],
+      [100, 200],
+    ]);
+  });
+
+  it('drops the rectangle with no DPT, like a car does', () => {
+    const el = renderSvg(
+      renderPendingCar({ anchor: { x: 100, y: 200 }, to: { x: 400, y: 200 } }, size(null))
+    );
+    expect(el.querySelector('polygon')).toBeNull();
+    expect(el.querySelector('line')).not.toBeNull();
+  });
+
+  it('is drawn dashed, so a band in flight is not read as a placed car', () => {
+    const el = renderSvg(
+      renderPendingCar({ anchor: { x: 100, y: 200 }, to: { x: 400, y: 200 } }, size(90))
+    );
+    expect(el.querySelector('g')!.getAttribute('class')).toContain('pending');
+    expect(carMarkerStyles.cssText).toContain('stroke-dasharray');
   });
 });

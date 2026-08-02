@@ -2,14 +2,19 @@ import { describe, it, expect } from 'vitest';
 import type { CalibrationPoint, CarLabel, Sensor } from '@occupancy/r49';
 import { STANDARD_GAUGE, STANDARD_WIDTH } from '@occupancy/config';
 import {
+  cardinalDirection,
+  coupledEnds,
+  samePoint,
   carWidthPx,
   carCorners,
   clampToViewport,
+  couplerPoints,
   dragHandles,
   dragTo,
   estimateLabelWidthPx,
   hitTest,
   isClick,
+  isCoincident,
   placeLabel,
   sensorDiameterPx,
   SYMBOL_SIZE_SCREEN_PX,
@@ -594,6 +599,142 @@ describe('clampToViewport', () => {
     expect(clampToViewport({ x: 120, y: 60 }, { width: 0, height: 0 }, viewport, 4)).to.deep.equal({
       x: 120,
       y: 60,
+    });
+  });
+});
+
+describe('couplerPoints', () => {
+  it('finds the pixel two cars share', () => {
+    const points = couplerPoints([
+      car('c1', { x: 100, y: 100 }, { x: 200, y: 100 }),
+      car('c2', { x: 200, y: 100 }, { x: 300, y: 100 }),
+    ]);
+    expect(points).to.deep.equal([{ x: 200, y: 100 }]);
+  });
+
+  it('reports a three-way coincidence once', () => {
+    // One shared handle is drawn per coupling, however many ends meet there.
+    const points = couplerPoints([
+      car('c1', { x: 100, y: 100 }, { x: 200, y: 100 }),
+      car('c2', { x: 200, y: 100 }, { x: 300, y: 100 }),
+      car('c3', { x: 200, y: 100 }, { x: 200, y: 400 }),
+    ]);
+    expect(points).to.deep.equal([{ x: 200, y: 100 }]);
+  });
+
+  it('finds every coupling of a chained train, in scene order', () => {
+    const points = couplerPoints([
+      car('c1', { x: 0, y: 0 }, { x: 100, y: 0 }),
+      car('c2', { x: 100, y: 0 }, { x: 200, y: 0 }),
+      car('c3', { x: 200, y: 0 }, { x: 300, y: 0 }),
+    ]);
+    expect(points).to.deep.equal([
+      { x: 100, y: 0 },
+      { x: 200, y: 0 },
+    ]);
+  });
+
+  it('ignores ends that are merely near each other', () => {
+    // Coincidence is exact, here as in the hit-test: a proximity rule would
+    // draw a shared handle over two cars the user placed separately.
+    const points = couplerPoints([
+      car('c1', { x: 100, y: 100 }, { x: 200, y: 100 }),
+      car('c2', { x: 201, y: 100 }, { x: 300, y: 100 }),
+    ]);
+    expect(points).to.deep.equal([]);
+  });
+
+  it('finds nothing among free cars', () => {
+    expect(couplerPoints([car('c1', { x: 0, y: 0 }, { x: 100, y: 0 })])).to.deep.equal([]);
+    expect(couplerPoints([])).to.deep.equal([]);
+  });
+});
+
+describe('isCoincident', () => {
+  const couplers = [
+    { x: 100, y: 0 },
+    { x: 200, y: 0 },
+  ];
+
+  it('is exact equality, on both axes', () => {
+    expect(isCoincident({ x: 200, y: 0 }, couplers)).toBe(true);
+    expect(isCoincident({ x: 200, y: 1 }, couplers)).toBe(false);
+    expect(isCoincident({ x: 199, y: 0 }, couplers)).toBe(false);
+  });
+
+  it('finds nothing in an empty list', () => {
+    expect(isCoincident({ x: 100, y: 0 }, [])).toBe(false);
+  });
+});
+
+describe('cardinalDirection', () => {
+  const from = { x: 100, y: 100 };
+
+  it('names the dominant axis, with y growing downwards', () => {
+    expect(cardinalDirection(from, { x: 300, y: 120 })).toBe('right');
+    expect(cardinalDirection(from, { x: 0, y: 90 })).toBe('left');
+    expect(cardinalDirection(from, { x: 110, y: 0 })).toBe('up');
+    expect(cardinalDirection(from, { x: 90, y: 400 })).toBe('down');
+  });
+
+  it('gives the two cars of a coupling opposite words', () => {
+    // Which is the whole job: the menu names *which* coupled car a delete acts
+    // on, and two cars running opposite ways from one pixel must never read
+    // the same.
+    const a = cardinalDirection(from, { x: 220, y: 220 });
+    const b = cardinalDirection(from, { x: -20, y: -20 });
+    expect(a).not.toBe(b);
+  });
+
+  it('resolves an exact diagonal horizontally, so opposites still differ', () => {
+    expect(cardinalDirection(from, { x: 200, y: 200 })).toBe('right');
+    expect(cardinalDirection(from, { x: 0, y: 0 })).toBe('left');
+  });
+
+  it('has no answer for a point that has not moved', () => {
+    expect(cardinalDirection(from, { x: 100, y: 100 })).toBe(null);
+  });
+});
+
+describe('samePoint', () => {
+  it('is exact on both axes — the one encoding of the coincidence rule', () => {
+    expect(samePoint({ x: 5, y: 6 }, { x: 5, y: 6 })).toBe(true);
+    expect(samePoint({ x: 5, y: 6 }, { x: 5, y: 7 })).toBe(false);
+    expect(samePoint({ x: 5, y: 6 }, { x: 6, y: 6 })).toBe(false);
+  });
+
+  it('compares values, never identity', () => {
+    const at = { x: 5, y: 6 };
+    expect(samePoint(at, { ...at })).toBe(true);
+  });
+});
+
+describe('coupledEnds', () => {
+  const couplers = [{ x: 200, y: 100 }];
+
+  it('marks the end that sits on a coupling', () => {
+    expect(coupledEnds(car('c1', { x: 100, y: 100 }, { x: 200, y: 100 }), couplers)).to.deep.equal({
+      p0: false,
+      p1: true,
+    });
+    expect(coupledEnds(car('c2', { x: 200, y: 100 }, { x: 300, y: 100 }), couplers)).to.deep.equal({
+      p0: true,
+      p1: false,
+    });
+  });
+
+  it('marks both ends of a middle car', () => {
+    const middle = car('c2', { x: 200, y: 100 }, { x: 300, y: 100 });
+    expect(coupledEnds(middle, [...couplers, { x: 300, y: 100 }])).to.deep.equal({
+      p0: true,
+      p1: true,
+    });
+  });
+
+  it('marks neither for a free car', () => {
+    expect(coupledEnds(car('c1', { x: 0, y: 0 }, { x: 100, y: 0 }), couplers)).to.deep.equal({
+      p0: false,
+      p1: false,
     });
   });
 });

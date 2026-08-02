@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { R49Archive, MANIFEST_VERSION } from '@occupancy/r49';
-import { EditHistory, type HistoryEntry } from './history.js';
+import { EditHistory, revealTarget, type HistoryEntry } from './history.js';
 import './rr-header.js';
 import './rr-editor-view.js';
 import type { RREditorView } from './rr-editor-view.js';
@@ -110,7 +110,20 @@ export class RRApp extends LitElement {
     }
   };
 
+  /**
+   * Undo, offered to the editor before it reaches the stack.
+   *
+   * The editor owns one state undo means something else in — a live chain,
+   * which is **a wall undo cannot cross** (`SPEC.md` § Undo and redo) — and
+   * this component owns undo and cannot see it. So the protocol is one
+   * question, asked here rather than a state pushed up: whatever the chain
+   * consumes it handles in full, stack included.
+   */
   private async _undo() {
+    if (await this._editorView()?.interceptUndo()) {
+      this.requestUpdate();
+      return;
+    }
     const entry = await this._history.undo();
     if (entry) await this._reveal(entry);
   }
@@ -129,12 +142,17 @@ export class RRApp extends LitElement {
    * sub-image geometry is the image itself.
    */
   private async _reveal(entry: HistoryEntry) {
-    const view = this.renderRoot.querySelector('rr-editor-view') as RREditorView | null;
-    await view?.syncFromArchive(entry.target.kind === 'image' ? entry.target.filename : undefined);
+    const view = this._editorView();
+    await view?.syncFromArchive(revealTarget(entry));
     if (this._archive) {
       this._status = this._archive.getManifest().layout.name || this._status;
     }
     this.requestUpdate();
+  }
+
+  /** The editor, or null in the live view, where it is not rendered. */
+  private _editorView(): RREditorView | null {
+    return this.renderRoot.querySelector('rr-editor-view');
   }
 
   /** Re-renders the undo affordances after a child records an edit. */

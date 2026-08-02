@@ -272,7 +272,11 @@ describe('rr-viewer', () => {
       `);
       expect(el.shadowRoot!.querySelectorAll('.car').length).to.equal(2);
       expect(el.shadowRoot!.querySelector('.car polygon')).to.not.exist;
-      expect(el.shadowRoot!.querySelectorAll('.car circle').length).to.equal(4);
+      // Two free ends and one shared handle: these two cars are coupled at
+      // (300, 100), so the coupling draws the third rather than the cars
+      // drawing two on the same pixel.
+      expect(el.shadowRoot!.querySelectorAll('.car circle').length).to.equal(2);
+      expect(el.shadowRoot!.querySelectorAll('.coupler circle').length).to.equal(1);
     });
 
     it('leaves the endpoint handles a screen size when the DPT changes', async () => {
@@ -305,6 +309,114 @@ describe('rr-viewer', () => {
 
       expect(groups.indexOf('car')).to.be.lessThan(groups.indexOf('calibration-point'));
       expect(groups.indexOf('car')).to.be.lessThan(groups.indexOf('sensor'));
+    });
+
+    describe('couplings', () => {
+      it('draws one shared handle where two cars meet', async () => {
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer .cars=${cars} .dpt=${90} .resolution=${resolution}></rr-viewer>
+        `);
+
+        const couplers = [...el.shadowRoot!.querySelectorAll('.coupler circle')];
+        expect(couplers.length).to.equal(1);
+        expect(couplers[0].getAttribute('cx')).to.equal('300');
+        expect(couplers[0].getAttribute('cy')).to.equal('100');
+        // And the cars keep only their free ends, so the shared pixel carries
+        // exactly one handle rather than three stacked on each other.
+        expect(el.shadowRoot!.querySelectorAll('.car circle').length).to.equal(2);
+      });
+
+      it('draws one handle for a three-way coincidence too', async () => {
+        const yard = [
+          ...cars,
+          { id: 'C3abcdefghi', class: 'stock', provenance: 'human' as const,
+            p0: { x: 300, y: 100 }, p1: { x: 300, y: 400 } },
+        ];
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer .cars=${yard} .dpt=${90} .resolution=${resolution}></rr-viewer>
+        `);
+
+        expect(el.shadowRoot!.querySelectorAll('.coupler circle').length).to.equal(1);
+        expect(el.shadowRoot!.querySelectorAll('.car circle').length).to.equal(3);
+      });
+
+      it('draws none for cars that merely come close', async () => {
+        // Coincidence is exact — the same rule the hit-test grabs by.
+        const apart = [
+          cars[0],
+          { ...cars[1], p0: { x: 301, y: 100 } },
+        ];
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer .cars=${apart} .dpt=${90} .resolution=${resolution}></rr-viewer>
+        `);
+
+        expect(el.shadowRoot!.querySelector('.coupler')).to.not.exist;
+        expect(el.shadowRoot!.querySelectorAll('.car circle').length).to.equal(4);
+      });
+
+      it('follows the cars when a coupling is dragged apart', async () => {
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer .cars=${cars} .dpt=${90} .resolution=${resolution}></rr-viewer>
+        `);
+
+        el.cars = [cars[0], { ...cars[1], p0: { x: 380, y: 200 } }];
+        await el.updateComplete;
+
+        expect(el.shadowRoot!.querySelector('.coupler')).to.not.exist;
+      });
+    });
+
+    describe('the rubber band', () => {
+      it('draws nothing while no chain is live', async () => {
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer .cars=${cars} .dpt=${90} .resolution=${resolution}></rr-viewer>
+        `);
+        expect(el.shadowRoot!.querySelector('.car-pending')).to.not.exist;
+      });
+
+      it('draws the band from the anchor to the pointer', async () => {
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer
+            .pendingCar=${{ anchor: { x: 100, y: 100 }, to: { x: 400, y: 250 } }}
+            .dpt=${90}
+            .resolution=${resolution}
+          ></rr-viewer>
+        `);
+
+        const line = el.shadowRoot!.querySelector('.car-pending line')!;
+        expect(line.getAttribute('x1')).to.equal('100');
+        expect(line.getAttribute('x2')).to.equal('400');
+        expect(line.getAttribute('y2')).to.equal('250');
+      });
+
+      it('is drawn over the cars, so a chain stays legible on a train', async () => {
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer
+            .cars=${cars}
+            .pendingCar=${{ anchor: { x: 500, y: 100 }, to: { x: 700, y: 100 } }}
+            .dpt=${90}
+            .resolution=${resolution}
+          ></rr-viewer>
+        `);
+        const groups = [...el.shadowRoot!.querySelectorAll('g')].map(g => g.getAttribute('class'));
+
+        expect(groups.indexOf('car')).to.be.lessThan(groups.indexOf('car-pending'));
+      });
+
+      it('goes away when the chain ends', async () => {
+        const el = await fixture<RrViewer>(html`
+          <rr-viewer
+            .pendingCar=${{ anchor: { x: 100, y: 100 }, to: { x: 400, y: 250 } }}
+            .dpt=${90}
+            .resolution=${resolution}
+          ></rr-viewer>
+        `);
+
+        el.pendingCar = null;
+        await el.updateComplete;
+
+        expect(el.shadowRoot!.querySelector('.car-pending')).to.not.exist;
+      });
     });
   });
 
