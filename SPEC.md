@@ -263,6 +263,14 @@ Each image therefore carries a **completeness flag**, `labeled_complete`; only c
 
 An image marked complete with **zero** car labels is legitimate, not a gap — it is an all-background sample.
 
+**Deleting a car clears the flag.** [Issue #36](https://github.com/iot49/rails49/issues/36) settles the question [Undo and redo](#undo-and-redo) left open, and settles it on the asymmetry of what a wrong answer costs rather than on what the user probably meant. A delete removes coverage, and nothing in the manifest can distinguish a label deleted because it covered nothing from a label deleted off a car that is still in the photograph — they are the same edit. If the flag survives the second case, the image is exported and teaches the detector that cars are background, which is the exact failure the flag exists to prevent and the one nothing downstream detects. If the flag is cleared in the first case, the cost is one click, paid in front of a thumbnail bar that shows which images carry it.
+
+This does not weaken **nothing else may ever set it** — that rule has a direction. *Setting* is the claim only a human can make, and no default, conversion, or accept-all may make it on their behalf. *Clearing* withdraws the claim and asks for it again, which is the same discipline read the other way round.
+
+The scope is deletion and nothing else. Adding a car only increases coverage. Dragging an end moves a label rather than removing one, under the live width rectangle that is the feedback for whether it still covers its car. Reclassifying changes what a car is called, not whether it is covered. Clearing also costs the history nothing: a car delete already targets that image's record and `labeled_complete` lives in the same snapshot, so one entry carries both and one undo restores both — which is equally true had the decision gone the other way.
+
+The flag is authored by **one deliberate control per image** and read across the whole set at a glance: the editor carries a labeled-complete control for the image on screen, and the thumbnail bar marks every image that carries the flag, because scanning a set for what is left to do is the actual workflow and it must not require selecting each image in turn. Toggling it is one history entry targeting that image.
+
 ### Labeling Workflow
 
 The editor guides a specific order, because the order is what keeps a training set honest:
@@ -321,7 +329,7 @@ Settled in [issue #25](https://github.com/iot49/rails49/issues/25).
 
 **The history is not persisted.** It does not survive a reload and **is never written into the `.r49`** — a history inside the format would be a second source of truth about labels, in a format that declines to retain even the original of a `corrected` proposal. New and Open replace the archive and take the stack with them; Save records a marker instead of clearing, since bytes already on disk are unaffected by anything undone afterwards. That marker yields a **dirty flag**, and with it a confirm-on-discard gate for New and Open — the one destructive act undo structurally cannot cover.
 
-Two adjacent questions are deliberately left open: whether deleting a car should clear `labeled_complete` belongs to the editor spec, and whether an accept-all of model proposals is one entry or many rides with [the proposal interaction](#in-scope-still-unresolved).
+One adjacent question remains open: whether an accept-all of model proposals is one entry or many rides with [the proposal interaction](#in-scope-still-unresolved). The other — whether deleting a car should clear `labeled_complete` — was decided in the editor spec and is recorded with its reasoning under [Labeling completeness](#labeling-completeness): it clears.
 
 ### Assisted Labeling
 

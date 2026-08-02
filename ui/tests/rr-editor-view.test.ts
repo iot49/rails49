@@ -10,6 +10,7 @@ import type { RRCalibrationDialog } from '../src/rr-calibration-dialog.js';
 import type { RRSensorDialog } from '../src/rr-sensor-dialog.js';
 import type { RRToolPalette, EditorTool } from '../src/rr-tool-palette.js';
 import type { RRContextMenu } from '../src/rr-context-menu.js';
+import type { SlCheckbox } from '@shoelace-style/shoelace';
 
 // Mock ResizeObserver for RRViewer
 global.ResizeObserver = vi.fn().mockImplementation(() => ({
@@ -2054,6 +2055,42 @@ describe('rr-editor-view', () => {
         expect(cars()).to.deep.equal([before[1]]);
       });
 
+      // `SPEC.md` § Labeling completeness: a delete removes coverage, and
+      // nothing can tell a label deleted off background from one deleted off a
+      // car still in the photograph. The claim goes back to the human.
+      it('clears labeled_complete, in the same entry', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithTwoCars(history);
+        archive.getManifest().images[0].labeled_complete = true;
+        const before = structuredClone(cars());
+
+        await rightClickAt(el, { x: 100, y: 100 });
+        await choose(el, `delete-car:${before[0].id}`);
+
+        expect(archive.getManifest().images[0].labeled_complete).to.be.false;
+
+        // One entry carries both, because the flag lives in the same per-image
+        // snapshot the delete already targets.
+        await history.undo();
+        expect(archive.getManifest().images[0].labeled_complete).to.be.true;
+        expect(cars()).to.deep.equal(before);
+      });
+
+      it('leaves an already-incomplete image alone, and records one entry', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithTwoCars(history);
+        const placed = history.size;
+        const before = structuredClone(cars());
+
+        await rightClickAt(el, { x: 100, y: 100 });
+        await choose(el, `delete-car:${before[0].id}`);
+
+        expect(archive.getManifest().images[0].labeled_complete).to.be.false;
+        expect(history.size).to.equal(placed + 1);
+      });
+
       it('drops a delete whose car went away underneath the open menu', async () => {
         const el = await mountWithTwoCars();
         const before = structuredClone(cars());
@@ -2294,6 +2331,139 @@ describe('rr-editor-view', () => {
       expect(paletteOf(el).tool).to.equal('calibration');
       expect(cars()).to.have.length(0);
       expect(show).toHaveBeenCalled();
+    });
+  });
+
+  describe('labeling completeness', () => {
+    /** The `labeled_complete` control for the image on screen. */
+    function checkbox(el: RREditorView): SlCheckbox {
+      return el.shadowRoot!.querySelector('sl-checkbox')!;
+    }
+
+    /** Sets the control the way Shoelace reports a user toggling it. */
+    async function setComplete(el: RREditorView, value: boolean) {
+      const box = checkbox(el);
+      box.checked = value;
+      box.dispatchEvent(new CustomEvent('sl-change', { bubbles: true, composed: true }));
+      await flush();
+      await el.updateComplete;
+    }
+
+    function images() {
+      return archive.getManifest().images;
+    }
+
+    function addSecondImage() {
+      images().push({ filename: 'img2.jpg', labeled_complete: false, labels: [] });
+    }
+
+    it('offers a control for the image on screen, unchecked by default', async () => {
+      // "A human asserts no car is unlabeled" is a claim no default can make.
+      const el = await mount();
+      expect(checkbox(el)).to.exist;
+      expect(checkbox(el).checked).to.be.false;
+    });
+
+    it('records the toggle as one entry targeting that image', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mount(history);
+
+      await setComplete(el, true);
+
+      expect(images()[0].labeled_complete).to.be.true;
+      expect(history.size).to.equal(1);
+
+      const entry = await history.undo();
+      expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
+      expect(images()[0].labeled_complete).to.be.false;
+
+      await history.redo();
+      expect(images()[0].labeled_complete).to.be.true;
+    });
+
+    it('records un-marking as its own entry', async () => {
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mount(history);
+
+      await setComplete(el, true);
+      await setComplete(el, false);
+
+      expect(images()[0].labeled_complete).to.be.false;
+      expect(history.size).to.equal(2);
+      await history.undo();
+      expect(images()[0].labeled_complete).to.be.true;
+    });
+
+    it('follows an undo back, having been toggled by hand', async () => {
+      // The control is the one place the flag is set, so it is also the one
+      // place a stale readout would let a user believe they had asserted
+      // something they had just undone. A plain `?checked` binding dirty-checks
+      // against what it last wrote rather than against the box, and is
+      // sufficient here only because **every toggle writes through**: the
+      // render that follows the user's click resyncs the binding, so the undo
+      // after it is a change Lit sees. A handler that could bail without
+      // writing would need `live()`, and this is the test that would say so.
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mount(history);
+
+      await setComplete(el, true);
+      await history.undo();
+      await el.syncFromArchive('img1.jpg');
+      await el.updateComplete;
+
+      expect(images()[0].labeled_complete).to.be.false;
+      expect(checkbox(el).checked).to.be.false;
+    });
+
+    it('marks an image with zero cars complete, with no warning', async () => {
+      // An all-background sample is legitimate, not a gap.
+      const el = await mount();
+      await setComplete(el, true);
+
+      expect(images()[0].labels).to.have.length(0);
+      expect(images()[0].labeled_complete).to.be.true;
+      expect(el.shadowRoot!.querySelector('.complete-bar')!.textContent).to.not.match(/warn/i);
+    });
+
+    it('shows the flag of the image on screen, and follows a switch', async () => {
+      addSecondImage();
+      images()[1].labeled_complete = true;
+      const el = await mount();
+
+      expect(checkbox(el).checked).to.be.false;
+
+      el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
+        new CustomEvent('rr-image-select', { detail: { index: 1 }, bubbles: true, composed: true })
+      );
+      await el.updateComplete;
+
+      expect(checkbox(el).checked).to.be.true;
+    });
+
+    it('hands every image\'s flag to the thumbnail bar', async () => {
+      // Visible per image without selecting it: the scan is the workflow.
+      addSecondImage();
+      images()[1].labeled_complete = true;
+      const el = await mount();
+
+      expect(el.shadowRoot!.querySelector('rr-thumbnail-bar')!.complete).to.deep.equal([
+        false,
+        true,
+      ]);
+    });
+
+    it('round-trips the flag, and adds a new image as incomplete', async () => {
+      const el = await mount();
+      await setComplete(el, true);
+
+      const reopened = await R49Archive.load(await archive.export());
+      expect(reopened.getManifest().images[0].labeled_complete).to.be.true;
+
+      await archive.addImage('img2.jpg', new Uint8Array([1, 2, 3]));
+      expect(images()[1].labeled_complete).to.be.false;
     });
   });
 

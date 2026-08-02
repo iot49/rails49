@@ -78,10 +78,12 @@ rr-app                          ← shell: owns the archive and the view mode
 > **chain**: every click after the first ends one car and starts the next, a
 > rubber band shows the chain in flight, right-click ends it, a coupling renders
 > as one shared handle that drags both cars, and undo is intercepted by the
-> chain it would otherwise reach past.
->
-> Still absent, each with its own ticket: reclassify ([#35]) and the completeness
-> affordance ([#36]), both specified in `../SPEC.md` § Labeling Workflow.
+> chain it would otherwise reach past. [#35] added **reclassify**, the context
+> menu's submenu generated from the authored vocabulary. [#36] added the
+> **completeness affordance**: a `labeled_complete` checkbox for the image on
+> screen, a badge per image in the thumbnail bar, and one history entry per
+> toggle — plus the decision that **deleting a car clears the flag**, recorded
+> with its reasoning in `../SPEC.md` § Labeling completeness.
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -113,7 +115,9 @@ rr-app ─────────── rr-editor-view ────────
   is waiting on a coordinate or a name, and what the context menu is open on. It mutates the archive
   through image add/remove/reorder, through calibration-point placement, edits and deletion, sensor
   placement, naming, drag and deletion, and through car placement, drag and deletion — each wrapped
-  in `history.record` (or in one `beginGesture` per drag). A chain in progress is **view state**: an
+  in `history.record` (or in one `beginGesture` per drag). It also owns the one control that sets
+  `labeled_complete`, which is the only place in the format a human asserts something about absence.
+  A chain in progress is **view state**: an
   anchor writes nothing until the click that closes a car on it, so abandoning one leaves both the
   manifest and the stack untouched — however many cars the chain already wrote, since each of those
   is its own committed entry.
@@ -291,11 +295,18 @@ The dialog shows the id it is naming, which is what the editor displays in its p
 
 ### `rr-thumbnail-bar`
 
-Horizontal strip of image thumbnails, with drag-and-drop reordering.
+Horizontal strip of image thumbnails, with drag-and-drop reordering. It also **shows which images
+are labeled complete** — a green check badge, bottom-left — because scanning a set for what is left
+to label is the workflow and must not require selecting each image in turn.
+
+The badge is a **readout, not a control**: `labeled_complete` is asserted through `rr-editor-view`'s
+own checkbox for the image on screen, so a click aimed at selecting an image cannot assert
+completeness by landing a few pixels off. See `SPEC.md` § Labeling completeness.
 
 | Property | Type | Description |
 |---|---|---|
 | `images` | `string[]` | Image URLs (blob URLs) |
+| `complete` | `boolean[]` | `labeled_complete` per image, parallel to `images`; short reads as incomplete |
 | `selectedIndex` | `number` | Currently selected image; `-1` for none |
 
 **Emits:** `rr-image-select` `{ index }`, `rr-image-delete` `{ index }`, `rr-image-add`
@@ -756,7 +767,7 @@ zero) the clamp is the identity and the menu lands at the cursor.
 ### `rr-editor-view`
 
 Orchestrates the editor: images, a DPT readout, the active tool, calibration, sensor and car
-authoring, and the right-click menu.
+authoring, the right-click menu, and the per-image completeness flag.
 
 | Property | Type | Description |
 |---|---|---|
@@ -943,6 +954,23 @@ authoring, and the right-click menu.
   * A **coupling renders as one shared handle** and drags as one entry moving every end under it,
     which is what `dragHandles` was shaped for; `rr-viewer` derives the couplings from the cars it
     was handed.
+* **Labeling completeness** ([#36]). A `.complete-bar` sits directly above the thumbnail bar with an
+  `sl-checkbox` for the image on screen; every image's flag also goes to `rr-thumbnail-bar` as
+  `complete`, so the state is readable per image without selecting it. Toggling it either way is
+  **one `history.record` entry targeting `{ kind: 'image', filename }`**, and undo reverses it.
+  Marking an image with **zero** cars complete is allowed and warns about nothing — it is an
+  all-background sample.
+  * `_onCompleteToggle` is the **only** place this component writes the flag `true`. It means "a
+    human asserts that no car in this image is unlabeled", an assertion about *absence*, so nothing
+    computed may stand in for it — see `../SPEC.md` § Labeling completeness.
+  * **Deleting a car clears the flag**, in the same entry. A delete removes coverage and nothing can
+    tell a label deleted off background from one deleted off a car still in the photograph, so the
+    claim goes back to the human. The rule against setting it has a direction: setting is the claim
+    only a human may make, clearing withdraws it and asks again. It costs no extra machinery — the
+    flag lives in the same per-image snapshot the delete already targets, so one undo restores the
+    car and the assertion together. **Only** deletion clears it: adding a car increases coverage,
+    dragging an end moves a label under live width-rectangle feedback, and reclassifying changes
+    what a car is called rather than whether it is covered.
 * **It loads no classifier.** Marker CRUD and the per-marker classification display went with the v4
   reduction. See the note at the top of this file.
 

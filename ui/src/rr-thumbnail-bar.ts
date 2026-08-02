@@ -3,7 +3,21 @@ import { customElement, property, state } from 'lit/decorators.js';
 
 /**
  * Horizontal strip of image thumbnails for selecting and managing layout images.
- * 
+ *
+ * It also **shows which images are labeled complete**, which is the one thing
+ * here that is not navigation: scanning a set for what is left to label is the
+ * actual workflow (`SPEC.md` § Labeling completeness), and a state that had to
+ * be read one image at a time would not serve it.
+ *
+ * The badge is a **readout and not the control**. The assertion is deliberate —
+ * "a human asserts that no car in this image is unlabeled" — so it is made
+ * through the editor's own checkbox for the image on screen, where the image is
+ * large enough to check. A toggle sitting on a 64px thumbnail would let a click
+ * aimed at selecting an image assert completeness by landing a few pixels off,
+ * and this is the one flag in the format nothing else may set.
+ *
+ * **Properties:** `images`, `complete`, `selectedIndex`.
+ *
  * @fires rr-image-select - When a thumbnail is clicked. Detail: { index: number }
  * @fires rr-image-delete - When the delete button on a thumbnail is clicked. Detail: { index: number }
  * @fires rr-image-add - When an add button is clicked. Detail: { source: 'camera' | 'file' }
@@ -11,6 +25,16 @@ import { customElement, property, state } from 'lit/decorators.js';
 @customElement('rr-thumbnail-bar')
 export class RRThumbnailBar extends LitElement {
   @property({ type: Array }) images: string[] = [];
+  /**
+   * `labeled_complete` per image, parallel to {@link images}.
+   *
+   * A separate array rather than a richer per-image object, because `images`
+   * is a list of blob URLs the editor already builds and this element has no
+   * business knowing what an `Image` record is. A short array reads as all
+   * incomplete, which is the safe direction: the flag defaults to `false` and
+   * nothing may claim it on a human's behalf.
+   */
+  @property({ type: Array }) complete: boolean[] = [];
   @property({ type: Number }) selectedIndex = -1;
 
   @state() private _draggedIndex: number | null = null;
@@ -80,6 +104,31 @@ export class RRThumbnailBar extends LitElement {
 
     .thumbnail-wrapper:hover .delete-btn {
       display: flex;
+    }
+
+    /* Bottom-left, which is the one corner nothing else uses: the delete button
+       is top-right and the active border runs the whole edge. Placed *inside*
+       the frame where the delete button hangs outside it — a badge straddling
+       the gap between two thumbnails reads as belonging to either one, and this
+       one is persistent where the delete button appears only under the cursor
+       that already says which thumbnail is meant. */
+    .complete-badge {
+      position: absolute;
+      bottom: 3px;
+      left: 3px;
+      width: 18px;
+      height: 18px;
+      background-color: var(--sl-color-success-600);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+      /* A readout, so it never eats the click that selects the image under it. */
+      pointer-events: none;
+      z-index: 5;
     }
 
     .add-btn {
@@ -202,6 +251,14 @@ export class RRThumbnailBar extends LitElement {
           <div class="delete-btn" @click=${(e: Event) => this._onDelete(e, index)}>
             <sl-icon name="x-lg"></sl-icon>
           </div>
+          ${this.complete[index]
+            ? html`<!-- role="img", because an aria-label on a role-less div is
+                        not reliably exposed. No title: the badge takes no
+                        pointer events, so a tooltip on it could never open. -->
+              <div class="complete-badge" role="img" aria-label="Labeled complete">
+                <sl-icon name="check-lg"></sl-icon>
+              </div>`
+            : ''}
         </div>
       `)}
 

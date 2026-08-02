@@ -23,13 +23,14 @@ and **deletes** through the right-click context menu (#29). #31 added the **tool
 **calibration gate**, and **sensor authoring**; #32 added **car authoring** — two clicks on the
 visible ends, one `image` entry per car, drawn as a chord inside the DPT-derived width rectangle;
 #33 made those clicks a **chain**; #35 added **reclassify**, the context menu's submenu generated
-from the authored vocabulary. v3's point-marker authoring and two-point calibration dragging
-are gone for good, and `src/prototype/` with them: what came back is a different mechanism, built to
-carry the coupler case.
+from the authored vocabulary; #36 added the **completeness affordance**. v3's point-marker authoring
+and two-point calibration dragging are gone for good, and `src/prototype/` with them: what came back
+is a different mechanism, built to carry the coupler case.
 
-So a missing affordance is usually a deferral, not a bug. The completeness affordance (#36) is
-specified in `../SPEC.md` § Labeling Workflow and belongs to its own ticket. Don't reconstruct it
-piecemeal to close a gap you notice here. One such gap is deliberate and is stated in the code:
+Every authoring surface v4 asks for is now built, which is not the same as the editor being
+finished: it is still being rebuilt one ticket at a time, and #37 (reveal after undo) is open.
+**So a missing affordance is usually a deferral, not a bug.** One such gap is deliberate and is
+stated in the code:
 
 * A click on an **existing car end** starts no car *while idle* — a car end has nothing a click can
   edit, and starting one there would stack a label on the object being aimed at. A chain's second
@@ -124,6 +125,31 @@ axis to draw along nor two ends to couple — and the chain stays where it was.
 gesture's business: switching images swaps the cars and leaves the sensors. A car edit therefore
 targets `{ kind: 'image', filename }` and a sensor edit targets `layout` — the drag's history entry
 picks its target from what the press grabbed.
+
+### Completeness, and the one direction the rule runs (#36)
+
+`labeled_complete` is the only place in the format where a human asserts something about **absence**
+— no car in this image is unlabeled — and it is the one gate on detector training. The editor gives
+it one deliberate control for the image on screen (`.complete-bar`, above the thumbnail bar, where
+the strip's badges read the same flag for every other image), and `rr-editor-view._onCompleteToggle`
+is the **only** place `true` is ever written. Nothing computed may stand in for it: an image whose
+labels are all `proposed` is byte-identical whether the user checked every one or clicked accept-all
+blind, so an accept-all must never set it. An image marked complete with **zero** cars is an
+all-background sample, and warns about nothing.
+
+**Deleting a car clears it**, in the same entry — `SPEC.md` § Labeling completeness settles the
+question `SPEC.md` § Undo and redo left open, on the asymmetry of what a wrong answer costs rather
+than on what the user probably meant. Nothing can tell a label deleted off background from one
+deleted off a car still in the photograph; a flag that survived the second case exports an image
+teaching the detector that cars are background, which nothing downstream detects, while a flag
+cleared in the first costs one click in front of a bar that shows the state. That is not the
+never-set rule being bent: **setting** is the claim only a human may make, **clearing** withdraws it
+and asks again. Deletion alone clears it — adding a car increases coverage, a drag moves a label
+under live rectangle feedback, and reclassify changes a name rather than a coverage.
+
+The thumbnail bar's badge is a **readout, not a second control**. A toggle on a 64px thumbnail would
+let a click aimed at selecting an image assert completeness by landing a few pixels off, and this is
+the one flag nothing but a human may set.
 
 ### The calibration gate
 

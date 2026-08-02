@@ -69,6 +69,52 @@ describe('rr-thumbnail-bar', () => {
     expect(ev2.detail.source).to.equal('file');
   });
 
+  // Scanning a set for which images are done is the workflow (`SPEC.md`
+  // § Labeling completeness), so the flag has to read off the strip itself.
+  describe('the completeness badge', () => {
+    it('marks every complete image and no incomplete one', async () => {
+      const el = await fixture<RRThumbnailBar>(html`
+        <rr-thumbnail-bar .images=${images} .complete=${[false, true]}></rr-thumbnail-bar>
+      `);
+      const wrappers = el.shadowRoot!.querySelectorAll('.thumbnail-wrapper');
+
+      expect(wrappers[0].querySelector('.complete-badge')).to.not.exist;
+      expect(wrappers[1].querySelector('.complete-badge')).to.exist;
+    });
+
+    it('treats a missing flag as incomplete', async () => {
+      // `complete` is a parallel array, so a caller that has not caught up
+      // renders unmarked rather than throwing.
+      const el = await fixture<RRThumbnailBar>(html`
+        <rr-thumbnail-bar .images=${images}></rr-thumbnail-bar>
+      `);
+      expect(el.shadowRoot!.querySelectorAll('.complete-badge')).to.have.length(0);
+    });
+
+    it('carries no control of its own, so a click on it selects the image', async () => {
+      // The badge is a readout: the assertion is made through the editor's own
+      // checkbox, so a click aimed at selecting an image can never assert
+      // completeness by landing a few pixels off. `pointer-events: none` is
+      // what makes the badge transparent to that click — jsdom does not apply
+      // it, so what is asserted here is that the badge binds no handler and the
+      // wrapper's own click still reports a selection.
+      const el = await fixture<RRThumbnailBar>(html`
+        <rr-thumbnail-bar .images=${images} .complete=${[true, true]}></rr-thumbnail-bar>
+      `);
+      const badge = el.shadowRoot!.querySelector('.complete-badge') as HTMLElement;
+      const seen: number[] = [];
+      el.addEventListener('rr-image-select', e => seen.push((e as CustomEvent).detail.index));
+
+      badge.click();
+      expect(seen, 'the badge itself reports nothing').to.deep.equal([]);
+
+      // The same pixel, reaching the image underneath as the browser delivers
+      // it: still a selection and nothing more.
+      el.shadowRoot!.querySelectorAll('img')[0].click();
+      expect(seen).to.deep.equal([0]);
+    });
+  });
+
   it('emits rr-image-reorder when a thumbnail is dropped', async () => {
     const el = await fixture<RRThumbnailBar>(html`
       <rr-thumbnail-bar .images=${['img1.jpg', 'img2.jpg']}></rr-thumbnail-bar>

@@ -38,6 +38,8 @@ import type {
   RRContextMenu,
 } from './rr-context-menu.js';
 
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import type { SlCheckbox } from '@shoelace-style/shoelace';
 import './rr-viewer.js';
 import './rr-toolbar.js';
 import './rr-tool-palette.js';
@@ -547,6 +549,24 @@ export class RREditorView extends LitElement {
 
     .dpt-bar .detail {
       margin-left: 1.5rem;
+    }
+
+    /* Directly above the thumbnail bar, whose badges are the same flag read for
+       every other image. */
+    .complete-bar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      padding: 0.5rem 1rem;
+      font-size: var(--sl-font-size-small);
+      background: var(--sl-color-neutral-100);
+      color: var(--sl-color-neutral-700);
+      border-top: 1px solid var(--sl-color-neutral-200);
+    }
+
+    .complete-bar .detail {
+      color: var(--sl-color-neutral-600);
     }
   `;
 
@@ -1392,6 +1412,15 @@ export class RREditorView extends LitElement {
    * coincident endpoints, so nothing else names the car that went, and the
    * cars either side of it simply stop being coupled to it. Taking the middle
    * car of three leaves two.
+   *
+   * It also **clears `labeled_complete`** (`SPEC.md` § Labeling completeness).
+   * A delete removes coverage, and nothing here can tell a label deleted
+   * because it covered background from one deleted off a car still in the
+   * photograph — so the claim goes back to the human who made it. That is not
+   * the rule against setting the flag being bent: setting is the claim only a
+   * human may make, clearing withdraws it and asks again. Both go in **one**
+   * entry, because the flag lives in the same per-image snapshot this delete
+   * already targets, so one undo restores the car and the assertion together.
    */
   private async _deleteCar(id: string) {
     const image = this._currentImage();
@@ -1400,6 +1429,7 @@ export class RREditorView extends LitElement {
     await this._record('delete car', { kind: 'image', filename: image.filename }, () => {
       this._writeImage(image.filename, {
         labels: image.labels.filter(car => car.id !== id),
+        labeledComplete: false,
       });
     });
   }
@@ -1573,7 +1603,10 @@ export class RREditorView extends LitElement {
    * by index — an entry scoped to another image can reorder the array while a
    * dialog or a menu is open.
    */
-  private _writeImage(filename: string, changes: { labels?: readonly CarLabel[] }) {
+  private _writeImage(
+    filename: string,
+    changes: { labels?: readonly CarLabel[]; labeledComplete?: boolean }
+  ) {
     const manifest = this.archive!.getManifest();
     const index = manifest.images.findIndex(img => img.filename === filename);
     if (index < 0) return;
@@ -1581,8 +1614,40 @@ export class RREditorView extends LitElement {
     manifest.images[index] = {
       ...manifest.images[index],
       ...(changes.labels ? { labels: [...changes.labels] } : {}),
+      ...(changes.labeledComplete !== undefined
+        ? { labeled_complete: changes.labeledComplete }
+        : {}),
     };
     this.requestUpdate();
+  }
+
+  /**
+   * Writes `labeled_complete` for the image on screen, as one entry.
+   *
+   * The **only** place this element sets the flag true, and it is reached from
+   * one deliberate control and nothing else (`SPEC.md` § Labeling completeness).
+   * The flag means a human asserts that no car in this image is unlabeled — an
+   * assertion about *absence*, which is why nothing computed can stand in for
+   * it and why no other handler here may write `true` into it however much it
+   * knows about the labels.
+   *
+   * Marking an image with **zero** cars complete is a legitimate all-background
+   * sample, so there is nothing to warn about and no branch on the label count.
+   *
+   * Toggled off, it is its own entry rather than an undo of the one that set
+   * it: withdrawing the claim is an edit the user made, and it must be on the
+   * stack where they can reverse it.
+   */
+  private async _onCompleteToggle(e: Event) {
+    const image = this._currentImage();
+    if (!image) return;
+    const complete = (e.target as SlCheckbox).checked;
+
+    await this._record(
+      complete ? 'mark labeled complete' : 'mark labeling incomplete',
+      { kind: 'image', filename: image.filename },
+      () => this._writeImage(image.filename, { labeledComplete: complete })
+    );
   }
 
   /** The coordinate came back: write the point as one `layout` entry. */
@@ -1676,6 +1741,35 @@ export class RREditorView extends LitElement {
   }
 
   /**
+   * The completeness control, for the image on screen.
+   *
+   * It sits **directly above the thumbnail bar**, which is where the same flag
+   * is read for every other image: the control and the readout it changes are
+   * adjacent, so what the checkbox does to the strip is visible in one glance
+   * rather than inferred.
+   *
+   * The label states what is being asserted rather than naming the field.
+   * `labeled_complete` is a claim about *absence* — no car in this image is
+   * unlabeled — and a checkbox reading "complete" invites the reading "I am
+   * done with this image", which is a different and much weaker claim. The
+   * consequence is stated with it, because it is the one thing that makes the
+   * assertion worth making carefully: only complete images are exported.
+   */
+  private _renderCompleteness(image: Image) {
+    return html`<div class="complete-bar">
+      <sl-checkbox
+        ?checked=${image.labeled_complete}
+        @sl-change=${this._onCompleteToggle}
+      >
+        Labeled complete
+      </sl-checkbox>
+      <span class="detail">
+        No car in this image is unlabeled. Only complete images will be exported for training.
+      </span>
+    </div>`;
+  }
+
+  /**
    * The rubber band, or null when no chain is live.
    *
    * Before the pointer has moved it is the anchor twice over, which draws the
@@ -1731,8 +1825,11 @@ export class RREditorView extends LitElement {
               @rr-pointer-contextmenu=${this._onViewerContextMenu}
             ></rr-viewer>
 
+            ${currentImage ? this._renderCompleteness(currentImage) : ''}
+
             <rr-thumbnail-bar
               .images=${manifest.images.map(img => this._imageUrls.get(img.filename) || '')}
+              .complete=${manifest.images.map(img => img.labeled_complete)}
               .selectedIndex=${this._currentImageIndex}
               @rr-image-select=${this._onImageSelect}
               @rr-image-add=${this._onImageAdd}
