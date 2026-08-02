@@ -30,6 +30,10 @@ class FakePointerEvent extends MouseEvent {
 /**
  * Give the SVG the geometry jsdom lacks: a uniform scale plus an offset,
  * standing in for a letterboxed viewport. `screen = image * scale + offset`.
+ *
+ * The CTM goes on the **content group**, which is where the viewer reads it:
+ * the group's user space is the authored frame, and the SVG's is the media's
+ * own pixel grid.
  */
 function stubSvgGeometry(
   svg: SVGSVGElement,
@@ -37,7 +41,8 @@ function stubSvgGeometry(
 ) {
   const inverse = { a: 1 / scale, d: 1 / scale, e: -offsetX / scale, f: -offsetY / scale };
   const ctm = { a: scale, d: scale, e: offsetX, f: offsetY, inverse: () => inverse };
-  svg.getScreenCTM = () => ctm as unknown as DOMMatrix;
+  const frame = svg.querySelector('g.frame') as SVGGElement;
+  frame.getScreenCTM = () => ctm as unknown as DOMMatrix;
   svg.createSVGPoint = () => {
     const pt = {
       x: 0,
@@ -88,6 +93,165 @@ describe('rr-viewer', () => {
     `);
     const svg = el.shadowRoot!.querySelector('svg')!;
     expect(svg.getAttribute('viewBox')).to.equal('0 0 800 600');
+  });
+
+  // jsdom neither loads images nor lays anything out, so what these assert is
+  // the **derivation** — the viewBox and the content transform the viewer
+  // computes from the sizes it is given — and not the paint, which no test here
+  // can see. The paint follows from the derivation because the media and the
+  // overlay cover the same box and fit their content into it by the same rule.
+  describe('the media and the overlay resolve to one box (#41)', () => {
+    /** Give the media a natural size, as a real load would, and fire `load`. */
+    function loadImage(el: RrViewer, size: { width: number; height: number }) {
+      const img = el.shadowRoot!.querySelector('img')!;
+      Object.defineProperty(img, 'naturalWidth', { value: size.width, configurable: true });
+      Object.defineProperty(img, 'naturalHeight', { value: size.height, configurable: true });
+      img.dispatchEvent(new Event('load'));
+    }
+
+    const frameTransform = (el: RrViewer) =>
+      el.shadowRoot!.querySelector('g.frame')!.getAttribute('transform');
+    const viewBox = (el: RrViewer) => el.shadowRoot!.querySelector('svg')!.getAttribute('viewBox');
+
+    it('draws in the authored frame until the media reports a size', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer src="test.jpg" .resolution=${{ width: 1920, height: 1080 }}></rr-viewer>
+      `);
+      expect(viewBox(el)).to.equal('0 0 1920 1080');
+      expect(frameTransform(el)).to.equal('scale(1, 1)');
+    });
+
+    it('follows the image pixel grid once the image loads', async () => {
+      // A 4K photo of a 1080p frame is the same view at twice the pixels. The
+      // viewBox follows the photograph — that is what makes the overlay's
+      // letterbox the photograph's letterbox — and the authored frame is
+      // scaled onto it, so a point at (960, 540) still lands mid-photo.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer src="test.jpg" .resolution=${{ width: 1920, height: 1080 }}></rr-viewer>
+      `);
+      loadImage(el, { width: 3840, height: 2160 });
+      await el.updateComplete;
+
+      expect(viewBox(el)).to.equal('0 0 3840 2160');
+      expect(frameTransform(el)).to.equal('scale(2, 2)');
+    });
+
+    it('stretches the authored frame over a photograph of another shape', async () => {
+      // 16:9 declared, 4:3 delivered — the ticket's repro. Before this, points
+      // well inside the photograph rendered out on the letterbox bars.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer src="test.jpg" .resolution=${{ width: 640, height: 360 }}></rr-viewer>
+      `);
+      loadImage(el, { width: 640, height: 480 });
+      await el.updateComplete;
+
+      expect(viewBox(el)).to.equal('0 0 640 480');
+      const [, sx, sy] = frameTransform(el)!.match(/scale\(([\d.]+), ([\d.]+)\)/)!;
+      expect(Number(sx)).to.equal(1);
+      expect(Number(sy)).to.be.closeTo(480 / 360, 1e-9);
+    });
+
+    it('reports a mismatch rather than absorbing it', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer src="test.jpg" .resolution=${{ width: 640, height: 360 }}></rr-viewer>
+      `);
+      const seen: { media: unknown; frame: unknown; aspectMismatch: boolean }[] = [];
+      el.addEventListener('rr-media-frame', e => seen.push(e.detail));
+
+      loadImage(el, { width: 640, height: 480 });
+
+      expect(seen.length).to.equal(1);
+      expect(seen[0].media).to.deep.equal({ width: 640, height: 480 });
+      expect(seen[0].frame).to.deep.equal({ width: 640, height: 360 });
+      expect(seen[0].aspectMismatch).to.be.true;
+    });
+
+    it('reports a re-encoded image of the right shape as no mismatch', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer src="test.jpg" .resolution=${{ width: 1920, height: 1080 }}></rr-viewer>
+      `);
+      const seen: { aspectMismatch: boolean }[] = [];
+      el.addEventListener('rr-media-frame', e => seen.push(e.detail));
+
+      loadImage(el, { width: 1280, height: 720 });
+
+      expect(seen.map(d => d.aspectMismatch)).to.deep.equal([false]);
+    });
+
+    it('forgets the media size when the image changes', async () => {
+      // Images are per image and `camera.resolution` is per archive, so the
+      // next image is a new grid. Drawing it against the previous one's would
+      // misplace every object on it until it decoded.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer src="a.jpg" .resolution=${{ width: 1920, height: 1080 }}></rr-viewer>
+      `);
+      loadImage(el, { width: 3840, height: 2160 });
+      await el.updateComplete;
+
+      el.src = 'b.jpg';
+      await el.updateComplete;
+
+      expect(viewBox(el)).to.equal('0 0 1920 1080');
+      expect(frameTransform(el)).to.equal('scale(1, 1)');
+    });
+
+    it('ignores a load that reports no size', async () => {
+      // A decode failure leaves `naturalWidth` at 0, and a zero divisor would
+      // put every object at NaN.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer src="test.jpg" .resolution=${{ width: 1920, height: 1080 }}></rr-viewer>
+      `);
+      loadImage(el, { width: 0, height: 0 });
+      await el.updateComplete;
+
+      expect(viewBox(el)).to.equal('0 0 1920 1080');
+    });
+
+    it('sizes screen-constant annotations from the same transform', async () => {
+      // The derivation, which is all jsdom can see: a label is drawn at
+      // `SYMBOL_SIZE_SCREEN_PX * imagePxPerScreenPx` image pixels, and
+      // `imagePxPerScreenPx` is `1 / ctm.a` off the content group. So
+      // `fontSize * ctm.a` — its size on screen — is the same number at any
+      // scale. Taken from the CTM and not from the SVG's bounding rect, which
+      // is wrong by the letterbox.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer
+          .calibrationPoints=${[{ px: { x: 100, y: 100 }, world: { x: 0, y: 0, z: 0 } }]}
+          .resolution=${{ width: 640, height: 360 }}
+        ></rr-viewer>
+      `);
+      const svg = el.shadowRoot!.querySelector('svg')!;
+      const measure = () => (el as unknown as { measureScale(): void }).measureScale();
+      const fontSize = () =>
+        Number(el.shadowRoot!.querySelector('.calibration-point text')!.getAttribute('font-size'));
+
+      stubSvgGeometry(svg, { scale: 0.5 });
+      measure();
+      await el.updateComplete;
+      const small = fontSize() * 0.5;
+
+      stubSvgGeometry(svg, { scale: 4 });
+      measure();
+      await el.updateComplete;
+      const large = fontSize() * 4;
+
+      expect(small).to.be.closeTo(large, 1e-9);
+      expect(small).to.be.greaterThan(0);
+    });
+
+    it('follows the video frame size in stream mode too', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .stream=${{} as MediaStream} .resolution=${{ width: 1920, height: 1080 }}></rr-viewer>
+      `);
+      const video = el.shadowRoot!.querySelector('video')!;
+      Object.defineProperty(video, 'videoWidth', { value: 1280, configurable: true });
+      Object.defineProperty(video, 'videoHeight', { value: 720, configurable: true });
+      video.dispatchEvent(new Event('loadedmetadata'));
+      await el.updateComplete;
+
+      expect(viewBox(el)).to.equal('0 0 1280 720');
+      expect(frameTransform(el)).to.equal('scale(0.6666666666666666, 0.6666666666666666)');
+    });
   });
 
   it('renders one <use> per marker', async () => {

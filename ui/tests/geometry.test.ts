@@ -15,6 +15,7 @@ import {
   hitTest,
   isClick,
   isCoincident,
+  overlayFit,
   placeLabel,
   sensorDiameterPx,
   SYMBOL_SIZE_SCREEN_PX,
@@ -735,6 +736,61 @@ describe('coupledEnds', () => {
     expect(coupledEnds(car('c1', { x: 0, y: 0 }, { x: 100, y: 0 }), couplers)).to.deep.equal({
       p0: false,
       p1: false,
+    });
+  });
+});
+
+describe('overlayFit', () => {
+  const frame = { width: 1920, height: 1080 };
+
+  it('is the identity while the media size is unknown', () => {
+    // Before an image loads there is nothing to follow, and the overlay draws
+    // in the authored frame — which is what it did before this existed.
+    expect(overlayFit(null, frame)).to.deep.equal({ sx: 1, sy: 1, aspectMismatch: false });
+  });
+
+  it('is the identity for media that is exactly the authored frame', () => {
+    expect(overlayFit({ width: 1920, height: 1080 }, frame)).to.deep.equal({
+      sx: 1,
+      sy: 1,
+      aspectMismatch: false,
+    });
+  });
+
+  it('scales uniformly for a re-encoded image of the same shape', () => {
+    // A 4K photo of a 1080p frame is the same view at twice the pixels: every
+    // authored coordinate doubles, and nothing is distorted.
+    expect(overlayFit({ width: 3840, height: 2160 }, frame)).to.deep.equal({
+      sx: 2,
+      sy: 2,
+      aspectMismatch: false,
+    });
+  });
+
+  it('maps the frame onto the media by relative position when the shapes differ', () => {
+    // 16:9 authored over a 4:3 photograph. No mapping is *correct* — nothing
+    // records how the photo was cropped — so the defined answer is that the
+    // frame covers the photograph, which is what keeps an authored point on
+    // the photograph instead of out on a letterbox bar.
+    const fit = overlayFit({ width: 640, height: 480 }, { width: 640, height: 360 });
+    expect(fit.sx).to.equal(1);
+    expect(fit.sy).to.be.closeTo(480 / 360, 1e-9);
+    expect(fit.aspectMismatch).to.be.true;
+  });
+
+  it('does not call a rounding difference a mismatch', () => {
+    // A resize rounds to whole pixels, and an archive is not inconsistent
+    // because one dimension landed a pixel short.
+    expect(overlayFit({ width: 1919, height: 1080 }, frame).aspectMismatch).to.be.false;
+  });
+
+  it('is the identity for a degenerate media size', () => {
+    // `naturalWidth` is 0 until an image decodes, and a zero divisor would put
+    // every object at NaN.
+    expect(overlayFit({ width: 0, height: 0 }, frame)).to.deep.equal({
+      sx: 1,
+      sy: 1,
+      aspectMismatch: false,
     });
   });
 });

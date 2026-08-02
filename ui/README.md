@@ -83,7 +83,9 @@ rr-app                          ← shell: owns the archive and the view mode
 > **completeness affordance**: a `labeled_complete` checkbox for the image on
 > screen, a badge per image in the thumbnail bar, and one history entry per
 > toggle — plus the decision that **deleting a car clears the flag**, recorded
-> with its reasoning in `../SPEC.md` § Labeling completeness.
+> with its reasoning in `../SPEC.md` § Labeling completeness. [#41] made the
+> media and the overlay resolve to **one box** at every window size, so an object
+> no longer drifts off the pixel it names as the window is resized.
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -95,6 +97,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#33]: https://github.com/iot49/rails49/issues/33
 > [#35]: https://github.com/iot49/rails49/issues/35
 > [#36]: https://github.com/iot49/rails49/issues/36
+> [#41]: https://github.com/iot49/rails49/issues/41
 
 ## State and data flow
 
@@ -329,11 +332,11 @@ image pixel coordinates.
 | `cars` | `readonly CarLabel[]` | Car spans to draw: a chord inside its width rectangle. Per **image**, so switching images swaps the whole list; empty in the live view |
 | `pendingCar` | `PendingCar \| null` | The **rubber band** — `{ anchor, to }` for the chain in flight. The one thing here that is not in the manifest; empty in the live view |
 | `dpt` | `number \| null` | The scale the **world-sized** symbols are drawn at. `null` falls them back to `symbolSize` |
-| `resolution` | `{ width, height }` | Native media resolution → the SVG viewBox |
+| `resolution` | `{ width, height }` | `camera.resolution` — the frame every coordinate is **authored** in. Not the viewBox: the viewBox is the media's own size, and this is scaled onto it |
 
 **Emits:** `rr-pointer-down`, `rr-pointer-move`, `rr-pointer-up`, `rr-pointer-cancel`
-(`ViewerPointerDetail`), and `rr-pointer-contextmenu` (`ViewerContextMenuDetail`). All five fire in
-both `src` and `stream` mode. They are declared in `HTMLElementEventMap`, so a listener anywhere up
+(`ViewerPointerDetail`), `rr-pointer-contextmenu` (`ViewerContextMenuDetail`), and `rr-media-frame`
+(`ViewerMediaFrameDetail`, once per media load). All six fire in both `src` and `stream` mode. They are declared in `HTMLElementEventMap`, so a listener anywhere up
 the tree gets the detail typed without a cast.
 
 | Detail field | Type | Description |
@@ -341,6 +344,12 @@ the tree gets the detail typed without a cast.
 | `point` | `Point` | Position **in image pixels** — the SVG viewBox frame, never screen coordinates |
 | `imagePxPerScreenPx` | `number` | Converts a screen-space tolerance to image pixels; feeds `geometry.ts`'s `HitTolerance` |
 | `originalEvent` | `PointerEvent` / `MouseEvent` | For `pointerId`, `buttons`, and modifier keys |
+
+`ViewerMediaFrameDetail` is `{ media, frame, aspectMismatch }` — what the image or video turned out
+to be (`naturalWidth`/`videoWidth`), what the archive declares, and whether the two are different
+**shapes**. Only the viewer ever learns the first number, and `camera.resolution` is one value for
+the whole archive while the images are per image, so nothing else can notice a re-cropped or
+re-encoded photo. `rr-editor-view` turns a mismatch into the `.frame-warning` bar.
 
 **Coordinates are converted with `createSVGPoint` + inverse `getScreenCTM()`**, never by subtracting
 `getBoundingClientRect()` by hand: the rect ignores the letterbox that `preserveAspectRatio` creates,
@@ -376,13 +385,32 @@ right-click it hears, and `rr-live-view` does not listen at all.
 **Methods:** `getVideoElement()`, `getImageElement()` — `rr-live-view` uses these to feed the
 classifier the live frame source.
 
-**Why one component for both modes.** `<img>` and `<video>` both use `object-fit: contain`, matched
-to the SVG's `preserveAspectRatio="xMidYMid meet"`, and the SVG overlays the full viewport. The
-viewBox therefore maps 1:1 onto image pixel coordinates, so a marker lands in the same place in
-either mode. Changing one half of that pair silently misplaces every marker.
+**Why one component for both modes.** `<img>`/`<video>` and the SVG both **cover the container**,
+and both fit their content into it by the same rule — `object-fit: contain` against
+`preserveAspectRatio="xMidYMid meet"` — over a viewBox that is the media's **own** pixel grid. Two
+boxes fitted by one rule over one box are one box, which is what makes a marker land on the pixel it
+names in either mode. Sizing either from anything else is what let objects drift off the photograph
+as the window was resized ([#41]): the media used to lay out at its *natural* size, which stops
+growing once the container is bigger than the photograph while the overlay keeps growing, and the
+viewBox used to be `resolution`, which letterboxes differently as soon as an image's shape is not
+the declared one.
+
+The authored frame reaches that grid through the `g.frame` scale (`geometry.ts` § `overlayFit`), so
+everything drawn and every coordinate emitted stays in `resolution`'s frame — the frame the manifest
+is written in (`SPEC.md` § Output encoding). For a photograph of the declared shape at any pixel
+count the scale is uniform and nothing changes; where the shapes disagree there is no correct
+mapping, because nothing records how the photo was cropped, so the frame is **stretched** to cover
+the photograph and `rr-media-frame` says the mapping was a guess. That stretch is non-uniform, so
+the screen-constant annotations stretch with it — left visible rather than compensated for, since
+the archive is inconsistent and a symbol that looked right would argue otherwise. **Pointer
+coordinates come from that group's CTM**, not the SVG's.
+
+One visible sizing change comes with it: a photograph smaller than the pane is now **upscaled** to
+fill it, where the media used to stop at its natural size. The labeler aims at car ends, and a
+postage stamp is harder to aim at than a soft enlargement.
 
 **Scaling — two kinds, and mixing them up misdraws everything.** A `ResizeObserver` recomputes
-`symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, keeping markers, crosshairs,
+`symbolSize = SYMBOL_SIZE_SCREEN_PX / ctm.a` off the same transform the pointer path uses, keeping markers, crosshairs,
 car endpoint handles and every **label** a constant *screen* size at any zoom or window size. A
 **sensor's diamond** is not one of those: it is drawn one **track width** across, which in image
 pixels *is* `dpt` (`geometry.ts` § `trackWidthPx`), so it shrinks with the photograph exactly as the
@@ -488,6 +516,8 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | `LabelPlacement` | `{ x, y, textAnchor, dominantBaseline }` — the SVG attributes that place the label |
 | `estimateLabelWidthPx(text, fontSizePx)` | An **estimate** of a monospace label's width: character count × 0.6em |
 | `FrameSize` | `{ width, height }` — the image bounds, `rr-viewer`'s `resolution` |
+| `overlayFit(media, frame)` | `{ sx, sy, aspectMismatch }` — how the authored frame maps onto the media's own pixel grid, which is what the overlay's content group is scaled by. Uniform for a photograph of the frame's shape at any pixel count; the identity while nothing is loaded |
+| `OverlayFit` | `{ sx, sy, aspectMismatch }` |
 
 **Both constants come from `@occupancy/config`.** The scale ratio cancels out of the width formula —
 a car is 2.09 track-widths wide in **every** scale — so no scale lookup belongs anywhere in `ui/`,
@@ -914,6 +944,13 @@ authoring, the right-click menu, and the per-image completeness flag.
   * **Below `MIN_DPT`**, the bar takes the `below-minimum` warning style and says so. It **blocks
     nothing** — the six fixture archives sit at DPT 18–19, under the threshold of 20, and must stay
     openable and editable.
+* **Frame mismatch** (`.frame-warning`), from the viewer's `rr-media-frame`. Shown only when the
+  loaded image is a different **shape** from `camera.resolution`, naming both sizes — the two
+  numbers are what says which half is wrong, since a re-cropped photo and a mis-typed resolution
+  read identically otherwise. Labels on such an image are drawn through a stretch and are
+  approximate. It **blocks nothing**, like a below-minimum DPT, and it is cleared when another image
+  is selected: the next image reports its own size when it decodes, and one that never decodes must
+  not inherit this verdict.
 * **Car authoring** ([#32]). **Two clicks on the visible car ends**, and the straight chord between
   them: no snapping, because v4 stores no track to snap to, and the photograph is what shows the
   labeler where the car actually is. The first click takes an **anchor** and writes nothing; the

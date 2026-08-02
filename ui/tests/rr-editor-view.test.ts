@@ -126,6 +126,78 @@ describe('rr-editor-view', () => {
     });
   });
 
+  describe('the frame-mismatch warning (#41)', () => {
+    /** What `rr-viewer` emits when the media reports its own size. */
+    function reportMedia(
+      el: RREditorView,
+      media: { width: number; height: number },
+      aspectMismatch: boolean
+    ) {
+      el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
+        new CustomEvent('rr-media-frame', {
+          detail: { media, frame: { width: 100, height: 100 }, aspectMismatch },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
+
+    it('says nothing while the image is the shape the archive declares', async () => {
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      reportMedia(el, { width: 400, height: 400 }, false);
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.frame-warning')).to.not.exist;
+    });
+
+    it('names both sizes when the shapes disagree', async () => {
+      // The two numbers are what says which half is wrong: a re-cropped photo
+      // and a mis-typed `camera.resolution` read identically without them.
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      reportMedia(el, { width: 200, height: 100 }, true);
+      await el.updateComplete;
+
+      const bar = el.shadowRoot!.querySelector('.frame-warning')!;
+      expect(bar).to.exist;
+      expect(bar.textContent).to.contain('200×100');
+      expect(bar.textContent).to.contain('100×100');
+    });
+
+    it('clears the warning when another image is selected', async () => {
+      // It belongs to the image that earned it; the next one reports its own
+      // size when it decodes, and one that never decodes must not inherit this.
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      reportMedia(el, { width: 200, height: 100 }, true);
+      await el.updateComplete;
+
+      el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
+        new CustomEvent('rr-image-select', { detail: { index: 0 }, bubbles: true, composed: true })
+      );
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.frame-warning')).to.not.exist;
+    });
+
+    it('does not block editing', async () => {
+      // Like a below-minimum DPT: the archive is inconsistent, and the labeler
+      // still has work to do on it.
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      reportMedia(el, { width: 200, height: 100 }, true);
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('rr-viewer')).to.exist;
+      expect(el.shadowRoot!.querySelector('rr-tool-palette')).to.exist;
+    });
+  });
+
   // Car authoring and sensor placement are still absent — they belong to the
   // editor spec's later tickets (#31). Calibration points are the one thing
   // this editor authors, and they go through `calibrationPoints`.

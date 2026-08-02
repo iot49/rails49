@@ -28,7 +28,11 @@ import { classChoices, rootClass } from './vocabulary.js';
 import type { ClassChoice } from './vocabulary.js';
 import { revealTarget } from './history.js';
 import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
-import type { ViewerContextMenuDetail, ViewerPointerDetail } from './rr-viewer.js';
+import type {
+  ViewerContextMenuDetail,
+  ViewerMediaFrameDetail,
+  ViewerPointerDetail,
+} from './rr-viewer.js';
 import type { CalibrationCommitDetail, RRCalibrationDialog } from './rr-calibration-dialog.js';
 import type { SensorNameCommitDetail, RRSensorDialog } from './rr-sensor-dialog.js';
 import type { EditorTool, ToolSelectDetail } from './rr-tool-palette.js';
@@ -449,6 +453,20 @@ export class RREditorView extends LitElement {
   @state() private _currentImageIndex = 0;
   @state() private _imageUrls: Map<string, string> = new Map();
   /**
+   * The loaded image's size against the archive's, when the two are different
+   * **shapes**, and `null` whenever they agree.
+   *
+   * `camera.resolution` is one value for the whole archive while the images are
+   * per image (`SPEC.md` § Output encoding), so nothing binds an image's own
+   * dimensions to the frame its labels are authored in. The viewer draws the
+   * frame stretched over the photograph either way — an authored point stays on
+   * the photograph, which is the bug this closes (#41) — but a stretch is a
+   * guess about a crop nothing recorded, and a guess the user cannot see is the
+   * failure repeating one level up. So it is stated, here, above the image it
+   * is about.
+   */
+  @state() private _frameMismatch: ViewerMediaFrameDetail | null = null;
+  /**
    * What a click in the viewer means.
    *
    * Calibration is the default and the fallback: it is the only tool that works
@@ -531,7 +549,8 @@ export class RREditorView extends LitElement {
       color: var(--sl-color-neutral-500);
     }
 
-    .dpt-bar {
+    .dpt-bar,
+    .frame-warning {
       flex-shrink: 0;
       padding: 0.5rem 1rem;
       font-family: var(--sl-font-mono);
@@ -541,13 +560,18 @@ export class RREditorView extends LitElement {
       border-bottom: 1px solid var(--sl-color-neutral-200);
     }
 
+    /* A frame mismatch gets the DPT bar's warning treatment because it is the
+       same kind of statement: the archive is inconsistent with what it is being
+       asked to do, and editing is not blocked. */
     .dpt-bar.uncalibrated,
-    .dpt-bar.below-minimum {
+    .dpt-bar.below-minimum,
+    .frame-warning {
       background: var(--sl-color-warning-100);
       color: var(--sl-color-warning-800);
     }
 
-    .dpt-bar .detail {
+    .dpt-bar .detail,
+    .frame-warning .detail {
       margin-left: 1.5rem;
     }
 
@@ -585,6 +609,7 @@ export class RREditorView extends LitElement {
     if (changedProperties.has('archive')) {
       this._tool = 'calibration';
       this._abandonPlacement();
+      this._frameMismatch = null;
     }
     this._enforceGate();
   }
@@ -785,6 +810,18 @@ export class RREditorView extends LitElement {
   private _onImageSelect(e: CustomEvent) {
     this._currentImageIndex = e.detail.index;
     this._abandonPlacement();
+    // The warning belongs to the image that earned it. The next image reports
+    // its own size when it decodes, and one that never decodes must not inherit
+    // this one's verdict.
+    this._frameMismatch = null;
+  }
+
+  /**
+   * The viewer learned what the media actually is. Keep it only when it
+   * disagrees in shape with what the archive declares.
+   */
+  private _onMediaFrame(e: CustomEvent<ViewerMediaFrameDetail>) {
+    this._frameMismatch = e.detail.aspectMismatch ? e.detail : null;
   }
 
   private async _onImageAdd(e: CustomEvent) {
@@ -1741,6 +1778,28 @@ export class RREditorView extends LitElement {
   }
 
   /**
+   * The frame-mismatch warning, or nothing when there is none.
+   *
+   * It names both sizes rather than saying "mismatch", because the two numbers
+   * are what tells the user which half is wrong: a re-cropped photo and a
+   * mis-typed `camera.resolution` read identically otherwise. It states the
+   * consequence too — the labels on this image are drawn through a stretch, so
+   * they are approximate and a car's rectangle is not square to the track.
+   */
+  private _renderFrameMismatch() {
+    const m = this._frameMismatch;
+    if (!m) return '';
+    return html`<div class="frame-warning">
+      Image is ${m.media.width}×${m.media.height}, archive declares
+      ${m.frame.width}×${m.frame.height}
+      <span class="detail">
+        different shapes, so labels are drawn stretched onto this image and are
+        approximate. Re-capture it at the declared resolution, or correct the archive's.
+      </span>
+    </div>`;
+  }
+
+  /**
    * The completeness control, for the image on screen.
    *
    * It sits **directly above the thumbnail bar**, which is where the same flag
@@ -1810,6 +1869,8 @@ export class RREditorView extends LitElement {
           : html`
             ${this._renderDpt(manifest)}
 
+            ${this._renderFrameMismatch()}
+
             <rr-viewer
               .src=${src}
               .resolution=${manifest.camera.resolution}
@@ -1823,6 +1884,7 @@ export class RREditorView extends LitElement {
               @rr-pointer-up=${this._onViewerPointerUp}
               @rr-pointer-cancel=${this._onViewerPointerCancel}
               @rr-pointer-contextmenu=${this._onViewerContextMenu}
+              @rr-media-frame=${this._onMediaFrame}
             ></rr-viewer>
 
             ${currentImage ? this._renderCompleteness(currentImage) : ''}

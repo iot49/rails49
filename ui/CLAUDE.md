@@ -27,6 +27,9 @@ from the authored vocabulary; #36 added the **completeness affordance**. v3's po
 and two-point calibration dragging are gone for good, and `src/prototype/` with them: what came back
 is a different mechanism, built to carry the coupler case.
 
+#41 fixed the viewer's two independent letterboxes, which had been misplacing every object as the
+window was resized.
+
 Every authoring surface v4 asks for is now built, which is not the same as the editor being
 finished: it is still being rebuilt one ticket at a time, and #37 (reveal after undo) is open.
 **So a missing affordance is usually a deferral, not a bug.** One such gap is deliberate and is
@@ -241,20 +244,41 @@ build: the chain interception that makes a live chain a wall Cmd+Z cannot cross.
 ### `rr-viewer` is shared, and that is load-bearing
 
 The same component backs the editor (`src` → `<img>`) and the live view (`stream` → `<video>`).
-Both media elements use `object-fit: contain`, matched to the SVG's `preserveAspectRatio="xMidYMid meet"`,
-so the viewBox maps 1:1 onto image pixel coordinates and a marker lands in the same place in both
-modes. Changing either half of that pair silently misplaces every marker.
 
-`symbolSize = MARKER_SIZE_PX * (resolution.width / svgRect.width)`, recomputed by a `ResizeObserver`,
-keeps markers a constant *screen* size.
+**The media and the overlay resolve to one box, by construction** (#41). Both cover the container,
+and both fit their content into it by the same rule — `object-fit: contain` against
+`preserveAspectRatio="xMidYMid meet"` — over a viewBox that is the **media's own pixel grid**. Two
+boxes fitted by one rule over one box are one box; two fitted independently coincide only by luck,
+which is what let a sensor drift off the track it was placed on as the window was resized. Both
+halves of the old pairing were wrong on their own: the media laid out at its *natural* size, so it
+stopped growing once the container was bigger than the photograph while the overlay kept growing,
+and the viewBox was `resolution`, which letterboxes to a different box the moment an image's shape
+is not the declared one.
+
+The authored frame reaches that grid through the `g.frame` scale (`geometry.ts` § `overlayFit`), so
+everything drawn and every coordinate emitted is still in `camera.resolution`'s frame — the frame
+the manifest is written in (`SPEC.md` § Output encoding), and **not** the image's own pixels. For a
+photograph of the declared shape at any pixel count the scale is uniform and nothing else changes.
+
+`camera.resolution` is per **archive** while images are per **image**, so an image can simply be a
+different shape, and no mapping is then correct — nothing records how the photo was cropped. The
+defined answer is that the frame is **stretched** to cover the photograph, which keeps every
+authored object on it, and the viewer emits `rr-media-frame` so the editor can say the mapping was a
+guess (`.frame-warning`, which blocks nothing). Silently absorbing it is what this ticket forbids.
+
+`symbolSize = SYMBOL_SIZE_SCREEN_PX / ctm.a`, recomputed by a `ResizeObserver`, keeps markers a
+constant *screen* size — off the **content group's** CTM, the same transform the pointer path uses,
+because a ratio taken from the SVG's bounding rect is wrong by the letterbox.
 
 The viewer **reports pointer gestures and authors nothing**. It emits `rr-pointer-down`/`-move`/
 `-up`/`-cancel`/`-contextmenu` with coordinates already converted to **image pixels**, so no consumer
 ever handles screen coordinates and none can convert them wrongly. The conversion uses
-`createSVGPoint` + inverse `getScreenCTM`; **never subtract `getBoundingClientRect()` by hand** — the
-rect ignores the letterbox, so the hand-rolled version is right only while the viewport happens to
-match the image's aspect ratio. The same matrix yields `imagePxPerScreenPx`, which is what turns a
-grab radius in screen pixels into one in image pixels.
+`createSVGPoint` + the inverse of the **content group's** `getScreenCTM` — the group's user space is
+the authored frame, the SVG's is the media's grid — and **never a hand-rolled subtraction of
+`getBoundingClientRect()`**: the rect ignores the letterbox, so the hand-rolled version is right
+only while the viewport happens to match the image's aspect ratio. The same matrix yields
+`imagePxPerScreenPx`, which is what turns a grab radius in screen pixels into one in image pixels,
+and what `symbolSize` is measured with.
 
 The v3 machinery that *mutated* — marker add/move/delete, the draggable `{p0, p1}` pair — went with
 the v4 reduction and does not come back. Deciding what a gesture means is the editor's job; the

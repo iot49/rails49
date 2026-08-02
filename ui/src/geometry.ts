@@ -137,6 +137,62 @@ export interface FrameSize {
   readonly height: number;
 }
 
+/**
+ * How the authored frame maps onto the media's own pixel grid.
+ *
+ * `sx`/`sy` are what the overlay's content is scaled by, so a coordinate
+ * authored in `camera.resolution` pixels lands on the pixel of the photograph
+ * it names. They are equal in every well-formed archive.
+ */
+export interface OverlayFit {
+  readonly sx: number;
+  readonly sy: number;
+  /**
+   * The media's shape is not the authored frame's, so `sx !== sy` and the
+   * overlay is **stretched** rather than scaled. Something is wrong with the
+   * archive; the flag is what lets the editor say so.
+   */
+  readonly aspectMismatch: boolean;
+}
+
+/**
+ * How far apart two aspect ratios may be before they are different shapes.
+ *
+ * A resize rounds to whole pixels, so 1920×1080 re-encoded at width 1919 is
+ * the same photograph and not an inconsistent archive. Half a percent is
+ * comfortably above any rounding and far below any real crop.
+ */
+const ASPECT_TOLERANCE = 0.005;
+
+/**
+ * The transform that puts the authored frame over the photograph.
+ *
+ * `camera.resolution` is the frame every coordinate in the manifest is written
+ * in (`SPEC.md` § Output encoding) — but the images are per-image bytes, and
+ * nothing makes one match the other. So the overlay **follows the media**: its
+ * viewBox is the media's own size, and the authored frame is scaled into it.
+ *
+ * The two-element form matters only when the shapes disagree. For a photograph
+ * of the frame's shape at any pixel count — the well-formed case, and the only
+ * one the six fixture archives contain — `sx === sy` and this is the uniform
+ * scale that was implicit before. When the shapes disagree there is no correct
+ * answer, because nothing records how the photo was cropped; the frame is
+ * stretched to cover the photograph, which keeps every authored object *on* it,
+ * and `aspectMismatch` says the mapping was a guess.
+ *
+ * `null` media — nothing loaded yet — is the identity, so the first paint draws
+ * in the authored frame rather than at NaN.
+ */
+export function overlayFit(media: FrameSize | null, frame: FrameSize): OverlayFit {
+  const identity = { sx: 1, sy: 1, aspectMismatch: false };
+  if (!media || media.width <= 0 || media.height <= 0) return identity;
+  if (frame.width <= 0 || frame.height <= 0) return identity;
+
+  const sx = media.width / frame.width;
+  const sy = media.height / frame.height;
+  return { sx, sy, aspectMismatch: Math.abs(sx - sy) > ASPECT_TOLERANCE * sy };
+}
+
 /** Where a symbol's text label goes, as the SVG attributes that place it. */
 export interface LabelPlacement {
   readonly x: number;

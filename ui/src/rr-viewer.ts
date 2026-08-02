@@ -7,7 +7,8 @@ import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
 import type { SensorSymbolSize } from './sensorMarker.js';
 import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from './carMarker.js';
 import type { CarSymbolSize, CarWarning, PendingCar } from './carMarker.js';
-import { coupledEnds, couplerPoints, sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
+import { coupledEnds, couplerPoints, overlayFit, sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
+import type { FrameSize } from './geometry.js';
 import { isKnownClass } from './vocabulary.js';
 import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
@@ -31,8 +32,26 @@ export const viewerStyles = css`
   }
 
   img, video {
-    max-width: 100%;
-    max-height: 100%;
+    /* The media covers the **container**, exactly as the overlay does, and
+       letterboxes its content inside it with object-fit: contain — the same
+       rule as the SVG's preserveAspectRatio="xMidYMid meet", over the same box,
+       with the same centering. That is what makes the two boxes one box.
+
+       Sizing it max-width: 100%; max-height: 100% instead let the media lay out
+       at its **natural** size, which stops growing once the container is larger
+       than the photograph while the overlay keeps growing (#41).
+
+       The visible consequence is that a photograph smaller than the pane is now
+       **upscaled** to fill it, where it used to stop at 1:1. That is the right
+       trade for a labeling surface — the labeler aims at car ends, and a
+       postage stamp in the middle of a large pane is harder to aim at than a
+       soft enlargement — and it is not the fit-to-window work of #42, which is
+       about the chrome around this element. */
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
   }
 
@@ -111,6 +130,25 @@ export type ViewerPointerEventName =
   | 'rr-pointer-up'
   | 'rr-pointer-cancel';
 
+/**
+ * What the loaded media turned out to be, against what the archive declared.
+ *
+ * Emitted once per media load, because the two can disagree and only the viewer
+ * ever learns the first number: `camera.resolution` is one value for the whole
+ * archive while the images are per image, so a re-encoded or re-cropped photo
+ * mismatches it with nothing to notice (#41). The overlay follows the media
+ * either way — see `geometry.ts` § `overlayFit` — and this is how a consumer
+ * says so out loud rather than letting the stretch pass as the truth.
+ */
+export interface ViewerMediaFrameDetail {
+  /** The media's own pixel dimensions: `naturalWidth`/`videoWidth`. */
+  readonly media: FrameSize;
+  /** What the archive declares, the frame every coordinate is authored in. */
+  readonly frame: FrameSize;
+  /** The two are different **shapes**, so the overlay is stretched to fit. */
+  readonly aspectMismatch: boolean;
+}
+
 /** A right-click, in image pixel coordinates. Same shape, coarser event. */
 export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'originalEvent'> {
   /**
@@ -134,9 +172,23 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * coordinates are already in **image pixels**; the tools that interpret them
  * live in the editor, and the geometry they need is in `geometry.ts`.
  *
- * The `<img>`/`<video>` `object-fit: contain` is matched to the SVG's
- * `preserveAspectRatio="xMidYMid meet"`, so the viewBox maps 1:1 onto image
- * pixel coordinates. Changing either half misplaces every marker.
+ * **The media and the overlay resolve to one box, by construction.** Both cover
+ * the container, and both fit their content into it by the same rule —
+ * `object-fit: contain` against `preserveAspectRatio="xMidYMid meet"` — over a
+ * viewBox that is the media's **own** pixel grid. Sizing either from something
+ * else is what made an object drift off the pixel it names as the window was
+ * resized (#41): two boxes fitted independently coincide only by luck.
+ *
+ * The authored frame (`resolution`) reaches that grid through the `g.frame`
+ * scale, so everything drawn and every coordinate emitted stays in the frame
+ * the manifest is written in.
+ *
+ * Under an **aspect mismatch** that scale is non-uniform, so the screen-constant
+ * annotations inside the group are stretched with everything else — a crosshair
+ * on a 4:3 photo of a 16:9 frame is a third too tall. That is left visible on
+ * purpose rather than compensated for: the archive is inconsistent, `rr-editor-view`
+ * says so from `rr-media-frame`, and a symbol that looked right would argue the
+ * opposite. It cannot arise from resizing the window, which is what #41 was.
  *
  * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `sensors`,
  * `cars`, `pendingCar`, `dpt`, `resolution`.
@@ -146,6 +198,7 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * @fires rr-pointer-up - Gesture finished. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-cancel - Gesture abandoned by the browser. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-contextmenu - Right-click. Detail: {@link ViewerContextMenuDetail}
+ * @fires rr-media-frame - Media loaded, with its size against the archive's. Detail: {@link ViewerMediaFrameDetail}
  */
 @customElement('rr-viewer')
 export class RrViewer extends LitElement {
@@ -215,7 +268,7 @@ export class RrViewer extends LitElement {
    * hit-test reads too — what is drawn is what is grabbable.
    */
   @property({ attribute: false }) dpt: number | null = null;
-  @property({ type: Object }) resolution = { width: 1920, height: 1080 };
+  @property({ type: Object }) resolution: FrameSize = { width: 1920, height: 1080 };
 
   /**
    * Image pixels per screen pixel, as the viewport currently lays out.
@@ -228,7 +281,26 @@ export class RrViewer extends LitElement {
    */
   @state() private imagePxPerScreenPx = 1;
 
+  /**
+   * The loaded media's own pixel size, or `null` until it reports one.
+   *
+   * The overlay's viewBox, so that the SVG and the media letterbox into the
+   * **same** box: two boxes fitted by the same rule coincide only while their
+   * aspect ratios agree, and `resolution` is per archive while the images are
+   * per image (#41). Until an image decodes there is nothing to follow and the
+   * authored frame stands in — which is what the viewer always did.
+   */
+  @state() private mediaSize: FrameSize | null = null;
+
   @query('svg') private svgElement!: SVGSVGElement;
+  /**
+   * The group the overlay's content lives in — the authored frame, scaled onto
+   * the media's pixel grid.
+   *
+   * Every coordinate the viewer emits or draws is in **its** user space, not
+   * the SVG's, so this and not `svgElement` is what a pointer converts through.
+   */
+  @query('g.frame') private frameGroup!: SVGGElement;
 
   private resizeObserver: ResizeObserver | null = null;
 
@@ -237,7 +309,7 @@ export class RrViewer extends LitElement {
     this.resizeObserver = new ResizeObserver(() => {
       // Use requestAnimationFrame to avoid "update during update" warnings
       // especially when this is triggered during the first mount
-      window.requestAnimationFrame(() => this.updateSymbolSize());
+      window.requestAnimationFrame(() => this.measureScale());
     });
     this.resizeObserver.observe(this);
   }
@@ -255,23 +327,104 @@ export class RrViewer extends LitElement {
    * background tab, an occluded window — leaves every screen-constant symbol at
    * the ratio it was initialised with, so crosshairs and labels render at
    * whatever size the *image* pixels happen to be. Measuring here costs one
-   * `getBoundingClientRect` at mount and makes the first paint right.
+   * matrix read at mount and makes the first paint right.
    */
   protected firstUpdated() {
-    this.updateSymbolSize();
+    this.measureScale();
   }
 
-  private updateSymbolSize() {
-    if (!this.svgElement) return;
-    const rect = this.svgElement.getBoundingClientRect();
-    if (rect.width === 0) return;
+  /**
+   * A new image is a new pixel grid, and the old one must not outlive it.
+   *
+   * Cleared on the way *in*, before the render that would draw with it: a
+   * viewBox left at the previous image's size draws every object of the new one
+   * against a frame it was never authored in.
+   */
+  protected willUpdate(changed: Map<string, unknown>) {
+    if (changed.has('src') || changed.has('stream')) this.mediaSize = null;
+  }
 
-    // One image pixel per `rect.width / viewBoxWidth` screen pixels — the same
-    // ratio the pointer events report, taken here from the laid-out box.
-    const ratio = this.resolution.width / rect.width;
+  /**
+   * The scale changed, so the measurement did — and no `ResizeObserver` fires
+   * for it. The media's size is not the element's.
+   */
+  protected updated(changed: Map<string, unknown>) {
+    if (!changed.has('mediaSize') && !changed.has('resolution')) return;
+    // Deferred a frame, exactly as the `ResizeObserver` defers: the new
+    // transform is not in the DOM until this update has painted, and measuring
+    // it here would both read the old one and schedule a second update out of a
+    // completed one, which Lit says out loud.
+    window.requestAnimationFrame(() => this.measureScale());
+  }
+
+  /**
+   * The transform the authored frame is on screen through, or `null` when there
+   * is none — jsdom, a detached element, before the first layout.
+   *
+   * The **content group's**, not the SVG's: the group carries the scale that
+   * puts the authored frame on the media's pixel grid, so its user space is the
+   * frame the manifest is written in and the SVG's is not.
+   */
+  private frameMatrix(): DOMMatrix | null {
+    return this.frameGroup?.getScreenCTM?.() ?? null;
+  }
+
+  /**
+   * Image pixels per screen pixel, off one matrix.
+   *
+   * `a` and never `d`: the overlay does not rotate or skew, so the horizontal
+   * scale is the whole story — and it stays the horizontal one under an aspect
+   * mismatch, where the two differ and a grab radius has to pick a direction.
+   */
+  private static scaleOf(ctm: DOMMatrix): number {
+    return 1 / ctm.a;
+  }
+
+  /**
+   * Re-measure `imagePxPerScreenPx` from the laid-out overlay.
+   *
+   * Off the same transform every pointer event reports, and for the same
+   * reason: the SVG's bounding rect is the whole element, letterbox bars
+   * included, so a ratio taken from it is wrong by the letterbox whenever the
+   * viewport's aspect ratio differs from the image's (#41) — the very thing
+   * `ui/CLAUDE.md` forbids hand-rolling.
+   */
+  private measureScale() {
+    const ctm = this.frameMatrix();
+    // Zero before layout. The previous value is a better answer than one
+    // derived from a matrix that has not been laid out.
+    if (!ctm?.a) return;
+
+    const ratio = RrViewer.scaleOf(ctm);
     if (this.imagePxPerScreenPx !== ratio) {
       this.imagePxPerScreenPx = ratio;
     }
+  }
+
+  /**
+   * The media reported its own size. Record it, and say whether it is the shape
+   * the archive claims.
+   */
+  private onMediaLoad(e: Event) {
+    const el = e.currentTarget as HTMLImageElement | HTMLVideoElement;
+    const media =
+      el instanceof HTMLVideoElement
+        ? { width: el.videoWidth, height: el.videoHeight }
+        : { width: el.naturalWidth, height: el.naturalHeight };
+    if (media.width <= 0 || media.height <= 0) return;
+
+    this.mediaSize = media;
+    this.dispatchEvent(
+      new CustomEvent<ViewerMediaFrameDetail>('rr-media-frame', {
+        detail: {
+          media,
+          frame: this.resolution,
+          aspectMismatch: overlayFit(media, this.resolution).aspectMismatch,
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 
   /**
@@ -285,8 +438,9 @@ export class RrViewer extends LitElement {
   /**
    * Screen coordinates to image pixels, through the SVG's own transform.
    *
-   * `createSVGPoint` + inverse `getScreenCTM()` and never a hand-rolled
-   * subtraction of `getBoundingClientRect()`: the rect ignores the letterbox
+   * `createSVGPoint` + the inverse of {@link frameMatrix}, and never a
+   * hand-rolled subtraction of `getBoundingClientRect()`: the rect ignores the
+   * letterbox
    * that `preserveAspectRatio="xMidYMid meet"` introduces, so the hand-rolled
    * version is correct only while the viewport happens to match the image's
    * aspect ratio and drifts silently as soon as it does not.
@@ -300,16 +454,14 @@ export class RrViewer extends LitElement {
   ): { point: Point; imagePxPerScreenPx: number } | null {
     const svg = this.svgElement;
     if (!svg?.createSVGPoint) return null;
-    const ctm = svg.getScreenCTM();
+    const ctm = this.frameMatrix();
     if (!ctm) return null;
 
     const pt = svg.createSVGPoint();
     pt.x = clientX;
     pt.y = clientY;
     const { x, y } = pt.matrixTransform(ctm.inverse());
-    // ctm.a is screen pixels per image pixel; the overlay never rotates or
-    // skews, so the horizontal scale is the whole story.
-    return { point: { x, y }, imagePxPerScreenPx: 1 / ctm.a };
+    return { point: { x, y }, imagePxPerScreenPx: RrViewer.scaleOf(ctm) };
   }
 
   /**
@@ -435,14 +587,27 @@ export class RrViewer extends LitElement {
     // underneath leave their own handles off — see `carMarker.ts`.
     const couplers = couplerPoints(this.cars);
     const carSize = this.carSize();
+    // The viewBox is the **media's** pixel grid, so the overlay letterboxes
+    // into the box `object-fit: contain` puts the photograph in; the group
+    // inside it carries the authored frame onto that grid. Before anything
+    // loads the two are the same and the transform is the identity.
+    const viewBoxSize = this.mediaSize ?? this.resolution;
+    const fit = overlayFit(this.mediaSize, this.resolution);
 
     return html`
       <div class="viewport">
-        ${this.src ? html`<img .src=${this.src} />` : ''}
-        ${this.stream ? html`<video .srcObject=${this.stream} autoplay playsinline></video>` : ''}
+        ${this.src ? html`<img .src=${this.src} @load=${this.onMediaLoad} />` : ''}
+        ${this.stream
+          ? html`<video
+              .srcObject=${this.stream}
+              autoplay
+              playsinline
+              @loadedmetadata=${this.onMediaLoad}
+            ></video>`
+          : ''}
 
         <svg
-          viewBox="0 0 ${this.resolution.width} ${this.resolution.height}"
+          viewBox="0 0 ${viewBoxSize.width} ${viewBoxSize.height}"
           preserveAspectRatio="xMidYMid meet"
           @pointerdown=${this.onPointerDown}
           @pointermove=${this.onPointerMove}
@@ -452,28 +617,31 @@ export class RrViewer extends LitElement {
         >
           ${markerDefs()}
 
-          ${this.markers.map(m => renderMarker(m, this.symbolSize))}
+          <g class="frame" transform="scale(${fit.sx}, ${fit.sy})">
+            ${this.markers.map(m => renderMarker(m, this.symbolSize))}
 
-          <!-- Cars first: their width rectangles are the only area fills here,
-               so drawing them underneath keeps a crosshair or a sensor placed
-               on a car visible instead of tinted over. -->
-          ${this.cars.map(c => renderCar(c, carSize, coupledEnds(c, couplers), this.carWarning(c)))}
+            <!-- Cars first: their width rectangles are the only area fills here,
+                 so drawing them underneath keeps a crosshair or a sensor placed
+                 on a car visible instead of tinted over. -->
+            ${this.cars.map(c => renderCar(c, carSize, coupledEnds(c, couplers), this.carWarning(c)))}
 
-          <!-- The shared handles, over the cars they join: one per coupling,
-               where the cars themselves drew none. -->
-          ${couplers.map(at => renderCoupler(at, carSize))}
+            <!-- The shared handles, over the cars they join: one per coupling,
+                 where the cars themselves drew none. -->
+            ${couplers.map(at => renderCoupler(at, carSize))}
 
-          <!-- The rubber band last of the car layer, so the chain in flight is
-               legible over the train it is being added to. -->
-          ${this.pendingCar ? renderPendingCar(this.pendingCar, carSize) : ''}
+            <!-- The rubber band last of the car layer, so the chain in flight is
+                 legible over the train it is being added to. -->
+            ${this.pendingCar ? renderPendingCar(this.pendingCar, carSize) : ''}
 
-          ${this.calibrationPoints.map((p, i) =>
-            // `resolution` is the viewBox, so it is also the frame the label
-            // must stay inside — a point near an edge draws its label inwards.
-            renderCalibrationPoint(p, i, this.symbolSize, this.resolution)
-          )}
+            ${this.calibrationPoints.map((p, i) =>
+              // `resolution` is the group's user space, so it is also the frame
+              // the label must stay inside — a point near an edge draws its
+              // label inwards.
+              renderCalibrationPoint(p, i, this.symbolSize, this.resolution)
+            )}
 
-          ${this.sensors.map(s => renderSensor(s, this.sensorSize(), this.resolution))}
+            ${this.sensors.map(s => renderSensor(s, this.sensorSize(), this.resolution))}
+          </g>
         </svg>
       </div>
     `;
@@ -502,5 +670,6 @@ declare global {
     'rr-pointer-up': CustomEvent<ViewerPointerDetail>;
     'rr-pointer-cancel': CustomEvent<ViewerPointerDetail>;
     'rr-pointer-contextmenu': CustomEvent<ViewerContextMenuDetail>;
+    'rr-media-frame': CustomEvent<ViewerMediaFrameDetail>;
   }
 }
