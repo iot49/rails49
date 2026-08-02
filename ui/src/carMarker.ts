@@ -1,8 +1,8 @@
 import { svg, css } from 'lit';
 import type { SVGTemplateResult, CSSResult } from 'lit';
 import type { CarLabel, Point } from '@occupancy/r49';
-import { carCorners } from './geometry.js';
-import type { CoupledEnds } from './geometry.js';
+import { carCorners, placeLabel } from './geometry.js';
+import type { CoupledEnds, FrameSize } from './geometry.js';
 
 /**
  * Car rendering for SVG: the chord between the two clicked ends, the
@@ -89,6 +89,29 @@ export const carMarkerStyles: CSSResult = css`
     stroke-width: 1;
     vector-effect: non-scaling-stroke;
   }
+
+  /* A class the authored vocabulary does not name. Red rather than the car's
+     magenta, and the whole symbol changes colour rather than gaining a badge:
+     the label is *wrong*, not annotated, and the thing that has to be findable
+     on a photograph of a whole layout is the car. One override of the ink
+     literal recolours the chord, the rectangle and the handles together. */
+  .car.unknown-class {
+    --car-ink: #ef4444;
+  }
+
+  .car text {
+    fill: var(--car-ink);
+    /* The photograph underneath is arbitrary, so the label carries its own
+       contrast rather than relying on what it happens to sit on — the same
+       reason the sensor's name does. */
+    stroke: rgba(0, 0, 0, 0.75);
+    stroke-width: 3;
+    paint-order: stroke;
+    /* Monospace is what makes the label's width estimable without measuring
+       it — placeLabel counts characters. */
+    font-family: var(--sl-font-mono, monospace);
+    /* text-anchor and dominant-baseline are set per element by the edge flip. */
+  }
 `;
 
 /**
@@ -111,10 +134,33 @@ export interface CarSymbolSize {
   readonly dpt: number | null;
   /** Endpoint handle diameter, constant on screen at any zoom. */
   readonly handlePx: number;
+  /** Warning label font size, constant on screen at any zoom. */
+  readonly labelPx: number;
 }
 
 /** A car with two free ends — the shape of a car that is not in a train. */
 const NO_COUPLED_ENDS: CoupledEnds = { p0: false, p1: false };
+
+/**
+ * A car whose stored `class` names no entry of the authored vocabulary.
+ *
+ * `class` is a plain string at the format layer and deliberately unvalidated at
+ * parse time (`SPEC.md` § Format), so a pruned or mistyped class opens fine and
+ * has to be **visible** instead — a class that matches no entry of
+ * `detector.classes` is dropped from the training export, which is the
+ * unlabeled-car-as-background failure the completeness rule exists to prevent.
+ *
+ * The caller decides *what* is wrong and this module decides how it looks —
+ * `text` is the offending class rather than a sentence, because a typo is the
+ * likely cause and the labeler needs to read it.
+ */
+export interface CarWarning {
+  /** The offending class, drawn beside the car. */
+  readonly text: string;
+  /** The image bounds, so the label flips inwards at an edge. */
+  readonly frame: FrameSize;
+}
+
 
 /**
  * A car as its chord, its width rectangle, and a handle at each free end.
@@ -130,22 +176,30 @@ const NO_COUPLED_ENDS: CoupledEnds = { p0: false, p1: false };
  * coupling is stored either way — it is the coincidence, and
  * {@link renderCoupler} draws what the coincidence means.
  *
+ * A car whose class the vocabulary does not name draws in the warning ink and
+ * carries the offending class as a label — see {@link CarWarning}. It is still
+ * a car, drawn whole: the archive opens, and hiding the label would hide the
+ * one thing that needs fixing.
+ *
  * @param car The label, in image pixels.
  * @param size The DPT the rectangle is derived from, and the handle size — see
  *   {@link CarSymbolSize}.
  * @param coupled Which ends a shared handle covers. Both free by default.
+ * @param warning The non-conformance to show, or `null` when the class is one
+ *   the authored vocabulary names.
  */
 export function renderCar(
   car: CarLabel,
   size: CarSymbolSize,
-  coupled: CoupledEnds = NO_COUPLED_ENDS
+  coupled: CoupledEnds = NO_COUPLED_ENDS,
+  warning: CarWarning | null = null
 ): SVGTemplateResult {
   const { p0, p1 } = car;
   const corners = size.dpt === null ? null : carCorners(p0, p1, size.dpt);
   const handle = size.handlePx / 2;
 
   return svg`
-    <g class="car" data-label-id="${car.id}">
+    <g class="car ${warning ? 'unknown-class' : ''}" data-label-id="${car.id}">
       ${
         corners
           ? svg`<polygon points="${corners.map(c => `${c.x},${c.y}`).join(' ')}" />`
@@ -154,7 +208,40 @@ export function renderCar(
       <line x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" />
       ${coupled.p0 ? '' : svg`<circle cx="${p0.x}" cy="${p0.y}" r="${handle}" />`}
       ${coupled.p1 ? '' : svg`<circle cx="${p1.x}" cy="${p1.y}" r="${handle}" />`}
+      ${warning ? renderWarningLabel(car, size, warning) : ''}
     </g>
+  `;
+}
+
+/**
+ * The offending class, drawn beside the car's midpoint.
+ *
+ * The midpoint rather than an end, because a car is identified by the span
+ * rather than by either end, and an end may be a coupling shared with a
+ * neighbour whose own label would then sit on top of this one. The size is a
+ * **screen** size like every other annotation here: it is text about the car,
+ * not a measurement of it.
+ */
+function renderWarningLabel(
+  car: CarLabel,
+  size: CarSymbolSize,
+  warning: CarWarning
+): SVGTemplateResult {
+  const mid = { x: (car.p0.x + car.p1.x) / 2, y: (car.p0.y + car.p1.y) / 2 };
+  // Marked as a warning, and then the class itself: a typo is the likely cause.
+  const text = `⚠ ${warning.text}`;
+  const placement = placeLabel(mid, text, size.labelPx, size.labelPx * 0.7, warning.frame);
+
+  return svg`
+    <text
+      x="${placement.x}"
+      y="${placement.y}"
+      text-anchor="${placement.textAnchor}"
+      dominant-baseline="${placement.dominantBaseline}"
+      font-size="${size.labelPx}"
+    >
+      ${text}
+    </text>
   `;
 }
 

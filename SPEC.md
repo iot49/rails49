@@ -469,8 +469,12 @@ detector:
   input: [960, 544]           # 640x384 is a live fallback, not a closed door
   confidence_threshold: 0.25  # placeholder — needs held-out recall
   classes: ["stock"]          # YOLO class index order — append-only
-  vocabulary:
-    stock: {}                 # width_mm is an optional per-class override
+  vocabulary:                 # a nested mapping is a subtype; anything else
+    stock:                    # (width_mm) is a property of the class above it
+      loco:
+        steam: {}
+        diesel: {}
+        electric: {}
 ```
 
 `vocabulary` is the authoring taxonomy — what the context menu offers and what a label's `class` must match. `classes` **is** the YOLO class list, verbatim and index-ordered. A label maps to the longest entry of `classes` that is a segment-prefix of its class, so `stock` matches `stock.loco.steam` but never `stockyard`; the same rule resolves an overriding `width_mm`. Adding a subtype to `classes` therefore re-maps every already-labeled car of that subtype with **no relabeling**.

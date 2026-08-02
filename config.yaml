@@ -89,5 +89,18 @@ detector:
   # cosmetic — a new car is `stock` and refinements must roll up to it, so an
   # unrooted class would match no entry and be dropped from the export. The
   # root never appears in the UI; the menu renders its children.
+  #
+  # A nested mapping is a subtype; any other value is a property of the class
+  # it sits under (`width_mm` is the one such property, an optional per-class
+  # width override). That is the rule the editor reads this with — it is how a
+  # property is told from a subtype without a reserved list of key names.
+  #
+  # Adding a subtype here costs nothing downstream: `classes` above is what a
+  # label maps into, and `stock.loco.steam` still maps to `stock` until
+  # `stock.loco.steam` is appended there.
   vocabulary:
-    stock: {}                 # width_mm is an optional per-class override
+    stock:
+      loco:
+        steam: {}
+        diesel: {}
+        electric: {}

@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import type { TemplateResult } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
@@ -11,10 +12,19 @@ import { clampToViewport } from './geometry.js';
  * `id` is what a selection reports and is never shown; `label` is what the user
  * reads. Keeping them apart is what lets the wording of a verb change without
  * touching the code that acts on it.
+ *
+ * `items` nests: a row that carries children opens a **submenu** instead of
+ * reporting anything, which is what the dotted class taxonomy is rendered as
+ * (`SPEC.md` § Right-click is state-dependent). The nesting is arbitrarily
+ * deep, because the taxonomy is — it is read out of `config.yaml` and this
+ * element learns its shape from the rows it is handed, as it learns everything
+ * else.
  */
 export interface ContextMenuItem {
   readonly id: string;
   readonly label: string;
+  /** Subtypes of this row. A row with children is opened, never chosen. */
+  readonly items?: readonly ContextMenuItem[];
 }
 
 /** What a selection reports: which row, by `id`. */
@@ -154,8 +164,15 @@ export class RRContextMenu extends LitElement {
     this.hide();
   };
 
-  /** `sl-menu` reports the chosen element; the editor wants the id. */
+  /**
+   * `sl-menu` reports the chosen element; the editor wants the id.
+   *
+   * A nested menu's selection bubbles through this same listener, so the
+   * already-closed check is what keeps **one click one selection**: a second
+   * report of the same click would be a second history entry for one gesture.
+   */
   private _onSelect(event: CustomEvent<{ item: SlMenuItem }>): void {
+    if (!this._at) return;
     const id = event.detail.item?.value;
     this.hide();
     if (!id) return;
@@ -194,15 +211,31 @@ export class RRContextMenu extends LitElement {
     this.style.setProperty('--menu-y', `${placed.y}px`);
   }
 
+  /**
+   * One row, and the submenu under it when it has children.
+   *
+   * A row with children carries **no `value`**: it is opened rather than
+   * chosen, and a value would let a stray selection report an id that names no
+   * verb. `data-id` carries the id regardless, so a row is still addressable —
+   * by a test, and by anything that needs to find the row it rendered.
+   */
+  private _renderItem(item: ContextMenuItem): TemplateResult {
+    const children = item.items ?? [];
+    if (children.length === 0) {
+      return html`<sl-menu-item data-id=${item.id} value=${item.id}>${item.label}</sl-menu-item>`;
+    }
+
+    return html`<sl-menu-item data-id=${item.id}>
+      ${item.label}
+      <sl-menu slot="submenu">${children.map(child => this._renderItem(child))}</sl-menu>
+    </sl-menu-item>`;
+  }
+
   render() {
     if (!this._at) return html``;
 
     return html`
-      <sl-menu @sl-select=${this._onSelect}>
-        ${this._items.map(
-          item => html`<sl-menu-item value=${item.id}>${item.label}</sl-menu-item>`
-        )}
-      </sl-menu>
+      <sl-menu @sl-select=${this._onSelect}>${this._items.map(item => this._renderItem(item))}</sl-menu>
     `;
   }
 }

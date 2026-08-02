@@ -24,6 +24,8 @@ import {
 } from './geometry.js';
 import type { DragHandle, HitScene, HitTarget, HitTolerance } from './geometry.js';
 import type { PendingCar } from './carMarker.js';
+import { classChoices, rootClass } from './vocabulary.js';
+import type { ClassChoice } from './vocabulary.js';
 import { revealTarget } from './history.js';
 import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
 import type { ViewerContextMenuDetail, ViewerPointerDetail } from './rr-viewer.js';
@@ -61,18 +63,6 @@ const SENSOR_NODE_ID = 4;
  * generating them from one node makes them look related when they are not.
  */
 const CAR_NODE_ID = 5;
-
-/**
- * The class every new car is created with.
- *
- * The root of the dotted taxonomy, and the only class this editor writes:
- * refinement is an occasional act through the context menu (#35), not a mode,
- * so a car starts at the root and is reclassified downwards. The root is
- * **required in the stored class** — a label maps to the longest entry of
- * `detector.classes` that is a segment-prefix of its class, and an unrooted one
- * would match nothing and be dropped from the export.
- */
-const NEW_CAR_CLASS = 'stock';
 
 /**
  * The gesture a click is waiting on a coordinate for.
@@ -184,15 +174,6 @@ const SENSOR_ITEMS: readonly ContextMenuItem[] = [
 ];
 
 /**
- * A car's verbs. Delete only, and it is the whole error-correction path for a
- * label: deleting the middle car of three leaves two cars and no residue,
- * because a train is derived from coincident endpoints and there is nothing
- * else to clean up. Reclassify joins it as a submenu built from the authored
- * vocabulary (#35).
- */
-const CAR_ITEMS: readonly ContextMenuItem[] = [{ id: 'delete', label: 'Delete car' }];
-
-/**
  * Prefix of a row that deletes **one named car**, as the coupler's menu does.
  *
  * The other rows act on the subject the menu was opened on, which is one
@@ -208,6 +189,99 @@ function carIdOfDeleteRow(id: string): string | null {
 }
 
 /**
+ * Prefix of a row that reclassifies one named car: `reclassify:<id>:<class>`.
+ *
+ * The car is named in **every** reclassify row, not only a coupler's, because a
+ * coupled car is reachable no other way — the middle car of a three-car train
+ * has no free end at all — and one id format is one thing to parse.
+ */
+const RECLASSIFY_ROW_PREFIX = 'reclassify:';
+
+/**
+ * Prefix of a row that only **opens** a reclassify submenu.
+ *
+ * Its own prefix rather than a reclassify row with the class left off: an id
+ * identifies a row, and two rows sharing one would defeat that the first time
+ * something looked a row up. It also cannot be mistaken for a verb — the parse
+ * below rejects it on the prefix alone.
+ */
+const RECLASSIFY_GROUP_ROW_PREFIX = 'reclassify-group:';
+
+/** The car and class a `reclassify:` row names, or null for any other row. */
+function reclassifyRow(id: string): { readonly carId: string; readonly class: string } | null {
+  // A group row is opened rather than chosen, and its prefix is what says so.
+  if (!id.startsWith(RECLASSIFY_ROW_PREFIX)) return null;
+  const rest = id.slice(RECLASSIFY_ROW_PREFIX.length);
+  const separator = rest.indexOf(':');
+  if (separator <= 0) return null;
+  const cls = rest.slice(separator + 1);
+  return cls ? { carId: rest.slice(0, separator), class: cls } : null;
+}
+
+/**
+ * The taxonomy as menu rows, for one car.
+ *
+ * Generated from `detector.vocabulary` (`vocabulary.ts`), so adding a subtype
+ * to `config.yaml` and regenerating changes this menu with **no code edit** —
+ * and the root is not among them, because it is required in the stored class
+ * and absent from the UI (`SPEC.md` § Parameters live in `config.yaml`).
+ *
+ * A subtype that has subtypes of its own is a submenu, and a submenu's first
+ * row is that subtype itself: a row that opens something cannot also be chosen,
+ * and "a loco whose kind I cannot tell from the photograph" is a real answer
+ * that must stay reachable.
+ */
+function reclassifyItems(carId: string, choices: readonly ClassChoice[]): ContextMenuItem[] {
+  return choices.map(choice => {
+    const id = `${RECLASSIFY_ROW_PREFIX}${carId}:${choice.class}`;
+    if (choice.children.length === 0) return { id, label: choice.name };
+    return {
+      // The row that opens this subtype's submenu, distinct from the row inside
+      // it that selects the subtype — see {@link RECLASSIFY_GROUP_ROW_PREFIX}.
+      id: `${RECLASSIFY_GROUP_ROW_PREFIX}${carId}:${choice.class}`,
+      label: choice.name,
+      items: [
+        { id, label: `${choice.name} (unspecified)` },
+        ...reclassifyItems(carId, choice.children),
+      ],
+    };
+  });
+}
+
+/**
+ * A car's verbs: delete, and reclassify when the taxonomy offers anything.
+ *
+ * Delete is the whole error-correction path for a label — deleting the middle
+ * car of three leaves two cars and no residue, because a train is derived from
+ * coincident endpoints and there is nothing else to clean up.
+ *
+ * Reclassify is **absent, not empty**, when the root has no subtypes: a
+ * submenu that opens onto nothing is a worse answer than the absence of one,
+ * which is the same rule that keeps a verbless object from opening a menu at
+ * all.
+ */
+function carItems(carId: string, direction: string | null): ContextMenuItem[] {
+  // Which car a row means, when the menu was opened on a coupling and there is
+  // more than one — see {@link couplerDirection}.
+  const which = direction ? ` car to the ${direction}` : ' car';
+  const choices = classChoices();
+
+  const items: ContextMenuItem[] = [
+    { id: `${DELETE_CAR_ROW_PREFIX}${carId}`, label: `Delete${which}` },
+  ];
+  if (choices.length > 0) {
+    items.push({
+      // A group row: opened, never chosen. The car id keeps a coupling's two of
+      // these apart, since a coupler's menu carries a pair per car.
+      id: `${RECLASSIFY_GROUP_ROW_PREFIX}${carId}`,
+      label: `Reclassify${which}`,
+      items: reclassifyItems(carId, choices),
+    });
+  }
+  return items;
+}
+
+/**
  * How a coupler's menu names one of the cars that meet there.
  *
  * Cars carry no name and both of these end on the identical pixel, so the only
@@ -217,12 +291,8 @@ function carIdOfDeleteRow(id: string): string | null {
  * the rows can never read the same. A car whose two ends coincide has no
  * direction and gets the plain verb.
  */
-function deleteCarRow(car: CarLabel, end: 'p0' | 'p1'): ContextMenuItem {
-  const direction = cardinalDirection(car[end], end === 'p0' ? car.p1 : car.p0);
-  return {
-    id: `${DELETE_CAR_ROW_PREFIX}${car.id}`,
-    label: direction ? `Delete car to the ${direction}` : 'Delete car',
-  };
+function couplerDirection(car: CarLabel, end: 'p0' | 'p1'): string | null {
+  return cardinalDirection(car[end], end === 'p0' ? car.p1 : car.p0);
 }
 
 /**
@@ -257,7 +327,9 @@ function menuFor(
     case 'car-endpoint': {
       const [end] = hit.ends;
       const car = scene.cars.find(c => c.id === end.id);
-      return car ? { subject: { hit, px: car[end.end] }, items: CAR_ITEMS } : null;
+      return car
+        ? { subject: { hit, px: car[end.end] }, items: carItems(car.id, null) }
+        : null;
     }
     case 'coupler': {
       const items: ContextMenuItem[] = [];
@@ -268,7 +340,7 @@ function menuFor(
         if (!car || named.has(car.id)) continue;
         named.add(car.id);
         at ??= car[end.end];
-        items.push(deleteCarRow(car, end.end));
+        items.push(...carItems(car.id, couplerDirection(car, end.end)));
       }
       return at && items.length > 0 ? { subject: { hit, px: at }, items } : null;
     }
@@ -1050,8 +1122,16 @@ export class RREditorView extends LitElement {
    *
    * `provenance: 'human'` with **no** `proposed_by` — the schema forbids the
    * key on a human label, because a default of `human` on model output is the
-   * exact feedback loop provenance exists to make measurable. `class` is the
-   * taxonomy root; refinement is the context menu's job (#35).
+   * exact feedback loop provenance exists to make measurable.
+   *
+   * `class` is the **taxonomy root, read out of `config.yaml`** rather than
+   * written here: a class name in `ui/` would be a second home for a value the
+   * config owns, agreeing with the vocabulary only by luck. The root is
+   * required in the stored class — a label maps to the longest entry of
+   * `detector.classes` that is a segment-prefix of its class, and an unrooted
+   * one would match nothing and be dropped from the export. A car starts there
+   * and is reclassified downwards through the context menu (#35), because
+   * refinement is an occasional act and not a mode.
    *
    * **One entry per car, never one for the train**: a mis-click on the last
    * coupler of a twelve-car consist must cost one car, and undo must not invent
@@ -1077,7 +1157,7 @@ export class RREditorView extends LitElement {
 
     const car: CarLabel = {
       id: make_id(CAR_NODE_ID),
-      class: NEW_CAR_CLASS,
+      class: rootClass(),
       provenance: 'human',
       p0: { ...anchor },
       p1: { ...px },
@@ -1220,10 +1300,17 @@ export class RREditorView extends LitElement {
     this._menuSubject = null;
     if (!subject || !this.archive) return;
 
-    // A coupler's rows name their own car, because the subject is two of them.
+    // Every row that acts on a car names it, because a coupler's subject is two
+    // of them and the middle car of a train is reachable through nothing else.
     const carId = carIdOfDeleteRow(e.detail.id);
     if (carId !== null) {
       await this._deleteCar(carId);
+      return;
+    }
+
+    const reclassify = reclassifyRow(e.detail.id);
+    if (reclassify) {
+      await this._reclassifyCar(reclassify.carId, reclassify.class);
       return;
     }
 
@@ -1285,10 +1372,9 @@ export class RREditorView extends LitElement {
         });
         return;
       }
-      case 'car-endpoint':
-        await this._deleteCar(subject.hit.ends[0].id);
-        return;
       default:
+        // A car is never deleted through here: every row that acts on one
+        // names it in the row id, so it goes through `_deleteCar` directly.
         return;
     }
   }
@@ -1314,6 +1400,32 @@ export class RREditorView extends LitElement {
     await this._record('delete car', { kind: 'image', filename: image.filename }, () => {
       this._writeImage(image.filename, {
         labels: image.labels.filter(car => car.id !== id),
+      });
+    });
+  }
+
+  /**
+   * Writes one car's class, as one entry scoped to the image it is on.
+   *
+   * The **full dotted class**, root included: a label maps to the longest entry
+   * of `detector.classes` that is a segment-prefix of its class, so an unrooted
+   * one matches nothing and is dropped from the training export — the
+   * unlabeled-car-as-background failure the completeness rule exists to
+   * prevent. The rows carry what is stored precisely so this method never
+   * assembles a class out of what the user read.
+   *
+   * Keyed by label `id` like every other menu verb, so a car that went while
+   * the menu was up is dropped rather than reclassified from underneath the
+   * user. Choosing the class a car already has records nothing: `EditHistory`
+   * suppresses a no-op by value.
+   */
+  private async _reclassifyCar(id: string, cls: string) {
+    const image = this._currentImage();
+    if (!image || !image.labels.some(car => car.id === id)) return;
+
+    await this._record('reclassify car', { kind: 'image', filename: image.filename }, () => {
+      this._writeImage(image.filename, {
+        labels: image.labels.map(car => (car.id === id ? { ...car, class: cls } : car)),
       });
     });
   }

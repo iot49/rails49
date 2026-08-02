@@ -293,6 +293,29 @@ describe('rr-viewer', () => {
       expect(el.shadowRoot!.querySelector('.car circle')!.getAttribute('r')).to.equal(r);
     });
 
+    it('warns on a class the authored vocabulary does not name', async () => {
+      // Conformance is not checked when the archive is parsed (`SPEC.md`
+      // § Format), so the editor is where a mis-typed class becomes visible —
+      // and the car is still drawn, because the archive still opens.
+      const strange = [{ ...cars[0], class: 'stock.loko' }];
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .cars=${strange} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+
+      expect(el.shadowRoot!.querySelectorAll('.car.unknown-class').length).to.equal(1);
+      expect(el.shadowRoot!.querySelector('.car text')!.textContent).to.contain('stock.loko');
+      expect(el.shadowRoot!.querySelector('.car line')).to.exist;
+    });
+
+    it('says nothing about a class the vocabulary does name', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .cars=${cars} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+
+      expect(el.shadowRoot!.querySelector('.car.unknown-class')).to.not.exist;
+      expect(el.shadowRoot!.querySelector('.car text')).to.not.exist;
+    });
+
     it('draws cars under the crosshairs and diamonds', async () => {
       // The rectangles are the only area fills the overlay carries, so a
       // calibration point or a sensor on a car must not be tinted over.

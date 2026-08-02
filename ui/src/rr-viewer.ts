@@ -6,8 +6,9 @@ import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMa
 import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
 import type { SensorSymbolSize } from './sensorMarker.js';
 import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from './carMarker.js';
-import type { CarSymbolSize, PendingCar } from './carMarker.js';
+import type { CarSymbolSize, CarWarning, PendingCar } from './carMarker.js';
 import { coupledEnds, couplerPoints, sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
+import { isKnownClass } from './vocabulary.js';
 import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
@@ -396,15 +397,34 @@ export class RrViewer extends LitElement {
   }
 
   /**
-   * The two sizes a car is drawn at: the DPT its rectangle is derived from, and
-   * a screen-constant handle.
+   * The three sizes a car is drawn at: the DPT its rectangle is derived from, a
+   * screen-constant handle, and a screen-constant warning label.
    *
    * The DPT is passed rather than a width, because the derivation — 2.09 track
    * widths, in every scale — belongs in one place (`geometry.ts` § `carWidthPx`),
    * and `null` is a real state the renderer answers by drawing no rectangle.
+   * The label shares `LABEL_SIZE_RATIO` with the sensor's name and the
+   * crosshair's coordinate: they are the same kind of annotation.
    */
   private carSize(): CarSymbolSize {
-    return { dpt: this.dpt, handlePx: this.symbolSize * CAR_HANDLE_SIZE_RATIO };
+    return {
+      dpt: this.dpt,
+      handlePx: this.symbolSize * CAR_HANDLE_SIZE_RATIO,
+      labelPx: this.symbolSize * LABEL_SIZE_RATIO,
+    };
+  }
+
+  /**
+   * The warning a car's class earns, or `null` when the vocabulary names it.
+   *
+   * Derived here rather than passed in, for the same reason a coupling is: it
+   * is a property of the label this component was handed and of a build-time
+   * constant, so there is nothing for a parent to compute or to keep in sync.
+   * `class` is unvalidated at parse time on purpose (`SPEC.md` § Format), which
+   * is exactly what makes a **visible** warning the editor's job.
+   */
+  private carWarning(car: CarLabel): CarWarning | null {
+    return isKnownClass(car.class) ? null : { text: car.class, frame: this.resolution };
   }
 
   render() {
@@ -437,7 +457,7 @@ export class RrViewer extends LitElement {
           <!-- Cars first: their width rectangles are the only area fills here,
                so drawing them underneath keeps a crosshair or a sensor placed
                on a car visible instead of tinted over. -->
-          ${this.cars.map(c => renderCar(c, carSize, coupledEnds(c, couplers)))}
+          ${this.cars.map(c => renderCar(c, carSize, coupledEnds(c, couplers), this.carWarning(c)))}
 
           <!-- The shared handles, over the cars they join: one per coupling,
                where the cars themselves drew none. -->

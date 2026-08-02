@@ -95,6 +95,18 @@ def render_generated_ts(config: dict) -> str:
         fail("config.yaml has an empty 'layout.scale_to_ratio'")
     if not detector_classes:
         fail("config.yaml has an empty 'detector.classes'")
+    # The editor takes the class of every new car from this taxonomy's single
+    # root rather than hardcoding one. None leaves it with no class to write at
+    # all; a second makes "the root" — the thing every class must be rooted at —
+    # ambiguous. Failing here is what keeps both a config error with a message
+    # rather than a runtime one in the browser: `ui/src/vocabulary.ts` enforces
+    # the same rule and can only throw.
+    roots = [name for name, node in vocabulary.items() if isinstance(node, dict)]
+    if len(roots) != 1:
+        fail(
+            "config.yaml's 'detector.vocabulary' must name exactly one root class, "
+            f"found {len(roots)}"
+        )
 
     scale_names = list(scale_to_ratio.keys())
     scale_union = " | ".join(json.dumps(name) for name in scale_names)
@@ -172,9 +184,13 @@ def render_generated_ts(config: dict) -> str:
         doc(
             "The authoring taxonomy — what a label's `class` should match.",
             "",
-            "The `stock.` root is required, not cosmetic: an unrooted class matches no",
+            "The root is required, not cosmetic: an unrooted class matches no",
             "entry in DETECTOR_CLASSES and would be dropped from an export. The root",
             "itself is not offered in the UI; its children are.",
+            "",
+            "A **nested object is a subtype**; any other value is a property of the",
+            "class it sits under (`width_mm` is the one such property today). That",
+            "is what tells a subtype from a property with no reserved key names.",
         ),
         f"export const DETECTOR_VOCABULARY = {ts_literal(vocabulary)} as const;",
         "",

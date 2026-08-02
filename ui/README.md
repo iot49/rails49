@@ -394,6 +394,11 @@ shared handle and the cars underneath leave their own handles off at that end. T
 one pixel would only ever *look* like one, and could not say they are shared. Nothing about a
 coupling is stored, and nothing needs to be: dragging the handle moves every end under it.
 
+**A car's class warning is derived here too** ([#35]), for the same reason a coupling is: it is a
+property of the label this component was handed and of a build-time constant, so there is nothing for
+a parent to compute or to keep in sync. `vocabulary.ts`'s `isKnownClass` decides, `carMarker.ts`
+draws it. The live view passes no cars, so nothing there is affected.
+
 **The measurement happens in `firstUpdated()` as well as in the `ResizeObserver`.** The observer's
 callback defers through `requestAnimationFrame`, and a frame that never arrives — a hidden pane, a
 background tab, an occluded window — used to leave every screen-constant symbol at its initial ratio,
@@ -553,6 +558,38 @@ ignores `frame` entirely: it names an exact pixel, wherever that pixel is.
 
 ---
 
+### `vocabulary.ts`
+
+The authored class taxonomy, read as a tree. A pure module for the same reason `geometry.ts` is one,
+and the **only place in `ui/` that a class name comes from** — every value here is derived from
+`detector.vocabulary` in `config.yaml`, reached through the generated `@occupancy/config`, so adding
+a subtype there and running `pnpm config:generate` changes the editor's menu with no code edit.
+
+| Export | Description |
+|---|---|
+| `rootClass(vocabulary?)` | The taxonomy's single root — the class every new car is created as. Throws unless there is exactly one |
+| `classChoices(vocabulary?)` | The root's children as a nested `ClassChoice[]`, each carrying its full dotted `class`, its `name`, and its own children |
+| `isKnownClass(cls, vocabulary?)` | Whether a stored class names an entry. Segment by segment, the same rule the exporter maps with: `stock` matches `stock.loco` but never `stockyard` |
+| `VocabularyNode` | One mapping in the taxonomy: subtypes by name, mixed with the node's own properties |
+| `ClassChoice` | `{ class, name, children }` |
+
+Two rules it encodes, each wrong somewhere if reimplemented:
+
+* **A nested object is a subtype; anything else is a property.** `width_mm` is an optional per-class
+  width override sitting beside subtypes in the same mapping, and telling the two apart structurally
+  is what avoids a reserved list of key names.
+* **The stored class is always rooted, and the root is never shown.** A label maps to the longest
+  entry of `detector.classes` that is a segment-prefix of its class, so an unrooted `loco.steam`
+  matches nothing and is **dropped from the export** — the unlabeled-car-as-background failure the
+  completeness rule exists to prevent.
+
+Conformance is checked **here and not at parse time**: `class` is a plain string at the format layer
+(`../SPEC.md` § Format), because a format that refused to open files because someone pruned
+`config.yaml` would punish config edits. So a non-conforming class is a visible warning in the editor
+(`rr-viewer` marks the car red and names the class) and a fatal error in the training exporter later.
+
+---
+
 ### `sensorMarker.ts`
 
 The sensor's own SVG, with the same shape and the same rules as `calibrationMarker.ts`. **The exports
@@ -593,10 +630,11 @@ must be used together** — styles in the host's `static styles`, the renderers 
 
 | Export | Type | Description |
 |---|---|---|
-| `renderCar(car, size, coupled?)` | `(CarLabel, CarSymbolSize, CoupledEnds?) => SVGTemplateResult` (the type is `geometry.ts`'s) | The translucent width rectangle, the chord between the two ends, and a handle at each **free** end. The group carries `data-label-id` |
+| `renderCar(car, size, coupled?, warning?)` | `(CarLabel, CarSymbolSize, CoupledEnds?, CarWarning \| null) => SVGTemplateResult` (`CoupledEnds` is `geometry.ts`'s) | The translucent width rectangle, the chord between the two ends, and a handle at each **free** end. The group carries `data-label-id`, and `unknown-class` when a warning is given |
 | `renderCoupler(at, size)` | `(Point, CarSymbolSize) => SVGTemplateResult` | The **one shared handle** a coupling renders as — half again the size of a free end's, ringed so it reads as a joint |
 | `renderPendingCar(pending, size)` | `(PendingCar, CarSymbolSize) => SVGTemplateResult` | The **rubber band**: the car the next click would write, dashed, rectangle and all |
-| `CarSymbolSize` | `{ dpt, handlePx }` | The **DPT the rectangle is derived from** — not a width — and a screen-constant handle size |
+| `CarSymbolSize` | `{ dpt, handlePx, labelPx }` | The **DPT the rectangle is derived from** — not a width — plus screen-constant handle and warning-label sizes |
+| `CarWarning` | `{ text, frame }` | A class the vocabulary does not name: the offending class, and the image bounds the label flips inside |
 | `PendingCar` | `{ anchor, to }` | The chain in flight: the end already clicked, and where the pointer is |
 | `carMarkerStyles` | `CSSResult` | Rectangle, chord, handle, coupler and band colours; the translucent fill; the band's dashes; non-scaling strokes |
 
@@ -619,8 +657,17 @@ requirement that they be unmistakable extends to this one.
 couplings with `geometry.ts`'s `couplerPoints` and tells each car which of its ends is covered;
 `renderCoupler` then draws the shared handle once, however many ends meet there. Nothing about the
 coupling is *stored* — it is still only the coincidence — but it is drawn, because one handle is the
-promise the drag keeps. There is no frame parameter on any of these, because a car carries no text
-label: the class taxonomy shows up in the context menu ([#35]), not on the photograph.
+promise the drag keeps.
+
+**A class the vocabulary does not name draws red and says so** ([#35]). `class` is a plain string at
+the format layer and is deliberately **not** validated when an archive is parsed (`../SPEC.md`
+§ Format) — a format that refused to open files because someone pruned `config.yaml` would punish
+config edits — so the editor is where non-conformance becomes visible, and the exporter is where it
+becomes fatal. The whole symbol changes ink rather than gaining a badge (the label is *wrong*, not
+annotated), the offending class is drawn beside the car's midpoint because a typo is the likely
+cause, and the car is still drawn whole because the archive still opens. This is the one text a car
+carries, hence the one place `carMarker.ts` needs a frame — the label flips inwards at an edge
+through the same `placeLabel` the sensor's name uses.
 
 **The band is dashed, and it draws the whole car.** A chain in flight is view state and must never
 read as a label that has been written, hence the dashes; and it shows the derived width rectangle
@@ -673,14 +720,20 @@ it shows belongs to the gesture that opened it. Nothing is rendered while it is 
 
 | Type | Shape | Description |
 |---|---|---|
-| `ContextMenuItem` | `{ id, label }` | `id` is reported on selection and never shown; `label` is what the user reads |
+| `ContextMenuItem` | `{ id, label, items? }` | `id` is reported on selection and never shown; `label` is what the user reads; `items` nests a **submenu**, to any depth |
 | `ScreenPoint` | `{ x, y }` | Named apart from `Point` on purpose — every other editor position is in **image** pixels; a menu is placed on the glass |
 
 **Emits:** `rr-context-menu-select` with `{ id }`. Dismissing emits nothing.
 
 **It knows nothing about what the object is.** The editor hit-tests, names the verbs, and interprets
-the selection; this element renders rows and reports which one was chosen. That is what lets cars and
-sensors plug into the same menu as they arrive, along with the reclassify submenu the spec puts here.
+the selection; this element renders rows and reports which one was chosen. That is what lets cars,
+sensors and the reclassify submenu ([#35]) plug into the same menu as they arrive.
+
+**A row with children is opened, never chosen.** It carries no `value` — only `data-id` — so a stray
+selection cannot report an id that names no verb, and a nested selection is reported by the child's
+own id. One click reports **one** selection however many menus it bubbles through: a nested `sl-menu`
+and the outer one share this element's listener, and a second report would be a second history entry
+for one gesture.
 
 **Dismissal is on the document**, in the capture phase: a press anywhere outside the element (tested
 with `composedPath()`, which sees through the shadow boundary) and Escape. A menu the user has to aim
@@ -776,11 +829,23 @@ authoring, and the right-click menu.
   (`../SPEC.md` § Right-click is state-dependent): **idle** opens the menu and **placing-car** ends
   the chain.
   * The **idle** branch hit-tests at `DEFAULT_GRAB_RADIUS_SCREEN_PX` and opens `rr-context-menu` at
-    the cursor: **delete** for a calibration point or a car, **name and delete** for a sensor. Empty
-    image opens nothing, and neither does an object with no verbs — a list of disabled rows is a
-    worse answer than the absence of one. A **coupler** offers one delete per car that meets there,
-    each row named by the direction that car runs ([#33]) — it has to, because the middle car of a
-    three-car train has no free end and the joint is the only way to reach it.
+    the cursor: **delete** for a calibration point, **name and delete** for a sensor, **delete and
+    reclassify** for a car. Empty image opens nothing, and neither does an object with no verbs — a
+    list of disabled rows is a worse answer than the absence of one. A **coupler** offers that pair
+    per car that meets there, each row named by the direction that car runs ([#33]) — it has to,
+    because the middle car of a three-car train has no free end and the joint is the only way to
+    reach it.
+  * **Reclassify is a submenu generated from `detector.vocabulary`** ([#35]), through
+    `vocabulary.ts`. A new car is the taxonomy's root and refinement is an occasional act, not a
+    mode, which is what a submenu says and a persistent picker would not. The **root is never
+    rendered** — its children are — and it is nonetheless required in the stored class, so the rows
+    carry the full dotted class (`stock.loco.steam`) in the row id. Selecting one is **one `image`
+    entry**. A taxonomy that is only a root offers no reclassify row at all.
+  * **Every row that acts on a car names it**, coupled or not: `delete-car:<id>` and
+    `reclassify:<id>:<class>`, neither ever shown. One id format is one thing to parse, and the
+    middle car of a train is reachable through nothing but its joints. A row that only *opens* a
+    submenu carries `reclassify-group:…` instead — its own prefix, so it can neither be mistaken
+    for a verb nor collide with the row inside it that selects the same subtype.
   * The **placing-car** branch ends the chain and opens nothing. The chain's cars stay: each is its
     own committed entry, and only the anchor — which is view state — goes.
   * **The browser's own menu is suppressed here, not in `rr-viewer`**, and for every right-click the

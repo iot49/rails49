@@ -22,14 +22,14 @@ history entry per placement or edit — which it now also **drags** (#30), at on
 and **deletes** through the right-click context menu (#29). #31 added the **tool palette**, the
 **calibration gate**, and **sensor authoring**; #32 added **car authoring** — two clicks on the
 visible ends, one `image` entry per car, drawn as a chord inside the DPT-derived width rectangle;
-#33 made those clicks a **chain**. v3's point-marker authoring and two-point calibration dragging
+#33 made those clicks a **chain**; #35 added **reclassify**, the context menu's submenu generated
+from the authored vocabulary. v3's point-marker authoring and two-point calibration dragging
 are gone for good, and `src/prototype/` with them: what came back is a different mechanism, built to
 carry the coupler case.
 
-So a missing affordance is usually a deferral, not a bug. Reclassify (#35) and the completeness
-affordance (#36) are specified in `../SPEC.md` § Labeling Workflow and belong to their own tickets.
-Don't reconstruct them piecemeal to close a gap you notice here. One such gap is deliberate and is
-stated in the code:
+So a missing affordance is usually a deferral, not a bug. The completeness affordance (#36) is
+specified in `../SPEC.md` § Labeling Workflow and belongs to its own ticket. Don't reconstruct it
+piecemeal to close a gap you notice here. One such gap is deliberate and is stated in the code:
 
 * A click on an **existing car end** starts no car *while idle* — a car end has nothing a click can
   edit, and starting one there would stack a label on the object being aimed at. A chain's second
@@ -82,7 +82,40 @@ A **coupler now opens a context menu**, one delete row per car that meets there,
 direction that car runs (`geometry.ts` § `cardinalDirection`). It has to: chaining makes couplings
 the normal case, and the middle car of a three-car train has no free end at all, so the joint is the
 only way to reach it. Two cars coupled end to end run in opposite directions, so the rows can never
-read the same.
+read the same. **Reclassify follows the same rule** and for the same reason — a verb that could not
+reach a coupled car could not reach most cars — which is why every row acting on a car names it in
+the row id (`delete-car:<id>`, `reclassify:<id>:<class>`), coupled or not. A row that only opens a
+submenu is `reclassify-group:…`: a separate prefix, because an id identifies a row and two rows
+sharing one defeats that the first time something looks a row up.
+
+### The vocabulary, and where a class name may live (#35)
+
+`vocabulary.ts` reads `detector.vocabulary` out of `config.yaml` through the generated
+`@occupancy/config`, and is the **only place in `ui/` a class name comes from** — including the class
+a new car is created as, which is the taxonomy's root rather than a literal `'stock'`. Adding a
+subtype to `config.yaml` and running `pnpm config:generate` changes the reclassify submenu with no
+code edit; that is the whole point of the module, and a hardcoded class anywhere in `ui/` breaks it
+while still typechecking.
+
+Three things it decides, each stated in `SPEC.md` § Parameters live in `config.yaml`:
+
+* **The root is required in the stored class and never rendered.** A label maps to the longest entry
+  of `detector.classes` that is a segment-prefix of its class, so an unrooted `loco.steam` matches
+  nothing and is dropped from the export — the unlabeled-car-as-background failure the completeness
+  rule exists to prevent. So the menu offers the root's *children*, and every row carries the full
+  dotted class.
+* **A nested object is a subtype; anything else is a property.** `width_mm` is an optional per-class
+  override sitting beside subtypes in the same mapping. Telling them apart structurally is what
+  avoids a reserved list of key names that `config.yaml` would have to know about.
+* **Conformance is a warning here, never a parse error.** `class` is a plain string at the format
+  layer, because a format that refused to open files because someone pruned `config.yaml` would
+  punish config edits. A car whose class names no entry draws in red with the class beside it, and
+  the archive opens exactly as before. The exporter is where the same mismatch becomes fatal.
+
+A **submenu row is opened, never chosen** — Shoelace does not select a parent, and `rr-context-menu`
+gives it no `value` either — so a subtype that has subtypes of its own repeats itself as the first
+row of its own submenu ("loco (unspecified)"). "A loco whose kind I cannot tell from the photograph"
+is a real answer and has to stay reachable.
 
 A second click on the **anchor's own pixel** writes no car — a span with no length has neither an
 axis to draw along nor two ends to couple — and the chain stays where it was.

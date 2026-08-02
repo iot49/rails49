@@ -69,8 +69,12 @@ export const DETECTOR_CLASSES = ["stock"] as const;
 /**
  * The authoring taxonomy — what a label's `class` should match.
  *
- * The `stock.` root is required, not cosmetic: an unrooted class matches no
+ * The root is required, not cosmetic: an unrooted class matches no
  * entry in DETECTOR_CLASSES and would be dropped from an export. The root
  * itself is not offered in the UI; its children are.
+ *
+ * A **nested object is a subtype**; any other value is a property of the
+ * class it sits under (`width_mm` is the one such property today). That
+ * is what tells a subtype from a property with no reserved key names.
  */
-export const DETECTOR_VOCABULARY = { "stock": {} } as const;
+export const DETECTOR_VOCABULARY = { "stock": { "loco": { "steam": {}, "diesel": {}, "electric": {} } } } as const;

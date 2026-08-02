@@ -3,6 +3,7 @@ import { fixture, html } from '@open-wc/testing';
 import { R49Archive, getDPT } from '@occupancy/r49';
 import type { CalibrationPoint, CarLabel, Point, Sensor, WorldPoint } from '@occupancy/r49';
 import { EditHistory } from '../src/history.js';
+import { classChoices, rootClass } from '../src/vocabulary.js';
 import '../src/rr-editor-view.js';
 import { RREditorView } from '../src/rr-editor-view.js';
 import type { RRCalibrationDialog } from '../src/rr-calibration-dialog.js';
@@ -238,10 +239,22 @@ describe('rr-editor-view', () => {
     return el.shadowRoot!.querySelector('rr-context-menu')!;
   }
 
-  /** The menu's rows, by id. Empty when it is closed. */
+  /**
+   * The menu's **top-level** rows, by id. Empty when it is closed.
+   *
+   * A row that opens a submenu carries its id in `data-id` rather than in
+   * `value`, because it is opened rather than chosen — see `rr-context-menu`.
+   */
   function menuItems(el: RREditorView): string[] {
-    return [...menuOf(el).shadowRoot!.querySelectorAll('sl-menu-item')].map(
-      item => item.getAttribute('value') ?? ''
+    const menu = menuOf(el).shadowRoot!.querySelector('sl-menu');
+    return menu ? [...menu.children].map(item => item.getAttribute('data-id') ?? '') : [];
+  }
+
+  /** The rows of the submenu under the top-level row with `id`, by id. */
+  function submenuItems(el: RREditorView, id: string): string[] {
+    const parent = menuOf(el).shadowRoot!.querySelector(`sl-menu-item[data-id="${id}"]`)!;
+    return [...parent.querySelector('sl-menu[slot="submenu"]')!.children].map(
+      item => item.getAttribute('data-id') ?? ''
     );
   }
 
@@ -1784,12 +1797,24 @@ describe('rr-editor-view', () => {
           expect(menuOf(el).open).to.be.true;
           expect(menuItems(el)).to.deep.equal([
             `delete-car:${cars()[0].id}`,
+            `reclassify-group:${cars()[0].id}`,
             `delete-car:${cars()[1].id}`,
+            `reclassify-group:${cars()[1].id}`,
           ]);
-          const labels = [...menuOf(el).shadowRoot!.querySelectorAll('sl-menu-item')].map(
-            item => item.textContent!.trim()
+          // A row's own text, without whatever its submenu contains.
+          const labels = [...menuOf(el).shadowRoot!.querySelector('sl-menu')!.children].map(item =>
+            [...item.childNodes]
+              .filter(node => node.nodeType === Node.TEXT_NODE)
+              .map(node => node.textContent)
+              .join('')
+              .trim()
           );
-          expect(labels).to.deep.equal(['Delete car to the left', 'Delete car to the right']);
+          expect(labels).to.deep.equal([
+            'Delete car to the left',
+            'Reclassify car to the left',
+            'Delete car to the right',
+            'Reclassify car to the right',
+          ]);
         });
 
         it('deletes the middle car of a three-car train, leaving two and no residue', async () => {
@@ -1825,7 +1850,8 @@ describe('rr-editor-view', () => {
 
           await rightClickAt(el, { x: 400, y: 100 });
 
-          expect(menuItems(el)).to.have.length(3);
+          // Three cars meet there, and each brings its own pair of verbs.
+          expect(menuItems(el).filter(id => id.startsWith('delete-car:'))).to.have.length(3);
         });
       });
     });
@@ -1984,13 +2010,18 @@ describe('rr-editor-view', () => {
         return el;
       }
 
-      it('offers delete on a car end', async () => {
+      it('offers delete and reclassify on a car end', async () => {
         const el = await mountWithTwoCars();
 
         await rightClickAt(el, { x: 402, y: 101 });
 
         expect(menuOf(el).open).to.be.true;
-        expect(menuItems(el)).to.deep.equal(['delete']);
+        // Every row that acts on a car names it, coupled or not: one id format
+        // for a verb that has to reach the middle car of a train too.
+        expect(menuItems(el)).to.deep.equal([
+          `delete-car:${cars()[0].id}`,
+          `reclassify-group:${cars()[0].id}`,
+        ]);
       });
 
       it('deletes that car and leaves the others untouched', async () => {
@@ -2000,7 +2031,7 @@ describe('rr-editor-view', () => {
         const before = structuredClone(cars());
 
         await rightClickAt(el, { x: 100, y: 100 });
-        await choose(el, 'delete');
+        await choose(el, `delete-car:${before[0].id}`);
 
         expect(cars()).to.deep.equal([before[1]]);
         expect(history.undoLabel).to.contain('car');
@@ -2013,7 +2044,7 @@ describe('rr-editor-view', () => {
         const before = structuredClone(cars());
 
         await rightClickAt(el, { x: 100, y: 100 });
-        await choose(el, 'delete');
+        await choose(el, `delete-car:${before[0].id}`);
 
         const entry = await history.undo();
         expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
@@ -2030,9 +2061,130 @@ describe('rr-editor-view', () => {
         await rightClickAt(el, { x: 100, y: 100 });
         // An undo landing while the menu is up.
         archive.getManifest().images[0].labels = [before[1]];
-        await choose(el, 'delete');
+        await choose(el, `delete-car:${before[0].id}`);
 
         expect(cars()).to.deep.equal([before[1]]);
+      });
+    });
+
+    describe('reclassifying', () => {
+      /** One car, ready to be refined. */
+      async function mountWithOneCar(history?: EditHistory) {
+        const el = await mountWithCarTool(history);
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await endChain(el);
+        return el;
+      }
+
+      /** The taxonomy, as the editor reads it out of `config.yaml`. */
+      const choices = classChoices();
+      const [firstChoice] = choices;
+
+      it('offers the authored vocabulary as a submenu, and never the root', async () => {
+        // Generated from `detector.vocabulary`: adding a subtype there and
+        // regenerating changes this menu with no code edit (#35).
+        const el = await mountWithOneCar();
+        const id = cars()[0].id;
+
+        await rightClickAt(el, { x: 400, y: 100 });
+
+        expect(submenuItems(el, `reclassify-group:${id}`)).to.deep.equal(
+          choices.map(choice =>
+            choice.children.length > 0
+              ? `reclassify-group:${id}:${choice.class}`
+              : `reclassify:${id}:${choice.class}`
+          )
+        );
+        // Every offered class is rooted, because an unrooted one matches no
+        // entry of `detector.classes` and is dropped from the export.
+        for (const choice of choices) {
+          expect(choice.class.startsWith(`${rootClass()}.`)).to.be.true;
+        }
+      });
+
+      it('writes the full dotted class as one image entry', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithOneCar(history);
+        const before = structuredClone(cars());
+        const target = firstChoice.children[0] ?? firstChoice;
+
+        await rightClickAt(el, { x: 400, y: 100 });
+        await choose(el, `reclassify:${before[0].id}:${target.class}`);
+
+        expect(cars()[0].class).to.equal(target.class);
+        // Nothing else about the label moves: reclassify is one field.
+        expect(cars()[0]).to.deep.equal({ ...before[0], class: target.class });
+
+        const entry = await history.undo();
+        expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
+        expect(cars()).to.deep.equal(before);
+      });
+
+      it('costs exactly one undo', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await mountWithOneCar(history);
+        const target = firstChoice.children[0] ?? firstChoice;
+
+        await rightClickAt(el, { x: 400, y: 100 });
+        await choose(el, `reclassify:${cars()[0].id}:${target.class}`);
+
+        await history.undo();
+        expect(cars()[0].class).to.equal(rootClass());
+        await history.redo();
+        expect(cars()[0].class).to.equal(target.class);
+      });
+
+      it('reclassifies the named car of a coupling, which has no free end', async () => {
+        // Chaining makes couplings the normal case, so a verb that could not
+        // reach a coupled car could not reach most cars.
+        const el = await mountWithCarTool();
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await clickAt(el, { x: 700, y: 100 });
+        await endChain(el);
+        const [first, second] = structuredClone(cars());
+        const target = firstChoice.children[0] ?? firstChoice;
+
+        await rightClickAt(el, { x: 400, y: 100 });
+        await choose(el, `reclassify:${second.id}:${target.class}`);
+
+        expect(cars()[0].class).to.equal(first.class);
+        expect(cars()[1].class).to.equal(target.class);
+      });
+
+      it('drops a reclassify whose car went away underneath the open menu', async () => {
+        const el = await mountWithOneCar();
+        const before = structuredClone(cars());
+        const target = firstChoice.children[0] ?? firstChoice;
+
+        await rightClickAt(el, { x: 400, y: 100 });
+        // An undo landing while the menu is up.
+        archive.getManifest().images[0].labels = [];
+        await choose(el, `reclassify:${before[0].id}:${target.class}`);
+
+        expect(cars()).to.deep.equal([]);
+      });
+
+      it('does nothing for a group row, which is opened and never chosen', async () => {
+        // If something reported one anyway, it must not write an unrooted or
+        // empty class — the prefix is what makes that unmistakable.
+        const el = await mountWithOneCar();
+        const before = structuredClone(cars());
+
+        await rightClickAt(el, { x: 400, y: 100 });
+        menuOf(el).dispatchEvent(
+          new CustomEvent('rr-context-menu-select', {
+            detail: { id: `reclassify-group:${before[0].id}` },
+            bubbles: true,
+            composed: true,
+          })
+        );
+        await flush();
+
+        expect(cars()).to.deep.equal(before);
       });
     });
 

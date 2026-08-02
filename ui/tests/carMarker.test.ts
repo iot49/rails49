@@ -23,8 +23,8 @@ const car = (over: Partial<HumanCar> = {}): HumanCar => ({
   ...over,
 });
 
-/** A calibrated symbol: DPT 90, handles at a fixed screen size. */
-const size = (dpt: number | null, handlePx = 12) => ({ dpt, handlePx });
+/** A calibrated symbol: DPT 90, handles and labels at a fixed screen size. */
+const size = (dpt: number | null, handlePx = 12, labelPx = 14) => ({ dpt, handlePx, labelPx });
 
 /** The polygon's points, as `[x, y]` pairs. */
 function polygonPoints(el: SVGElement): number[][] {
@@ -124,6 +124,59 @@ describe('renderCar()', () => {
     const css = carMarkerStyles.cssText;
     expect(css).toContain('.car');
     expect(css).toContain('polygon');
+  });
+});
+
+describe('renderCar() with a class the vocabulary does not name', () => {
+  const frame = { width: 1920, height: 1080 };
+  const warned = (over = {}) =>
+    renderSvg(renderCar(car({ class: 'stock.loko', ...over }), size(90), undefined, {
+      text: 'stock.loko',
+      frame,
+    }));
+
+  it('says which class is wrong, rather than only that one is', () => {
+    // A typo is the likely cause, and a warning that does not name the class
+    // leaves the labeler hunting for it (`SPEC.md` § Format).
+    expect(warned().querySelector('text')!.textContent).toContain('stock.loko');
+  });
+
+  it('marks the car itself, so the warning is findable on the image', () => {
+    expect(warned().querySelector('g')!.classList.contains('unknown-class')).toBe(true);
+  });
+
+  it('still draws the car, because the archive still opens', () => {
+    // `class` is not validated at parse time on purpose: a format that refused
+    // to open files because someone pruned `config.yaml` would punish config
+    // edits. So a non-conforming label is a warning, never a hidden car.
+    const el = warned();
+    expect(el.querySelector('line')).not.toBeNull();
+    expect(el.querySelector('polygon')).not.toBeNull();
+    expect(el.querySelectorAll('circle')).toHaveLength(2);
+  });
+
+  it('flips the label inwards at the frame edge, like every other label', () => {
+    const nearEdge = renderSvg(
+      renderCar(car({ p0: { x: 1900, y: 1060 }, p1: { x: 1910, y: 1070 } }), size(90), undefined, {
+        text: 'stock.loko',
+        frame,
+      })
+    );
+    expect(nearEdge.querySelector('text')!.getAttribute('text-anchor')).toBe('end');
+  });
+
+  it('draws no label and no mark for a class the vocabulary does name', () => {
+    const el = renderSvg(renderCar(car(), size(90)));
+    expect(el.querySelector('text')).toBeNull();
+    expect(el.querySelector('g')!.classList.contains('unknown-class')).toBe(false);
+  });
+
+  it('warns a coupled car too, where the handles are gone', () => {
+    const el = renderSvg(
+      renderCar(car(), size(90), { p0: true, p1: true }, { text: 'stock.loko', frame })
+    );
+    expect(el.querySelector('text')).not.toBeNull();
+    expect(el.querySelectorAll('circle')).toHaveLength(0);
   });
 });
 
