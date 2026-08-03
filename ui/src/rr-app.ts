@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { R49Archive, MANIFEST_VERSION } from '@occupancy/r49';
 import { EditHistory, revealTarget, type HistoryEntry } from './history.js';
+import { openArchive, writeArchive, type FileBinding } from './persistence.js';
 import './rr-header.js';
 import './rr-editor-view.js';
 import type { NotifyDetail, RREditorView } from './rr-editor-view.js';
@@ -39,6 +40,17 @@ export class RRApp extends LitElement {
   @state() private _status = 'No archive loaded';
 
   /**
+   * The file this session writes back to, or null for a layout that has never
+   * been saved (#48).
+   *
+   * A binding carrying a handle makes Save an overwrite; one without makes it a
+   * timestamped download; null means the stem is not decided yet and comes from
+   * `layout.name` at the moment of saving. New clears it — the new archive is
+   * emphatically not the file that was open — and Save As re-points it.
+   */
+  @state() private _binding: FileBinding | null = null;
+
+  /**
    * The editor's undo stack. Owned here because the archive is owned here, and
    * passed down; see `history.ts` for why it is not part of `@occupancy/r49`.
    */
@@ -58,6 +70,14 @@ export class RRApp extends LitElement {
       flex-grow: 1;
       display: flex;
       overflow: hidden;
+    }
+
+    /* Slotted into rr-header, so it is styled here — the slot's content is this
+       component's DOM. Lighter than the layout name: it qualifies the name
+       rather than competing with it. */
+    .bound-file {
+      font-weight: 400;
+      opacity: 0.75;
     }
   `;
 
@@ -211,31 +231,37 @@ export class RRApp extends LitElement {
       images: []
     });
     this._status = 'New Layout';
+    this._binding = null;
     this._viewMode = 'editor';
     this._history.attach(this._archive);
   }
 
   private async _onFileOpen() {
     if (!this._confirmDiscard()) return;
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.r49';
-    input.onchange = async (e: any) => {
-      const file = e.target.files[0];
-      if (file) {
-        try {
-          this._status = `Loading ${file.name}...`;
-          this._archive = await R49Archive.load(file);
-          this._history.attach(this._archive);
-          this._status = this._archive.getManifest().layout.name || file.name;
-          this._notify(`Loaded ${file.name}`, 'success', 'file-earmark-check');
-        } catch (err) {
-          console.error('Failed to load archive', err);
-          this._notify(`Load failed: ${String(err)}`, 'danger', 'exclamation-octagon');
-        }
-      }
-    };
-    input.click();
+    let opened;
+    try {
+      opened = await openArchive();
+    } catch (err) {
+      console.error('Failed to open archive', err);
+      this._notify(`Open failed: ${String(err)}`, 'danger', 'exclamation-octagon');
+      return;
+    }
+    if (!opened) return;
+
+    const { file, binding } = opened;
+    try {
+      this._status = `Loading ${file.name}...`;
+      this._archive = await R49Archive.load(file);
+      this._history.attach(this._archive);
+      // Bound only once the bytes parse. A binding to a file that failed to
+      // load would aim the next Save at an archive this session never held.
+      this._binding = binding;
+      this._status = this._archive.getManifest().layout.name || file.name;
+      this._notify(`Loaded ${file.name}`, 'success', 'file-earmark-check');
+    } catch (err) {
+      console.error('Failed to load archive', err);
+      this._notify(`Load failed: ${String(err)}`, 'danger', 'exclamation-octagon');
+    }
   }
 
   // Saving does not validate calibration. The v3 check read {p0, p1, size_mm}
@@ -244,22 +270,40 @@ export class RRApp extends LitElement {
   // expresses rather than an error to refuse a save over. The editor reports
   // DPT instead, and gating the labeling tools on it belongs to the editor
   // spec. See SPEC.md § Reference points.
-  private async _onFileSave() {
+  /**
+   * Save, and Save As when the toolbar reports a Shift-click (#48).
+   *
+   * Where the bytes land is `persistence.ts`'s decision, not this component's:
+   * an overwrite where the browser has a handle for it, a timestamped download
+   * everywhere else. Both count as saved — the fallback did write a file, and
+   * refusing to mark it would leave the phone permanently dirty.
+   *
+   * The stem is the binding's, falling back to `layout.name` for an archive
+   * that has never been saved. It does not follow a later rename: the file's
+   * identity is the file, and `layout.name` is metadata stored inside it.
+   */
+  private async _onFileSave(e?: CustomEvent<{ rebind?: boolean }>) {
     if (!this._archive) return;
+    const rebind = e?.detail?.rebind === true;
     try {
       const data = await this._archive.export();
-      const blob = new Blob([data as any], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${this._archive.getManifest().layout.name || 'layout'}.r49`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const stem = this._binding?.stem || this._archive.getManifest().layout.name || 'layout';
+      const outcome = await writeArchive(data, { ...this._binding, stem }, { rebind });
+      if (outcome.kind === 'cancelled') return;
+
+      this._binding = outcome.binding;
       // Saving marks the position rather than clearing the stack: the bytes on
       // disk are unaffected by anything undone afterwards, so undoing past a
       // save stays legitimate. The marker is what `isDirty` is measured from.
       this._history.markSaved();
-      this._notify('Saved to disk', 'success', 'download');
+      // The verb is half the message: overwriting `west-yard.r49` and dropping
+      // a new `west-yard-20260802-1432.r49` into Downloads are different
+      // enough that "Saved to disk" would hide which one just happened.
+      if (outcome.kind === 'wrote') {
+        this._notify(`Saved ${outcome.filename}`, 'success', 'floppy');
+      } else {
+        this._notify(`Downloaded ${outcome.filename}`, 'success', 'download');
+      }
       this.requestUpdate();
     } catch (err) {
       console.error('Failed to save archive', err);
@@ -299,7 +343,15 @@ export class RRApp extends LitElement {
         @rr-view-toggle=${this._onViewToggle}
         @rr-layout-change=${this._onLayoutChange}
       >
-        <span slot="status">${this._status}</span>
+        <!-- The bound filename is shown only when Save would overwrite it: the
+             question "where does my work go?" is asked before the click, and a
+             toast answers it only afterwards. A binding without a handle names
+             no file that exists yet, so it stays quiet. -->
+        <span slot="status"
+          >${this._status}${this._binding?.handle
+            ? html`<span class="bound-file"> — ${this._binding.stem}.r49</span>`
+            : ''}</span
+        >
       </rr-header>
 
       <main>

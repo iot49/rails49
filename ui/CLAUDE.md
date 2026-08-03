@@ -63,6 +63,38 @@ Lit does not observe mutations *inside* `R49Archive`, so handlers that edit the 
 call `this.requestUpdate()` (as `rr-app._onLayoutChange` does). Prefer replacing the object where
 practical; call `requestUpdate()` where not.
 
+### Saving is two paths, and the fallback is permanent (#48)
+
+`persistence.ts` owns both and is the only place that knows which one runs. A browser cannot write
+to a file handed to it by `<input type="file">`; only the File System Access API yields a writable
+handle, and that API is **Chromium desktop only** — not Firefox, not Safari, on no phone. Since this
+file supports all three engines equally and the labeling device is a phone, **write-back is an
+enhancement layered over the download path, never a replacement for it.** Do not delete the fallback,
+and do not gate a feature on a handle existing.
+
+* A **`FileBinding`** is the file this session writes back to. **Handle present ⇒ Save overwrites;
+  absent ⇒ Save downloads a new generation.** `rr-app` holds it; New clears it, Save As re-points
+  it, and Open sets it **only once the bytes parse** — a binding to a file that failed to load aims
+  the next save at an archive this session never held.
+* **The timestamp is the download path's, and only its.** A written-back file keeps its name across
+  every overwrite, so a timestamp in the picker's suggestion would assert a save time the file no
+  longer has. The format exists so a **lexical sort of the folder is a chronological one** — that,
+  not tidiness, is what stops a session re-opening the wrong generation and silently reverting
+  labeling work the history cannot recover (`SPEC.md` § Undo and redo: it never survives a reload).
+* **The stem is the file's, not the layout's.** It comes from the opened filename, falling back to
+  `layout.name` only for an archive that has never been saved, and it does **not** follow a later
+  rename: `layout.name` is metadata stored inside the file, not the file's identity.
+* **A download counts as saved.** `markSaved()` runs on both paths — the fallback did write a file,
+  and withholding the marker would leave a phone permanently dirty and make the discard gate cry
+  wolf on every New. Only a dismissed picker marks nothing, and it toasts nothing either.
+* **Write permission is requested at the first save, never at open**, and a refusal falls through to
+  the download rather than failing. An overwrite has **no other safety net**: `createWritable`'s
+  atomic swap is the decision, so no `.bak` file and no verification read — re-parsing every image
+  on every save costs more than the failure it would guard.
+* **Save As is a Shift-click, not a sixth button.** `layout.ts` measures `COMPACT_MAX_HEIGHT_PX`
+  from *five* toolbar buttons, and on a browser without the API a Save As button would do exactly
+  what Save does. The tooltip names the modifier only where the browser can honour it.
+
 ### Every manifest mutation goes through `history.record`
 
 `rr-app` owns one `EditHistory` (`src/history.ts`) and passes it down. **Any code that changes
@@ -355,6 +387,11 @@ Vitest in **jsdom**, `@open-wc/testing` fixtures, `tests/<module>.test.ts` mirro
 `tests/setup.ts` polyfills what jsdom lacks globally (`ResizeObserver`, `Element.animate`,
 `matchMedia`, `URL.createObjectURL`). `capture.ts` and `rr-settings-dialog.ts` have no test file
 yet; touching either is a chance to add one.
+
+* **jsdom has no File System Access API**, which is the honest baseline — it is the fallback path,
+  and it is what Safari and every phone run. `tests/persistence.test.ts` covers the write-back
+  routes by installing fakes on `window`, so it proves the module *routes* correctly and **not**
+  that Chromium's API behaves as documented, which nothing in jsdom could show.
 
 * **jsdom does not lay out or paint.** `getBoundingClientRect()` is all zeros and SVG geometry
   (`createSVGPoint`, `getScreenCTM`) is absent, so `tests/rr-viewer.test.ts` stubs both per test —

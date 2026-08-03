@@ -1,8 +1,20 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { COMPACT_MAX_HEIGHT_PX, compactStripStyles } from './layout.js';
+import { supportsFileSystemAccess } from './persistence.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+
+/**
+ * Save As is advertised only where it does something Save does not. Without
+ * the File System Access API every save is a fresh download, so naming the
+ * modifier there would promise a distinction the browser cannot make.
+ */
+function saveTooltip(): string {
+  return supportsFileSystemAccess()
+    ? 'Save .r49 Archive (Shift-click: Save As…)'
+    : 'Save .r49 Archive';
+}
 
 /**
  * Tool palette for the editor: file actions and undo/redo.
@@ -24,7 +36,8 @@ import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
  *
  * @fires rr-file-new - When the new file button is clicked.
  * @fires rr-file-open - When the open file button is clicked.
- * @fires rr-file-save - When the save file button is clicked.
+ * @fires rr-file-save - When the save file button is clicked. `detail.rebind`
+ *   is true for a Shift-click, which means Save As.
  * @fires rr-undo - When the undo button is clicked.
  * @fires rr-redo - When the redo button is clicked.
  */
@@ -126,8 +139,19 @@ export class RRToolbar extends LitElement {
     }));
   }
 
-  private _onFileSave() {
+  /**
+   * Save, or Save As when Shift is held (#48).
+   *
+   * A modifier rather than a sixth button, for two reasons. The button count is
+   * load-bearing — `layout.ts` measures `COMPACT_MAX_HEIGHT_PX` from *five*
+   * toolbar buttons and three palette ones — and on a browser without the File
+   * System Access API, Save As does exactly what Save does, so a visible
+   * control would be a second button needing an explanation for why it changes
+   * nothing there. The tooltip carries the discoverability instead.
+   */
+  private _onFileSave(event: MouseEvent) {
     this.dispatchEvent(new CustomEvent('rr-file-save', {
+      detail: { rebind: event.shiftKey },
       bubbles: true,
       composed: true
     }));
@@ -166,8 +190,8 @@ export class RRToolbar extends LitElement {
           ></sl-icon-button>
         </sl-tooltip>
 
-        <sl-tooltip content="Save .r49 Archive">
-          <sl-icon-button 
+        <sl-tooltip content=${saveTooltip()}>
+          <sl-icon-button
             id="file-save"
             name="floppy"
             @click=${this._onFileSave}

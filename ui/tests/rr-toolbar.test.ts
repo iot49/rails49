@@ -49,7 +49,30 @@ describe('rr-toolbar', () => {
     const saveBtn = el.shadowRoot!.querySelector<HTMLButtonElement>('#file-save')!;
 
     setTimeout(() => saveBtn.click());
-    await oneEvent(el, 'rr-file-save');
+    const { detail } = await oneEvent(el, 'rr-file-save');
+    expect(detail.rebind).to.be.false;
+  });
+
+  // Save As is a modifier rather than a sixth button: the button count is what
+  // `layout.ts` measured the compact breakpoint from, and on a browser without
+  // the File System Access API a Save As button would do exactly what Save does
+  // (#48).
+  it('reports a Shift-click as Save As', async () => {
+    const el = await fixture<RRToolbar>(html`<rr-toolbar></rr-toolbar>`);
+    const saveBtn = el.shadowRoot!.querySelector<HTMLButtonElement>('#file-save')!;
+
+    setTimeout(() =>
+      saveBtn.dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true, composed: true }))
+    );
+    const { detail } = await oneEvent(el, 'rr-file-save');
+    expect(detail.rebind).to.be.true;
+  });
+
+  it('advertises Save As in the tooltip only where the browser can do it', async () => {
+    const el = await fixture<RRToolbar>(html`<rr-toolbar></rr-toolbar>`);
+    const tooltip = el.shadowRoot!.querySelector('#file-save')!.closest('sl-tooltip')!;
+    // jsdom has no File System Access API, so this is the fallback wording.
+    expect(tooltip.getAttribute('content')).to.equal('Save .r49 Archive');
   });
 
   // The disabled state is the point of having buttons at all: it is the only

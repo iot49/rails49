@@ -106,6 +106,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#41]: https://github.com/iot49/rails49/issues/41
 > [#42]: https://github.com/iot49/rails49/issues/42
 > [#43]: https://github.com/iot49/rails49/issues/43
+> [#48]: https://github.com/iot49/rails49/issues/48
 
 ## State and data flow
 
@@ -154,7 +155,7 @@ enabled state.
 Application shell. Owns the archive and routes between the two views.
 
 **Internal state** (no public properties): `_archive`, `_history`, `_viewMode` (`'editor' | 'live'`),
-`_status`. Starts with no archive loaded.
+`_status`, `_binding`. Starts with no archive loaded and no binding.
 
 **Handles:** `rr-view-toggle`, `rr-layout-change`, `rr-file-new`, `rr-file-open`, `rr-file-save`,
 `rr-undo`, `rr-redo`, `rr-history-change`, `rr-notify`.
@@ -184,12 +185,26 @@ hijack Cmd+Z mid-typing. A press with a drag still live returns nothing (see `hi
   Redo is not offered: only undo is state-dependent (`../SPEC.md` § Undo and redo).
 
 * `rr-file-new` builds an empty **v4** manifest — layout `'New Layout'`, scale `N`, resolution
-  1920×1080, empty calibration points and no sensors.
-* `rr-file-open` reads a `.r49` through a file input and `R49Archive.load()`.
-* `rr-file-save` `export()`s and downloads. **It does not validate calibration.** The v3 check read
-  `{p0, p1, size_mm}` structurally, which v4 has not — calibration is a list of points that
-  legitimately starts empty, so "uncalibrated" is a state the editor reports rather than an error to
-  refuse a save over.
+  1920×1080, empty calibration points and no sensors. It **clears the binding**: the new archive is
+  emphatically not the file that was open.
+* `rr-file-open` and `rr-file-save` go through `persistence.ts`, which owns the choice between
+  overwriting a file and downloading a new generation ([#48]). The binding is set **only once the
+  bytes parse** — a binding to a file that failed to load would aim the next save at an archive this
+  session never held.
+* `rr-file-save` `export()`s and hands the bytes to `writeArchive`, with `detail.rebind` from the
+  toolbar meaning Save As. A dismissed picker returns early: nothing written, nothing marked, no
+  toast. Everything else marks the history saved, including a download — the fallback did write a
+  file, and refusing to mark it would leave a phone permanently dirty. The toast names the verb and
+  the file, because "Saved to disk" would hide which of the two things just happened.
+* The **stem** is the binding's, falling back to `layout.name` for an archive that has never been
+  saved. It does not follow a later rename: the file's identity is the file, and `layout.name` is
+  metadata stored inside it.
+* The header's status carries the bound filename in a `.bound-file` span **only when a handle
+  exists** — that is exactly when Save would overwrite it. A binding without a handle names no file
+  that exists yet. The span is styled in `rr-app` because slotted content is this component's DOM.
+* **Saving does not validate calibration.** The v3 check read `{p0, p1, size_mm}` structurally, which
+  v4 has not — calibration is a list of points that legitimately starts empty, so "uncalibrated" is a
+  state the editor reports rather than an error to refuse a save over.
 
 Feedback is a Shoelace `sl-alert` toast (`_notify`), not `alert()`.
 
@@ -252,7 +267,15 @@ File actions and undo/redo. A column at the side of the editor, and **a row at o
 | `undoLabel` | `string \| null` | Phrase for the tooltip — "Undo delete image", or "Undo delete car — img_3.jpg" when the entry lands on another image. **Arrives qualified**: `rr-editor-view` composes it, since only it knows which image is on screen |
 | `redoLabel` | `string \| null` | As above, for redo |
 
-**Emits:** `rr-file-new`, `rr-file-open`, `rr-file-save`, `rr-undo`, `rr-redo`.
+**Emits:** `rr-file-new`, `rr-file-open`, `rr-undo`, `rr-redo` (no detail), and `rr-file-save` with
+`{ rebind: boolean }` — true for a **Shift-click, which means Save As** ([#48]).
+
+Save As is a modifier rather than a sixth button for two reasons. The button count is load-bearing:
+`layout.ts` measures `COMPACT_MAX_HEIGHT_PX` from *five* toolbar buttons and three palette ones, so a
+sixth would need that breakpoint re-measured. And on a browser without the File System Access API,
+Save As does exactly what Save does — a visible control there would be a second button needing an
+explanation for why it changes nothing. The tooltip carries the discoverability, and **names the
+modifier only where the browser can honour it**.
 
 The buttons are not a duplicate of the keyboard shortcuts. Their **disabled state** is the only
 signal separating "the stack is empty" from "the undo landed on an image you are not looking at",
@@ -1165,6 +1188,59 @@ Camera helpers, shared by both views.
 | `DEFAULT_CAMERA_CONSTRAINTS` | 1920×1080 ideal, rear-facing, no audio |
 | `getCameraStream(constraints?)` | `getUserMedia` wrapper; returns a `MediaStream` |
 | `captureFromCamera()` | Opens the camera, grabs one JPEG frame as a `Uint8Array`, and always stops the tracks — with a 5 s timeout |
+
+---
+
+### `persistence.ts`
+
+Where a session's work goes when it is saved, and the two ways of putting it there ([#48]).
+
+| Export | Description |
+|---|---|
+| `FileBinding` | `{ stem, handle? }` — the file this session writes back to. **A handle means Save overwrites; no handle means Save downloads a new generation.** |
+| `SaveOutcome` | `{ kind: 'wrote' \| 'downloaded', binding, filename }` or `{ kind: 'cancelled' }` |
+| `OpenedArchive` | `{ file, binding }` |
+| `supportsFileSystemAccess()` | Whether a file can be written back in place |
+| `fileStem(filename)` | `west-yard.r49` → `west-yard` |
+| `timestampedName(stem, date?)` | `west-yard-20260802-1432.r49` — the download path's filename |
+| `openArchive()` | Picker where one exists, file input everywhere else; `null` on dismissal |
+| `writeArchive(bytes, binding, { rebind? })` | Writes, and reports which way |
+
+A browser cannot write to a file handed to it through `<input type="file">`. Only the File System
+Access API yields a writable handle, and that API is **Chromium desktop only** — not Firefox, not
+Safari, and on no phone at all. Since `ui/CLAUDE.md` supports all three engines equally and the
+labeling device is a phone, write-back is an enhancement over a download path that **stays
+permanently**, never a replacement for it. This module exists so that split lives in one place.
+
+`writeArchive` takes four routes, in order:
+
+1. A bound handle, `rebind` false — **overwrite it, silently**. `createWritable` stages into a swap
+   file and commits on `close()`, so an interrupted write cannot truncate the original. That
+   atomicity is the whole safety net, by decision: no `.bak`, and no verification read, because
+   re-parsing every image on every save costs more than the failure it would guard.
+2. A bound handle whose write permission is **refused** — falls through to (4) rather than failing.
+   A denied prompt must not cost the user a save, and a second dialog would be asking twice.
+3. No handle (or `rebind`), API present — the **picker**, suggesting the binding's *plain* stem.
+   Dismissal returns `cancelled`; the old binding stands.
+4. No API — a **timestamped download**, returning the binding unchanged. A download binds nothing,
+   so the next save asks the same question again.
+
+Two rules that are easy to get backwards:
+
+* **The timestamp belongs to the download path alone.** A written-back file keeps its name across
+  every later overwrite, so a timestamp in the picker's suggestion would be a name asserting a save
+  time the file no longer has — worse than no timestamp, because one invites trust. The format is
+  coarse-to-fine and zero-padded precisely so a **lexical sort of the folder is a chronological
+  one**, which is what makes the newest generation the one you can see rather than the one you have
+  to remember.
+* **Write permission is requested lazily, at the first save.** `showOpenFilePicker` grants read
+  only. Asking at open time raises an "edit your file?" prompt before the user has edited anything,
+  which invites a reflexive block; asking at Save puts it where its purpose is visible. A New layout
+  never sees it, since the save picker grants readwrite outright.
+
+The picker methods and the permission pair are declared as **narrow local interfaces**: they are
+absent from `lib.dom` (unlike `FileSystemFileHandle` itself, which OPFS put there), and a
+`window as any` here would be the cast that spreads.
 
 ---
 

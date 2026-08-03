@@ -40,6 +40,10 @@ export class RRHeader extends LitElement {
       display: flex;
       align-items: center;
       gap: 1rem;
+      /* Without this a flex item refuses to shrink below its content, so the
+         status would push past the gear rather than ellipsis — which the bound
+         filename beside the layout name (#48) makes reachable. */
+      min-width: 0;
     }
 
     .title-status {

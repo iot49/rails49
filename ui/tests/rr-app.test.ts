@@ -69,7 +69,80 @@ describe('rr-app', () => {
     await (el as any)._onFileSave();
 
     expect(exportSpy).toHaveBeenCalled();
-    expect(notifySpy).toHaveBeenCalledWith('Saved to disk', 'success', 'download');
+    // jsdom has no File System Access API, so this is the fallback path — the
+    // one Safari and every phone take. The toast names the file because the
+    // two paths land in different places (#48).
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^Downloaded Test-\d{8}-\d{4}\.r49$/),
+      'success',
+      'download'
+    );
+  });
+
+  // The stem is the file's identity, taken from the file that was opened. The
+  // fallback binds no handle, so the layout name is only a starting point for
+  // an archive that has never been saved.
+  it('names the download after the opened file, not the layout', async () => {
+    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+    (el as any)._archive = archive;
+    (el as any)._binding = { stem: 'west-yard' };
+
+    vi.spyOn(archive, 'export').mockResolvedValue(new Uint8Array());
+    const notifySpy = vi.spyOn(el as any, '_notify');
+
+    await (el as any)._onFileSave();
+
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^Downloaded west-yard-\d{8}-\d{4}\.r49$/),
+      'success',
+      'download'
+    );
+  });
+
+  // A download did write a file. Refusing to mark it saved would leave a phone
+  // permanently dirty and make the discard gate cry wolf on every New.
+  it('marks the history saved on the fallback path', async () => {
+    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+    (el as any)._archive = archive;
+    vi.spyOn(archive, 'export').mockResolvedValue(new Uint8Array());
+    const markSaved = vi.spyOn((el as any)._history as EditHistory, 'markSaved');
+
+    await (el as any)._onFileSave();
+
+    expect(markSaved).toHaveBeenCalled();
+  });
+
+  it('leaves the history dirty when the save picker is dismissed', async () => {
+    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+    (el as any)._archive = archive;
+    vi.spyOn(archive, 'export').mockResolvedValue(new Uint8Array());
+    (window as any).showSaveFilePicker = vi
+      .fn()
+      .mockRejectedValue(new DOMException('dismissed', 'AbortError'));
+
+    const markSaved = vi.spyOn((el as any)._history as EditHistory, 'markSaved');
+    const notifySpy = vi.spyOn(el as any, '_notify');
+
+    await (el as any)._onFileSave();
+
+    expect(markSaved).not.toHaveBeenCalled();
+    expect(notifySpy).not.toHaveBeenCalled();
+    delete (window as any).showSaveFilePicker;
+  });
+
+  it('shows the bound filename in the header only once a save can overwrite it', async () => {
+    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+    (el as any)._archive = archive;
+    (el as any)._status = 'Test';
+    (el as any)._binding = { stem: 'west-yard' };
+    await el.updateComplete;
+
+    expect(el.renderRoot.querySelector('.bound-file')).toBeNull();
+
+    (el as any)._binding = { stem: 'west-yard', handle: {} as FileSystemFileHandle };
+    await el.updateComplete;
+
+    expect(el.renderRoot.querySelector('.bound-file')?.textContent).toContain('west-yard.r49');
   });
 
   it('toasts a notice the editor sends up', async () => {
