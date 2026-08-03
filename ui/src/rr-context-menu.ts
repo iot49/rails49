@@ -161,6 +161,13 @@ export class RRContextMenu extends LitElement {
 
   private readonly _onDocumentKeyDown = (event: Event) => {
     if (!(event instanceof KeyboardEvent) || event.key !== 'Escape') return;
+    // **Swallowed**, exactly as the dismissing press is: Escape also means
+    // "zoom to fit" in the editor (#44), and one keystroke that closed a menu
+    // must not also move the view underneath it. It has to be stopped rather
+    // than merely raced — this listener is on the document in the capture
+    // phase, so by the time a listener further out could ask whether a menu is
+    // open, `hide()` has already answered no.
+    event.stopPropagation();
     this.hide();
   };
 

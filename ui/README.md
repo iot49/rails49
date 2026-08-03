@@ -90,7 +90,10 @@ rr-app                          ← shell: owns the archive and the view mode
 > on that image, so a second box cannot be stacked on the same vehicle. [#37]
 > finished the reveal: an undo or redo now **highlights the object it changed**,
 > and the toolbar names the image when the edit lands on one the user is not
-> looking at.
+> looking at. [#44] added **zoom**: a drag on empty image draws a rect to zoom
+> to and pans once zoomed, Shift-drags anywhere, and one transform above both
+> the media and the overlay keeps every screen-pixel tolerance and world-pixel
+> size correct with no arithmetic changed.
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -106,6 +109,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#41]: https://github.com/iot49/rails49/issues/41
 > [#42]: https://github.com/iot49/rails49/issues/42
 > [#43]: https://github.com/iot49/rails49/issues/43
+> [#44]: https://github.com/iot49/rails49/issues/44
 > [#48]: https://github.com/iot49/rails49/issues/48
 
 ## State and data flow
@@ -132,7 +136,10 @@ rr-app ─────────── rr-editor-view ────────
   A chain in progress is **view state**: an
   anchor writes nothing until the click that closes a car on it, so abandoning one leaves both the
   manifest and the stack untouched — however many cars the chain already wrote, since each of those
-  is its own committed entry.
+  is its own committed entry. **The zoom is view state too** ([#44]): a rect of the authored frame
+  it hands the viewer, `null` for fit. It records nothing, it survives an image change and a live
+  chain, New and Open drop it, and a **reveal pans to keep what an undo changed on screen** —
+  panning at the same zoom level where the changed objects fit, and fitting where they do not.
 * **`rr-live-view` owns:** the camera stream, the classifier, and the classification loop. It never
   mutates the archive.
 * **Only the live view loads a classifier.** The editor's use of it was displaying a per-marker
@@ -376,12 +383,15 @@ image pixel coordinates.
 | `cars` | `readonly CarLabel[]` | Car spans to draw: a chord inside its width rectangle. Per **image**, so switching images swaps the whole list; empty in the live view |
 | `pendingCar` | `PendingCar \| null` | The **rubber band** — `{ anchor, to }` for the chain in flight. The one thing here that is not in the manifest; empty in the live view |
 | `highlight` | `ViewerHighlight \| null` | The objects a reveal is pointing at — `{ cars, sensors, calibration }`, ids for the first two and **indices** for the third. Already resolved by `rr-editor-view`; the viewer draws it and decides nothing. `null` in the live view |
+| `zoom` | `Rect \| null` | The region of the **authored frame** on screen ([#44]). `null` is fit — the absence of a zoom, which is exactly what this element drew before the property existed. View state the editor owns; never in the manifest and never in the history. `null` in the live view |
+| `zoomPreview` | `Rect \| null` | The rect being dragged out — zoom's counterpart to `pendingCar`. Drawn in the overlay with a screen-constant stroke, never as an HTML box on the glass |
 | `dpt` | `number \| null` | The scale the **world-sized** symbols are drawn at. `null` falls them back to `symbolSize` |
 | `resolution` | `{ width, height }` | `camera.resolution` — the frame every coordinate is **authored** in. Not the viewBox: the viewBox is the media's own size, and this is scaled onto it |
 
 **Emits:** `rr-pointer-down`, `rr-pointer-move`, `rr-pointer-up`, `rr-pointer-cancel`
-(`ViewerPointerDetail`), `rr-pointer-contextmenu` (`ViewerContextMenuDetail`), and `rr-media-frame`
-(`ViewerMediaFrameDetail`, once per media load). All six fire in both `src` and `stream` mode. They are declared in `HTMLElementEventMap`, so a listener anywhere up
+(`ViewerPointerDetail`), `rr-pointer-contextmenu` (`ViewerContextMenuDetail`), `rr-media-frame`
+(`ViewerMediaFrameDetail`, once per media load) and `rr-viewport` (`ViewerViewportDetail`, whenever
+the measured viewport changes size). All seven fire in both `src` and `stream` mode. They are declared in `HTMLElementEventMap`, so a listener anywhere up
 the tree gets the detail typed without a cast.
 
 | Detail field | Type | Description |
@@ -389,6 +399,16 @@ the tree gets the detail typed without a cast.
 | `point` | `Point` | Position **in image pixels** — the SVG viewBox frame, never screen coordinates |
 | `imagePxPerScreenPx` | `number` | Converts a screen-space tolerance to image pixels; feeds `geometry.ts`'s `HitTolerance` |
 | `originalEvent` | `PointerEvent` / `MouseEvent` | For `pointerId`, `buttons`, and modifier keys |
+
+**Zoom is one transform above both children** ([#44]). `zoom` is applied to a layer carrying the
+media *and* the SVG, so the two stay **one box by construction** rather than by two transforms being
+kept in sync — the same argument [#41] settled, one level up. Because `getScreenCTM()` walks up
+through that layer, `imagePxPerScreenPx` and `symbolSize` become zoom-aware with no arithmetic
+changing anywhere: annotations stay a constant **screen** size, sensors and car rectangles stay a
+constant **world** size, and a grab radius stays a fingertip at any zoom. Do **not** implement zoom
+by moving the SVG viewBox and transforming the media separately. The measured viewport is reported
+as `rr-viewport` because the editor needs the same number for the zoom cap and cannot measure a box
+it does not own.
 
 `ViewerMediaFrameDetail` is `{ media, frame, aspectMismatch }` — what the image or video turned out
 to be (`naturalWidth`/`videoWidth`), what the archive declares, and whether the two are different
@@ -1084,6 +1104,45 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
   * A **coupling renders as one shared handle** and drags as one entry moving every end under it,
     which is what `dragHandles` was shaped for; `rr-viewer` derives the couplings from the cars it
     was handed.
+* **Zoom** ([#44]). Two actions and a pan, over one nullable `Rect` of the **authored frame** handed
+  to `rr-viewer`. `null` is fit. Nothing here writes to the manifest, so nothing here records a
+  history entry — zoom is view state, which `../SPEC.md` § Undo and redo already named.
+
+  | Gesture | Unzoomed | Zoomed |
+  |---|---|---|
+  | Plain primary drag from **empty image** | zoom to the rect drawn | pan |
+  | **Shift** + primary drag, anywhere | zoom to the rect drawn | zoom to the rect drawn |
+  | Primary drag on an **object** | moves it (unchanged) | moves it (unchanged) |
+  | Right-click | menu / end chain (unchanged) | unchanged |
+
+  * Plain drag is the gesture that has to work: touch reports the primary button, and the labeling
+    device is a phone. Shift-drag is the desktop escape hatch for a frame with no empty pixel to
+    start from — the same layering as Save As. Making the plain gesture state-dependent is a real
+    cost, accepted on the grounds right-click already accepts it: the two states differ by something
+    the image itself makes obvious. `EditorMode` and `EditorTool` gain **no** members; zoom is not a
+    mode and the editor has none.
+  * **Zoom to fit** is an `sl-icon-button` overlaid on the viewer, present **only while zoomed** —
+    "show zoom bars as needed", applied to the one control there is. Escape does the same, and
+    `rr-context-menu` swallows the Escape that dismissed it so one keystroke closes one thing. It is
+    deliberately not a toolbar or palette button: `COMPACT_MAX_HEIGHT_PX` is measured from the
+    current button counts with 19px to spare, and a sixth button puts [#42]'s reflow back in play.
+  * **The cap is derived, not chosen**: one frame pixel per `DEFAULT_GRAB_RADIUS_SCREEN_PX` screen
+    pixels, because coordinates are stored as whole pixels and past a fingertip-wide pixel further
+    zoom buys precision the format cannot record. It also absorbs the accidental two-pixel drag with
+    no second threshold. Sizing it needs the viewport, which arrives as `rr-viewport`. Panning
+    clamps by `clampZoomRect` — inside the frame where the rect is smaller, centred where larger.
+  * **What it survives.** An image change (the rect is in the per-layout frame, so it names the same
+    region on every frame of the archive) and a **live chain** — chaining a consist while aiming at
+    couplers is the case zoom earns its keep on, and zoom changes neither what is underneath the
+    chain nor its geometry. New and Open drop it: a new layout is a new frame.
+  * **A reveal must stay visible.** Undo may move the user but may never change something they
+    cannot see, and selecting the entry's image does not cover being zoomed into one corner and
+    undoing an edit in another corner of the *same* image. So a reveal takes the changed objects'
+    bounding box and **pans at the same zoom level** where it fits, or falls back to fit where it
+    does not (`geometry.ts` § `revealZoom`). Fitting on every reveal was rejected: a zoom that
+    survives nineteen image changes and dies on every undo is not persistent.
+  * The rect in flight is drawn by the viewer from `zoomPreview`, as the band was — never as an HTML
+    overlay in screen coordinates.
 * **Labeling completeness** ([#36]). A `.complete-bar` sits directly above the thumbnail bar with an
   `sl-checkbox` for the image on screen; every image's flag also goes to `rr-thumbnail-bar` as
   `complete`, so the state is readable per image without selecting it. Toggling it either way is

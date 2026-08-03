@@ -76,4 +76,17 @@ describe('rr-live-view', () => {
     expect(el.shadowRoot!.querySelector('rr-viewer')).to.exist;
     expect(el.shadowRoot!.querySelector('rr-stats-bar')).to.exist;
   });
+
+  it('sets no zoom: the capability is there, the control is the editor\'s (#44)', async () => {
+    // The live view listens to no pointer events, and its job is watching
+    // occupancy across the whole layout — where a zoomed-in partial view hides
+    // the thing being monitored. A deferral, not a principle.
+    const el = await fixture<RRLiveView>(html`
+      <rr-live-view .archive=${archive}></rr-live-view>
+    `);
+
+    const viewer = el.shadowRoot!.querySelector('rr-viewer')!;
+    expect(viewer.zoom).to.be.null;
+    expect(viewer.zoomPreview).to.be.null;
+  });
 });

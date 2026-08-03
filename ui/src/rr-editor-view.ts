@@ -13,17 +13,31 @@ import { MIN_DPT } from '@occupancy/config';
 import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
 import {
+  boundsOfPoints,
   carCovering,
   carUnderPointer,
   dragHandles,
   dragTo,
   hitTest,
   isClick,
+  panZoomRect,
+  rectBetween,
+  revealZoom,
   samePoint,
+  zoomRectFromDrag,
   CLICK_SLOP_SCREEN_PX,
   DEFAULT_GRAB_RADIUS_SCREEN_PX,
 } from './geometry.js';
-import type { DragHandle, HitKind, HitScene, HitTarget, HitTolerance } from './geometry.js';
+import type {
+  DragHandle,
+  FrameSize,
+  HitKind,
+  HitScene,
+  HitTarget,
+  HitTolerance,
+  Rect,
+  Size,
+} from './geometry.js';
 import type { PendingCar } from './carMarker.js';
 import { classChoices, rootClass } from './vocabulary.js';
 import type { ClassChoice } from './vocabulary.js';
@@ -41,6 +55,7 @@ import type {
   ViewerHighlight,
   ViewerMediaFrameDetail,
   ViewerPointerDetail,
+  ViewerViewportDetail,
 } from './rr-viewer.js';
 import type { CalibrationCommitDetail, RRCalibrationDialog } from './rr-calibration-dialog.js';
 import type { SensorNameCommitDetail, RRSensorDialog } from './rr-sensor-dialog.js';
@@ -52,6 +67,8 @@ import type {
 } from './rr-context-menu.js';
 
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import type { SlCheckbox } from '@shoelace-style/shoelace';
 import './rr-viewer.js';
 import './rr-toolbar.js';
@@ -344,6 +361,29 @@ function isPrimaryButton(event: PointerEvent): boolean {
 }
 
 /**
+ * What a drag does to the **view** rather than to the manifest (#44), or `null`
+ * for the drags that author.
+ *
+ * Decided at pointer-down like everything else about a gesture, off two things
+ * the press already knows: whether it landed on an object, and whether the
+ * editor is zoomed.
+ *
+ * * `zoom-rect` — a plain drag from empty image while unzoomed, and a
+ *   **Shift**-drag anywhere. Plain drag is the path that has to work on every
+ *   engine and on touch, where the primary button is the only button; Shift is
+ *   the desktop escape hatch for a frame with no empty pixel to start from, the
+ *   same layering Save As already uses.
+ * * `pan` — a plain drag from empty image while zoomed. Making the plain
+ *   gesture state-dependent is a real cost, accepted on the same grounds
+ *   right-click already accepts it: the two states differ by something the
+ *   image itself makes obvious.
+ *
+ * Neither writes to the manifest, so neither opens a history entry: zoom is
+ * view state and never enters the stack (`SPEC.md` § Undo and redo names it).
+ */
+type ViewGesture = 'zoom-rect' | 'pan';
+
+/**
  * The pointer gesture currently in flight: one press, its moves, and its end.
  *
  * Everything a release needs is decided at **pointer-down** — what was under
@@ -356,8 +396,22 @@ interface LiveGesture {
   readonly pointerId: number;
   /** Where the press landed, in image pixels. Every delta is measured from here. */
   readonly origin: Point;
+  /**
+   * Where the press landed on the **glass**, in client pixels.
+   *
+   * Only a pan reads it, and it is why a pan is the one gesture measured in
+   * screen coordinates: panning moves the transform the image coordinates are
+   * reported through, so a delta taken from them would be a loop — the pixel
+   * under the pointer is the pixel the pan just put there. The glass does not
+   * move.
+   */
+  readonly originClient: Point;
   /** What the press grabbed, or null for empty image. */
   readonly hit: HitTarget | null;
+  /** What this drag does to the view, or null when it authors instead. */
+  readonly view: ViewGesture | null;
+  /** The zoom rect the press started on — what a pan's travel is applied to. */
+  readonly zoomAt: Rect | null;
   /**
    * The points this gesture moves. A list, not one object: a coupler drag moves
    * two car ends and one entry has to cover both (`SPEC.md` § Undo and redo).
@@ -422,6 +476,13 @@ const ALREADY_LABELED = 'That pixel is already inside a labeled car — a car is
  * chain in flight, and right-click ends it. Two gestures mean something else
  * while a chain is live — that right-click, and undo, which `rr-app` offers
  * here first through {@link interceptUndo}.
+ *
+ * **It owns the zoom** (#44), as view state the viewer is handed and draws: a
+ * drag on empty image draws a rect to zoom to, or pans once zoomed, and a
+ * Shift-drag draws a rect wherever it begins. It writes nothing and records
+ * nothing, it survives an image change and a live chain, and a **reveal pans to
+ * keep what an undo changed on screen** — the navigation invariant, in the one
+ * case being zoomed introduces.
  *
  * **Objects are keyed by `id`, never by object identity** — cars by label id,
  * sensors by sensor id, calibration points by position because they carry no
@@ -523,6 +584,33 @@ export class RREditorView extends LitElement {
   @state() private _highlight: readonly HistoryHighlight[] | null = null;
   /** Clears {@link _highlight}. Restarted by each reveal, cancelled on teardown. */
   private _highlightTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The region of the authored frame on screen, or `null` for all of it (#44).
+   *
+   * View state, like the chain and the glow: it is written nowhere, it never
+   * enters the history (`SPEC.md` § Undo and redo names zoom among the things
+   * undo does not restore), and the viewer is handed it as a property and draws
+   * it. **`null` is fit** — the absence of a zoom rather than a rect covering
+   * the frame, which is exactly what the editor rendered before this existed.
+   *
+   * It **persists across image changes**: the rect is in the per-layout
+   * authored frame, so it names the same region on every image of the archive,
+   * and a labeler working through twenty frames of one yard zooms once. It is
+   * dropped only when the frame itself stops meaning anything — a new archive,
+   * which is New and Open both.
+   */
+  @state() private _zoom: Rect | null = null;
+  /** The rect being dragged out, or null when none is. The band's other half. */
+  @state() private _zoomPreview: Rect | null = null;
+  /**
+   * The viewer's viewport in screen pixels, as it last reported it.
+   *
+   * The editor cannot measure it — it does not own that box — and needs it for
+   * exactly one thing: the cap on how far a rect may zoom in, which is stated
+   * in screen pixels per frame pixel. Zeros until the viewer has laid out, and
+   * `capZoomRect` caps nothing against zeros rather than inventing a screen.
+   */
+  private _viewport: Size = { width: 0, height: 0 };
 
   @query('rr-calibration-dialog') private _calibrationDialog!: RRCalibrationDialog;
   @query('rr-sensor-dialog') private _sensorDialog!: RRSensorDialog;
@@ -558,8 +646,42 @@ export class RREditorView extends LitElement {
       position: relative;
     }
 
-    rr-viewer {
+    /* The viewer and the controls drawn on top of it. Positioned, so the fit
+       control is placed against the photograph rather than against the column
+       of readout bars around it. */
+    .viewer-wrap {
+      position: relative;
       flex-grow: 1;
+      /* A flex item will not shrink below its content by default, and the
+         viewer's content is the photograph: without this the readout bars are
+         pushed off the bottom of a short window. */
+      min-height: 0;
+    }
+
+    rr-viewer {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Present only while zoomed (#44) — "show zoom bars as needed", applied to
+       the one control there is. It sits on the glass rather than in the
+       sidebar because a sixth button in that strip puts #42's reflow
+       breakpoint back in play; see _renderFitControl. */
+    .fit-control {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      font-size: 1.5rem;
+      background: rgba(0, 0, 0, 0.45);
+      border-radius: 8px;
+    }
+
+    .fit-control::part(base) {
+      color: white;
+    }
+
+    .fit-control::part(base):hover {
+      color: var(--sl-color-neutral-100);
     }
 
     rr-thumbnail-bar {
@@ -684,6 +806,10 @@ export class RREditorView extends LitElement {
       this._abandonPlacement();
       this._clearHighlight();
       this._frameMismatch = null;
+      // New and Open both arrive here. A zoom rect is a region of *this*
+      // layout's authored frame, so it names nothing on the next one — which is
+      // the same reason it survives an image change and not an archive one.
+      this._fitZoom();
     }
     this._enforceGate();
   }
@@ -854,6 +980,7 @@ export class RREditorView extends LitElement {
    */
   private _showHighlight(highlights: readonly HistoryHighlight[]) {
     const { cars, sensors, calibration } = this._resolveHighlight(highlights);
+    this._revealZoom(highlights);
 
     this._clearHighlight();
     if (cars.length + sensors.length + calibration.length === 0) return;
@@ -866,8 +993,13 @@ export class RREditorView extends LitElement {
    * The history's candidates as the objects on screen now, dropping what is not
    * there.
    *
-   * The one place a highlight is resolved, run both when a reveal lands and on
-   * every render after it. Cars and sensors stay ids all the way to the viewer,
+   * The one place a highlight is resolved **for drawing**, run both when a
+   * reveal lands and on every render after it — {@link _highlightPoints} asks
+   * the same question for the zoom, and only at the moment a reveal lands,
+   * because a viewport does not follow the glow around. Both drop what the
+   * apply removed, and by the same rule.
+   *
+   * Cars and sensors stay ids all the way to the viewer,
    * so nothing about them can go stale. A calibration point has no id and the
    * viewer can only address one by index, so the pixel becomes an index **here**
    * rather than being stored as one: an edit arriving during the 1400 ms the
@@ -897,6 +1029,66 @@ export class RREditorView extends LitElement {
     }
 
     return { cars, sensors, calibration };
+  }
+
+  /**
+   * Brings what an undo changed into the zoomed view, or gives the zoom up.
+   *
+   * The navigation invariant needs this once the view can be a corner of a
+   * frame (`SPEC.md` § Undo and redo: undo may move the user, it may never
+   * change something they cannot see). Selecting the entry's image answers the
+   * case where the change is on another frame; it does not answer being zoomed
+   * into one corner and undoing an edit in another corner of the **same**
+   * image, which is the case zoom introduces.
+   *
+   * The bounds are the changed objects' **authored points** — a car's two ends,
+   * a sensor, a crosshair's pixel — and not the rectangle a car is drawn
+   * inside. The rectangle is derived from DPT and is the wider claim; what the
+   * reveal has to show is the geometry the entry actually moved.
+   *
+   * The decision itself is `geometry.ts` § `revealZoom`: unchanged when it is
+   * already on screen, panned at the same zoom where it fits, and fit where it
+   * does not.
+   */
+  private _revealZoom(highlights: readonly HistoryHighlight[]) {
+    if (this._zoom === null) return;
+    const frame = this._frame();
+    if (!frame) return;
+    this._zoom = revealZoom(this._zoom, boundsOfPoints(this._highlightPoints(highlights)), frame);
+  }
+
+  /**
+   * Where the objects a reveal points at are, as points on the current image.
+   *
+   * Resolved the same way the glow is — by id for a car or a sensor, by pixel
+   * for a calibration point — and dropping what the apply removed, so an undone
+   * *add* moves the view no more than it lights anything.
+   */
+  private _highlightPoints(highlights: readonly HistoryHighlight[]): Point[] {
+    const points: Point[] = [];
+    const calibrationPoints = this.archive?.getManifest().layout.calibration.points ?? [];
+
+    for (const highlight of highlights) {
+      switch (highlight.kind) {
+        case 'car': {
+          const car = this._car(highlight.id);
+          if (car) points.push(car.p0, car.p1);
+          break;
+        }
+        case 'sensor': {
+          const sensor = this._sensor(highlight.id);
+          if (sensor) points.push({ x: sensor.x, y: sensor.y });
+          break;
+        }
+        case 'calibration': {
+          if (calibrationPoints.some(point => samePoint(point.px, highlight.px))) {
+            points.push(highlight.px);
+          }
+          break;
+        }
+      }
+    }
+    return points;
   }
 
   /**
@@ -1016,6 +1208,46 @@ export class RREditorView extends LitElement {
   private _onMediaFrame(e: CustomEvent<ViewerMediaFrameDetail>) {
     this._frameMismatch = e.detail.aspectMismatch ? e.detail : null;
   }
+
+  /**
+   * The viewer measured its box. Kept for the zoom cap, and for nothing else.
+   *
+   * Not reactive: no render reads it, and a resize already re-renders through
+   * the viewer's own state. It is read at the one moment a rect is authored.
+   */
+  private _onViewport(e: CustomEvent<ViewerViewportDetail>) {
+    this._viewport = { width: e.detail.width, height: e.detail.height };
+  }
+
+  /**
+   * The unzoomed view, wherever it is asked for — the fit control, Escape, a
+   * new archive, a drag that selected the whole frame.
+   *
+   * One method for the same reason {@link _abandonPlacement} is one: a piece of
+   * view state whose exits are scattered eventually leaks one. The band goes
+   * with it, because a band belongs to a gesture and none is in flight by the
+   * time anything here runs.
+   */
+  private _fitZoom() {
+    this._zoom = null;
+    this._zoomPreview = null;
+  }
+
+  /**
+   * Escape fits — a desktop accelerator for the overlay control, never a
+   * substitute for it: the labeling device is a phone, which has no Escape at
+   * all.
+   *
+   * Nothing here asks whether a menu is open, and asking would not work:
+   * `rr-context-menu` listens on the document in the **capture** phase, so it
+   * has already closed by the time a listener out here runs. It therefore
+   * **swallows** the Escape that dismissed it, and one that arrives here is one
+   * no menu consumed.
+   */
+  private readonly _onKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || this._zoom === null) return;
+    this._fitZoom();
+  };
 
   private async _onImageAdd(e: CustomEvent) {
     if (!this.archive) return;
@@ -1152,21 +1384,58 @@ export class RREditorView extends LitElement {
     const at = e.detail.point;
     const scene = this._scene();
     const hit = hitTest(scene, at, this._tolerance(DEFAULT_GRAB_RADIUS_SCREEN_PX, e.detail));
-    const handles = hit ? dragHandles(hit, scene) : [];
+    // What this drag will do to the view, decided here so no motion event has
+    // to re-decide it — and so a Shift-drag that begins on a car end moves
+    // nothing, whatever the hit-test found.
+    const view = this._viewGesture(hit, e.detail.originalEvent);
+    const handles = hit && view === null ? dragHandles(hit, scene) : [];
 
     this._gesture = {
       pointerId,
       origin: at,
+      originClient: {
+        x: e.detail.originalEvent.clientX,
+        y: e.detail.originalEvent.clientY,
+      },
       hit,
+      view,
+      zoomAt: this._zoom,
       handles,
       entry: hit && handles.length > 0 ? this._beginDragEntry(hit) : null,
       dragging: false,
     };
   }
 
+  /**
+   * Which view gesture a press begins, or null when it begins an authoring one.
+   *
+   * The whole of the table in {@link ViewGesture}, in one place: Shift always
+   * means a rect, and a press on empty image means a rect while fit and a pan
+   * while zoomed. A press **on an object** authors, exactly as it did before
+   * zoom existed — dragging an object is what a labeler does most, and it must
+   * not become state-dependent.
+   */
+  private _viewGesture(hit: HitTarget | null, event: PointerEvent): ViewGesture | null {
+    if (event.shiftKey) return 'zoom-rect';
+    if (hit) return null;
+    return this._zoom === null ? 'zoom-rect' : 'pan';
+  }
+
   /** The image on screen, or undefined when the archive has none. */
   private _currentImage(): Image | undefined {
     return this.archive?.getManifest().images[this._currentImageIndex];
+  }
+
+  /**
+   * The authored frame — `camera.resolution` — or undefined with no archive.
+   *
+   * The frame every zoom rect is expressed in, and the bounds it is clamped
+   * against. Named here because three zoom paths need it and each would
+   * otherwise re-walk the manifest for it, exactly as {@link _currentImage} is
+   * named for the image.
+   */
+  private _frame(): FrameSize | undefined {
+    return this.archive?.getManifest().camera.resolution;
   }
 
   /**
@@ -1244,7 +1513,63 @@ export class RREditorView extends LitElement {
       }
       gesture.dragging = true;
     }
-    this._moveHandles(gesture, e.detail.point);
+    this._applyDrag(gesture, e.detail);
+  }
+
+  /**
+   * One motion of a drag, dispatched on what the press decided it was.
+   *
+   * The three are exclusive by construction — a view gesture takes no handles —
+   * so this is a branch and not a sequence.
+   */
+  private _applyDrag(gesture: LiveGesture, detail: ViewerPointerDetail) {
+    switch (gesture.view) {
+      case 'zoom-rect':
+        // The band is what was drawn, not what the zoom will be: the cap and
+        // the clamp are applied when the gesture lands, so the feedback follows
+        // the pointer exactly and the correction is visible as a correction.
+        this._zoomPreview = rectBetween(gesture.origin, detail.point);
+        return;
+      case 'pan':
+        this._panTo(gesture, detail);
+        return;
+      case null:
+        this._moveHandles(gesture, detail.point);
+        return;
+    }
+  }
+
+  /**
+   * Where a pan has taken the view: the pointer's travel on the **glass**,
+   * converted to frame pixels and applied to the rect the press started on.
+   *
+   * Screen coordinates rather than the image ones every other gesture uses, and
+   * this is the one place that is right: a pan moves the transform those
+   * coordinates are reported through, so measuring the travel in them would
+   * measure the pan's own effect.
+   */
+  private _panTo(gesture: LiveGesture, detail: ViewerPointerDetail) {
+    const from = gesture.zoomAt;
+    const frame = this._frame();
+    if (!from || !frame) return;
+
+    const delta = {
+      x: (detail.originalEvent.clientX - gesture.originClient.x) * detail.imagePxPerScreenPx,
+      y: (detail.originalEvent.clientY - gesture.originClient.y) * detail.imagePxPerScreenPx,
+    };
+    this._zoom = panZoomRect(from, delta, frame);
+  }
+
+  /**
+   * Where a zoom-rect gesture landed: the region drawn, capped and clamped.
+   *
+   * A rect that turned out to cover the whole frame is `null` rather than a
+   * rect — fit is the absence of a zoom (`geometry.ts` § `zoomRectFromDrag`).
+   */
+  private _applyZoomRect(gesture: LiveGesture, detail: ViewerPointerDetail) {
+    const frame = this._frame();
+    if (!frame) return;
+    this._zoom = zoomRectFromDrag(gesture.origin, detail.point, frame, this._viewport);
   }
 
   /**
@@ -1275,7 +1600,15 @@ export class RREditorView extends LitElement {
     const gesture = this._current(e);
     if (!gesture) return;
 
-    if (gesture.dragging) this._moveHandles(gesture, e.detail.point);
+    if (gesture.dragging) {
+      // A zoom-rect gesture commits **here** and not on every move: the drag is
+      // a region being described, and re-zooming per motion event would move
+      // the frame the pointer is being reported in while it is being drawn.
+      if (gesture.view === 'zoom-rect') this._applyZoomRect(gesture, e.detail);
+      else this._applyDrag(gesture, e.detail);
+    }
+    // The band belongs to the gesture, however it ended.
+    this._zoomPreview = null;
     await this._endGesture(gesture);
     if (gesture.dragging) return;
     if (!isClick(gesture.origin, e.detail.point, this._tolerance(CLICK_SLOP_SCREEN_PX, e.detail))) {
@@ -1496,6 +1829,11 @@ export class RREditorView extends LitElement {
     if (!gesture) return;
 
     if (gesture.dragging) this._moveHandles(gesture, gesture.origin);
+    // A view gesture goes back the same way: a pan to the rect it started on,
+    // a band to nothing. Neither wrote anything, so there is nothing else to
+    // put back.
+    if (gesture.view === 'pan') this._zoom = gesture.zoomAt;
+    this._zoomPreview = null;
     await this._endGesture(gesture);
   }
 
@@ -1720,8 +2058,16 @@ export class RREditorView extends LitElement {
     if (await gesture.entry?.commit()) this._notifyHistoryChange();
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    // On the window, like `rr-app`'s undo shortcut: the viewer takes no focus,
+    // so a keystroke aimed at the labeling surface arrives on the body.
+    window.addEventListener('keydown', this._onKeyDown);
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener('keydown', this._onKeyDown);
     if (this._gesture) void this._endGesture(this._gesture);
     // A timer outliving the element would write state into a detached one.
     this._clearHighlight();
@@ -2065,6 +2411,30 @@ export class RREditorView extends LitElement {
     return { anchor: this._mode.anchor, to: this._cursor ?? this._mode.anchor };
   }
 
+  /**
+   * Zoom to fit — present only while there is a zoom to leave, which is the
+   * reporter's "show zoom bars as needed" applied to the one control there is.
+   *
+   * On the viewer rather than in the sidebar, and deliberately **not** a
+   * toolbar or palette button: `COMPACT_MAX_HEIGHT_PX` is measured from the
+   * current button counts with 19px to spare (`layout.ts`), so a sixth button
+   * puts #42's reflow back in play. It is not a fourth `EditorTool` either —
+   * zoom is not a mode, and the editor has none.
+   */
+  private _renderFitControl() {
+    if (this._zoom === null) return '';
+    // The tooltip names the accelerator; the button is the affordance. A phone
+    // has no Escape, and the labeling is done on a phone.
+    return html`<sl-tooltip content="Zoom to fit (Esc)" placement="left">
+      <sl-icon-button
+        class="fit-control"
+        name="arrows-angle-contract"
+        label="Zoom to fit"
+        @click=${this._fitZoom}
+      ></sl-icon-button>
+    </sl-tooltip>`;
+  }
+
   render() {
     const manifest = this.archive?.getManifest();
     const currentImage = manifest?.images[this._currentImageIndex];
@@ -2096,22 +2466,28 @@ export class RREditorView extends LitElement {
 
             ${this._renderFrameMismatch()}
 
-            <rr-viewer
-              .src=${src}
-              .resolution=${manifest.camera.resolution}
-              .calibrationPoints=${manifest.layout.calibration.points}
-              .sensors=${manifest.layout.sensors}
-              .cars=${currentImage?.labels ?? []}
-              .pendingCar=${this._pendingCar()}
-              .highlight=${this._highlight && this._resolveHighlight(this._highlight)}
-              .dpt=${getDPT(manifest)}
-              @rr-pointer-down=${this._onViewerPointerDown}
-              @rr-pointer-move=${this._onViewerPointerMove}
-              @rr-pointer-up=${this._onViewerPointerUp}
-              @rr-pointer-cancel=${this._onViewerPointerCancel}
-              @rr-pointer-contextmenu=${this._onViewerContextMenu}
-              @rr-media-frame=${this._onMediaFrame}
-            ></rr-viewer>
+            <div class="viewer-wrap">
+              <rr-viewer
+                .src=${src}
+                .resolution=${manifest.camera.resolution}
+                .calibrationPoints=${manifest.layout.calibration.points}
+                .sensors=${manifest.layout.sensors}
+                .cars=${currentImage?.labels ?? []}
+                .pendingCar=${this._pendingCar()}
+                .highlight=${this._highlight && this._resolveHighlight(this._highlight)}
+                .zoom=${this._zoom}
+                .zoomPreview=${this._zoomPreview}
+                .dpt=${getDPT(manifest)}
+                @rr-pointer-down=${this._onViewerPointerDown}
+                @rr-pointer-move=${this._onViewerPointerMove}
+                @rr-pointer-up=${this._onViewerPointerUp}
+                @rr-pointer-cancel=${this._onViewerPointerCancel}
+                @rr-pointer-contextmenu=${this._onViewerContextMenu}
+                @rr-media-frame=${this._onMediaFrame}
+                @rr-viewport=${this._onViewport}
+              ></rr-viewer>
+              ${this._renderFitControl()}
+            </div>
 
             ${currentImage ? this._renderCompleteness(currentImage) : ''}
 

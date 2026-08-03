@@ -862,3 +862,129 @@ describe('rr-viewer', () => {
     });
   });
 });
+
+describe('rr-viewer zoom (#44)', () => {
+  const resolution = { width: 1000, height: 1000 };
+
+  /** Give the viewport a laid-out size, which jsdom never does on its own. */
+  function stubViewport(el: RrViewer, size: { width: number; height: number }) {
+    const viewport = el.shadowRoot!.querySelector('.viewport') as HTMLElement;
+    viewport.getBoundingClientRect = () =>
+      ({ width: size.width, height: size.height, x: 0, y: 0, top: 0, left: 0 }) as DOMRect;
+  }
+
+  /** The measurement the ResizeObserver would drive in a browser. */
+  const measure = (el: RrViewer) => (el as unknown as { measureScale(): void }).measureScale();
+
+  const layer = (el: RrViewer) => el.shadowRoot!.querySelector('.zoom-layer') as HTMLElement;
+  const zoomVar = (el: RrViewer, name: string) => layer(el).style.getPropertyValue(name).trim();
+
+  it('carries the media and the overlay in one transformed layer', async () => {
+    // The load-bearing part of the mechanism (#41 under #44): a transform above
+    // *both* keeps them one box by construction. Two transforms kept in sync
+    // would be the two-independently-fitted-boxes bug again.
+    const el = await fixture<RrViewer>(html`
+      <rr-viewer src="test.jpg" .resolution=${resolution}></rr-viewer>
+    `);
+    expect(layer(el).querySelector('img')).to.exist;
+    expect(layer(el).querySelector('svg')).to.exist;
+  });
+
+  it('is the identity when nothing is zoomed', async () => {
+    const el = await fixture<RrViewer>(html`
+      <rr-viewer src="test.jpg" .resolution=${resolution}></rr-viewer>
+    `);
+    stubViewport(el, { width: 800, height: 800 });
+    measure(el);
+    await el.updateComplete;
+
+    expect(zoomVar(el, '--zoom-scale')).to.equal('1');
+    expect(zoomVar(el, '--zoom-x')).to.equal('0px');
+    expect(zoomVar(el, '--zoom-y')).to.equal('0px');
+  });
+
+  it('applies the transform for a zoom rect', async () => {
+    // What jsdom can honestly show: the property the element computes and
+    // writes. **Not** that the photograph moved — nothing here lays out or
+    // paints, and the arithmetic itself is covered in geometry.test.ts.
+    const el = await fixture<RrViewer>(html`
+      <rr-viewer src="test.jpg" .resolution=${resolution}></rr-viewer>
+    `);
+    stubViewport(el, { width: 800, height: 800 });
+    measure(el);
+    el.zoom = { x: 0, y: 0, width: 500, height: 500 };
+    await el.updateComplete;
+
+    expect(zoomVar(el, '--zoom-scale')).to.equal('2');
+    expect(zoomVar(el, '--zoom-x')).to.equal('0px');
+    expect(zoomVar(el, '--zoom-y')).to.equal('0px');
+  });
+
+  it('reports the viewport size, and only when it changes', async () => {
+    const el = await fixture<RrViewer>(html`
+      <rr-viewer src="test.jpg" .resolution=${resolution}></rr-viewer>
+    `);
+    const seen: { width: number; height: number }[] = [];
+    el.addEventListener('rr-viewport', e => void seen.push(e.detail));
+
+    stubViewport(el, { width: 800, height: 600 });
+    measure(el);
+    measure(el);
+    expect(seen).to.deep.equal([{ width: 800, height: 600 }]);
+
+    stubViewport(el, { width: 400, height: 300 });
+    measure(el);
+    expect(seen.length).to.equal(2);
+  });
+
+  it('re-measures the scale when the zoom changes', async () => {
+    // No ResizeObserver fires for a zoom — the element does not resize — and
+    // every screen-constant symbol is sized off the transform it moves.
+    const el = await fixture<RrViewer>(html`
+      <rr-viewer src="test.jpg" .resolution=${resolution}></rr-viewer>
+    `);
+    const spy = vi.fn();
+    (el as unknown as { measureScale(): void }).measureScale = spy;
+
+    el.zoom = { x: 0, y: 0, width: 100, height: 100 };
+    await el.updateComplete;
+    await new Promise(resolve => requestAnimationFrame(() => resolve(null)));
+
+    expect(spy.mock.calls.length).to.be.greaterThan(0);
+  });
+
+  it('draws the band in flight, with a screen-constant stroke', async () => {
+    const el = await fixture<RrViewer>(html`
+      <rr-viewer .resolution=${resolution}></rr-viewer>
+    `);
+    el.zoomPreview = { x: 10, y: 20, width: 300, height: 400 };
+    await el.updateComplete;
+
+    const band = () => el.shadowRoot!.querySelector('.zoom-band')!;
+    expect(band().getAttribute('x')).to.equal('10');
+    expect(band().getAttribute('width')).to.equal('300');
+    expect(band().getAttribute('height')).to.equal('400');
+
+    // Same rule as every other annotation: the stroke is in image pixels, and
+    // its size *on screen* is the same number at any scale.
+    const svg = el.shadowRoot!.querySelector('svg')!;
+    const strokeOnScreen = (scale: number) => {
+      stubSvgGeometry(svg, { scale });
+      measure(el);
+      return el.updateComplete.then(
+        () => Number(band().getAttribute('stroke-width')) * scale
+      );
+    };
+    const small = await strokeOnScreen(0.5);
+    const large = await strokeOnScreen(4);
+    expect(small).to.be.closeTo(large, 1e-9);
+    expect(small).to.be.greaterThan(0);
+  });
+
+  it('draws no band when no rect is in flight', async () => {
+    const el = await fixture<RrViewer>(html`
+      <rr-viewer .resolution=${resolution}></rr-viewer>
+    `);
+    expect(el.shadowRoot!.querySelector('.zoom-band')).to.not.exist;
+  });
+});

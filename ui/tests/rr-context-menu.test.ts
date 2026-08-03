@@ -265,6 +265,28 @@ describe('rr-context-menu', () => {
     expect(el.open).to.be.false;
   });
 
+  it('swallows the Escape that dismissed it', async () => {
+    // Escape also means "zoom to fit" in the editor (#44). One keystroke closes
+    // one thing, so the menu stops the one it consumed — the same rule as the
+    // dismissing press.
+    const el = await mount();
+    await el.show({ x: 0, y: 0 }, [DELETE]);
+    let sawKey = false;
+    const listener = () => {
+      sawKey = true;
+    };
+    window.addEventListener('keydown', listener);
+
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })
+    );
+    await el.updateComplete;
+    window.removeEventListener('keydown', listener);
+
+    expect(sawKey).to.be.false;
+    expect(el.open).to.be.false;
+  });
+
   it('leaves other keys alone', async () => {
     const el = await mount();
     await el.show({ x: 0, y: 0 }, [DELETE]);

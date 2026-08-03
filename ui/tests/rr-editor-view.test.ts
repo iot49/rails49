@@ -13,6 +13,7 @@ import type { RRToolPalette, EditorTool } from '../src/rr-tool-palette.js';
 import type { RRContextMenu } from '../src/rr-context-menu.js';
 import type { NotifyDetail } from '../src/rr-editor-view.js';
 import type { SlCheckbox } from '@shoelace-style/shoelace';
+import type { Rect } from '../src/geometry.js';
 
 // Mock ResizeObserver for RRViewer
 global.ResizeObserver = vi.fn().mockImplementation(() => ({
@@ -230,14 +231,34 @@ describe('rr-editor-view', () => {
     name: string,
     point: Point,
     imagePxPerScreenPx: number,
-    { pointerId = 1, button = 0 }: { pointerId?: number; button?: number } = {}
+    {
+      pointerId = 1,
+      button = 0,
+      shiftKey = false,
+      client,
+    }: {
+      pointerId?: number;
+      button?: number;
+      /** Shift means "zoom to a rect wherever this drag began" (#44). */
+      shiftKey?: boolean;
+      /** Where the pointer is on the **glass** — only a pan reads it. */
+      client?: { x: number; y: number };
+    } = {}
   ) {
     el.shadowRoot!.querySelector('rr-viewer')!.dispatchEvent(
       new CustomEvent(name, {
         detail: {
           point,
           imagePxPerScreenPx,
-          originalEvent: Object.assign(new MouseEvent(name, { button }), { pointerId }),
+          originalEvent: Object.assign(
+            new MouseEvent(name, {
+              button,
+              shiftKey,
+              clientX: client?.x ?? 0,
+              clientY: client?.y ?? 0,
+            }),
+            { pointerId }
+          ),
         },
         bubbles: true,
         composed: true,
@@ -2917,6 +2938,397 @@ describe('rr-editor-view', () => {
         `);
 
         expect(toolbar(el).redoLabel).to.equal('move sensor');
+      });
+    });
+  });
+
+  describe('zoom (#44)', () => {
+    // The editor's half of the feature: which gesture means what, and what the
+    // viewer is handed. Nothing here claims the photograph moved — jsdom
+    // neither lays out nor paints, and the arithmetic itself is covered in
+    // geometry.test.ts.
+
+    /** A frame big enough to have corners worth zooming into. */
+    function widen() {
+      archive.getManifest().camera.resolution = { width: 1000, height: 1000 };
+    }
+
+    const viewerOf = (el: RREditorView) => el.shadowRoot!.querySelector('rr-viewer')!;
+    const zoomOf = (el: RREditorView) => viewerOf(el).zoom;
+    const fitControl = (el: RREditorView) => el.shadowRoot!.querySelector('.fit-control');
+
+    /** What `rr-viewer` reports once it has a laid-out box to measure. */
+    async function reportViewport(el: RREditorView, size: { width: number; height: number }) {
+      viewerOf(el).dispatchEvent(
+        new CustomEvent('rr-viewport', { detail: size, bubbles: true, composed: true })
+      );
+      await el.updateComplete;
+    }
+
+    /**
+     * A drag whose pointer is reported on the glass as well as on the image.
+     *
+     * At one image pixel per screen pixel the two are the same number, which is
+     * the simplest honest stand-in for an unzoomed viewport — and a pan is the
+     * one gesture that reads the screen pair.
+     */
+    async function viewDrag(
+      el: RREditorView,
+      path: readonly Point[],
+      { shiftKey = false }: { shiftKey?: boolean } = {}
+    ) {
+      const options = (point: Point) => ({ shiftKey, client: { x: point.x, y: point.y } });
+      gesture(el, 'rr-pointer-down', path[0], 1, options(path[0]));
+      for (const point of path.slice(1)) {
+        gesture(el, 'rr-pointer-move', point, 1, options(point));
+      }
+      gesture(el, 'rr-pointer-up', path[path.length - 1], 1, options(path[path.length - 1]));
+      await flush();
+      await el.updateComplete;
+    }
+
+    /** Zooms to a rect by drawing it, which is the only way the editor zooms. */
+    async function zoomTo(el: RREditorView, rect: Rect) {
+      await viewDrag(el, [
+        { x: rect.x, y: rect.y },
+        { x: rect.x + rect.width, y: rect.y + rect.height },
+      ]);
+    }
+
+    /** Escape as the browser delivers it: on the focused element, bubbling. */
+    async function pressEscape(el: RREditorView) {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })
+      );
+      await el.updateComplete;
+    }
+
+    it('is unzoomed until a gesture zooms it', async () => {
+      widen();
+      const el = await mount();
+      expect(zoomOf(el)).to.be.null;
+      expect(fitControl(el)).to.not.exist;
+    });
+
+    it('zooms to the rectangle a drag draws on empty image', async () => {
+      widen();
+      const el = await mount();
+
+      await viewDrag(el, [
+        { x: 100, y: 100 },
+        { x: 400, y: 300 },
+      ]);
+
+      expect(zoomOf(el)).to.deep.equal({ x: 100, y: 100, width: 300, height: 200 });
+    });
+
+    it('draws the band while the drag is in flight, and takes it away after', async () => {
+      widen();
+      const el = await mount();
+
+      gesture(el, 'rr-pointer-down', { x: 100, y: 100 }, 1);
+      gesture(el, 'rr-pointer-move', { x: 400, y: 300 }, 1);
+      await el.updateComplete;
+      expect(viewerOf(el).zoomPreview).to.deep.equal({ x: 100, y: 100, width: 300, height: 200 });
+
+      gesture(el, 'rr-pointer-up', { x: 400, y: 300 }, 1);
+      await flush();
+      await el.updateComplete;
+      expect(viewerOf(el).zoomPreview).to.be.null;
+    });
+
+    it('caps a few-pixel drag at one frame pixel per grab radius', async () => {
+      widen();
+      const el = await mount();
+      await reportViewport(el, { width: 700, height: 700 });
+
+      await viewDrag(el, [
+        { x: 500, y: 500 },
+        { x: 506, y: 506 },
+      ]);
+
+      // 700 screen px over 14 per frame px: 50 frame px, not six.
+      expect(zoomOf(el)!.width).to.be.closeTo(50, 1e-9);
+      expect(zoomOf(el)!.height).to.be.closeTo(50, 1e-9);
+    });
+
+    it('zooms on a Shift-drag that begins on an object, and moves nothing', async () => {
+      widen();
+      archive.getManifest().layout.calibration.points = [
+        { px: { x: 100, y: 100 }, world: { x: 0, y: 0, z: 0 } },
+      ];
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mount(history);
+
+      await viewDrag(
+        el,
+        [
+          { x: 100, y: 100 },
+          { x: 400, y: 400 },
+        ],
+        { shiftKey: true }
+      );
+
+      expect(zoomOf(el)).to.deep.equal({ x: 100, y: 100, width: 300, height: 300 });
+      expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+      expect(history.size).to.equal(0);
+    });
+
+    it('pans while zoomed, against the pointer and clamped to the frame', async () => {
+      widen();
+      const el = await mount();
+      await zoomTo(el, { x: 400, y: 400, width: 200, height: 200 });
+
+      await viewDrag(el, [
+        { x: 500, y: 500 },
+        { x: 600, y: 520 },
+      ]);
+      // The photograph follows the finger, so the region shown moves the other
+      // way — and stays the same size.
+      expect(zoomOf(el)).to.deep.equal({ x: 300, y: 380, width: 200, height: 200 });
+
+      await viewDrag(el, [
+        { x: 500, y: 500 },
+        { x: 1500, y: 500 },
+      ]);
+      expect(zoomOf(el)!.x).to.equal(0);
+    });
+
+    it('converts a pan through the ratio the viewer reports', async () => {
+      // Every other test here runs at one frame pixel per screen pixel, where
+      // the conversion is invisible. Zoomed **out** — two frame pixels per
+      // screen pixel — the same travel on the glass has to move the view twice
+      // as far across the photograph.
+      widen();
+      const el = await mount();
+      await zoomTo(el, { x: 400, y: 400, width: 200, height: 200 });
+
+      const client = (x: number) => ({ shiftKey: false, client: { x, y: 500 } });
+      gesture(el, 'rr-pointer-down', { x: 500, y: 500 }, 2, client(500));
+      gesture(el, 'rr-pointer-move', { x: 560, y: 500 }, 2, client(550));
+      gesture(el, 'rr-pointer-up', { x: 560, y: 500 }, 2, client(550));
+      await flush();
+      await el.updateComplete;
+
+      // 50 screen px of travel, 100 frame px of view.
+      expect(zoomOf(el)!.x).to.equal(300);
+    });
+
+    it('grabs a handle at the same screen distance at every zoom', async () => {
+      // The tolerance the viewer reports is what makes this true, and nothing
+      // in the hit-test changed for zoom: 20 frame pixels away is a hit at two
+      // frame pixels per screen pixel (10 screen px, inside the 14 px radius)
+      // and a miss at one half (40 screen px, outside it).
+      widen();
+      archive.getManifest().layout.calibration.points = [
+        { px: { x: 100, y: 100 }, world: { x: 0, y: 0, z: 0 } },
+      ];
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mount(history);
+
+      const drag = async (ratio: number) => {
+        gesture(el, 'rr-pointer-down', { x: 120, y: 100 }, ratio);
+        gesture(el, 'rr-pointer-move', { x: 220, y: 100 }, ratio);
+        gesture(el, 'rr-pointer-up', { x: 220, y: 100 }, ratio);
+        await flush();
+        await el.updateComplete;
+      };
+
+      await drag(0.5);
+      expect(points()[0].px).to.deep.equal({ x: 100, y: 100 });
+      expect(history.size).to.equal(0);
+
+      await drag(2);
+      expect(points()[0].px).to.deep.equal({ x: 200, y: 100 });
+      expect(history.size).to.equal(1);
+    });
+
+    it('still moves an object a drag begins on, at any zoom, as one entry', async () => {
+      widen();
+      archive.getManifest().layout.calibration.points = [
+        { px: { x: 100, y: 100 }, world: { x: 0, y: 0, z: 0 } },
+      ];
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mount(history);
+      await zoomTo(el, { x: 0, y: 0, width: 300, height: 300 });
+
+      await viewDrag(el, [
+        { x: 100, y: 100 },
+        { x: 140, y: 130 },
+      ]);
+
+      expect(points()[0].px).to.deep.equal({ x: 140, y: 130 });
+      expect(history.size).to.equal(1);
+      // The drag moved the point, not the view.
+      expect(zoomOf(el)).to.deep.equal({ x: 0, y: 0, width: 300, height: 300 });
+    });
+
+    it('records nothing for a zoom, a pan or a fit', async () => {
+      widen();
+      const history = new EditHistory();
+      history.attach(archive);
+      const el = await mount(history);
+
+      await zoomTo(el, { x: 400, y: 400, width: 200, height: 200 });
+      await viewDrag(el, [
+        { x: 500, y: 500 },
+        { x: 550, y: 550 },
+      ]);
+      await pressEscape(el);
+
+      expect(history.size).to.equal(0);
+      expect(history.canUndo).to.be.false;
+    });
+
+    it('offers the fit control only while zoomed, and fits when it is used', async () => {
+      widen();
+      const el = await mount();
+      await zoomTo(el, { x: 400, y: 400, width: 200, height: 200 });
+      expect(fitControl(el)).to.exist;
+
+      (fitControl(el) as HTMLElement).click();
+      await el.updateComplete;
+
+      expect(zoomOf(el)).to.be.null;
+      expect(fitControl(el)).to.not.exist;
+    });
+
+    it('fits on Escape', async () => {
+      widen();
+      const el = await mount();
+      await zoomTo(el, { x: 400, y: 400, width: 200, height: 200 });
+
+      await pressEscape(el);
+
+      expect(zoomOf(el)).to.be.null;
+    });
+
+    it('leaves the zoom alone when Escape closes a context menu', async () => {
+      // The menu swallows its own dismissing keystroke, exactly as it swallows
+      // the dismissing press: one Escape closes one thing.
+      widen();
+      archive.getManifest().layout.sensors = [{ id: 'sensor-a', x: 500, y: 500 }];
+      const el = await mount();
+      await zoomTo(el, { x: 400, y: 400, width: 200, height: 200 });
+      await rightClickAt(el, { x: 500, y: 500 });
+      expect(menuOf(el).open).to.be.true;
+
+      await pressEscape(el);
+
+      expect(menuOf(el).open).to.be.false;
+      expect(zoomOf(el)).to.deep.equal({ x: 400, y: 400, width: 200, height: 200 });
+    });
+
+    it('keeps the zoom across an image change and drops it for a new archive', async () => {
+      widen();
+      archive.getManifest().images.push({
+        filename: 'img2.jpg',
+        labeled_complete: false,
+        labels: [],
+      });
+      const el = await mount();
+      await zoomTo(el, { x: 400, y: 400, width: 200, height: 200 });
+
+      el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
+        new CustomEvent('rr-image-select', { detail: { index: 1 }, bubbles: true, composed: true })
+      );
+      await el.updateComplete;
+      // The rect is in the per-layout authored frame, so it names the same
+      // region on every image of the archive.
+      expect(zoomOf(el)).to.deep.equal({ x: 400, y: 400, width: 200, height: 200 });
+
+      const fresh = new R49Archive();
+      fresh.setManifest({
+        version: 4,
+        layout: { name: 'Other', scale: 'N', calibration: { points: [] }, sensors: [] },
+        camera: { resolution: { width: 1000, height: 1000 } },
+        images: [],
+      });
+      vi.spyOn(fresh, 'getImage').mockResolvedValue(new Uint8Array());
+      el.archive = fresh;
+      await el.updateComplete;
+
+      expect(zoomOf(el)).to.be.null;
+    });
+
+    it('lets a chain survive a zoom', async () => {
+      // The case zoom earns its keep on: chaining a consist while aiming at
+      // couplers. Zoom writes nothing and changes no geometry, so the anchor
+      // is still there afterwards.
+      widen();
+      calibrate();
+      const el = await mount();
+      await selectTool(el, 'car');
+
+      await clickAt(el, { x: 100, y: 100 });
+      await zoomTo(el, { x: 50, y: 50, width: 300, height: 300 });
+      await clickAt(el, { x: 300, y: 100 });
+
+      const labels = archive.getManifest().images[0].labels;
+      expect(labels).to.have.length(1);
+      expect(labels[0].p0).to.deep.equal({ x: 100, y: 100 });
+      expect(labels[0].p1).to.deep.equal({ x: 300, y: 100 });
+      expect(zoomOf(el)).to.deep.equal({ x: 50, y: 50, width: 300, height: 300 });
+    });
+
+    describe('a reveal under zoom', () => {
+      const car = (id: string, x: number, width: number): CarLabel => ({
+        id,
+        class: 'stock',
+        provenance: 'human',
+        p0: { x, y: 100 },
+        p1: { x: x + width, y: 100 },
+      });
+
+      it('pans to what an undo changed, keeping the zoom level', async () => {
+        widen();
+        archive.getManifest().images[0].labels = [car('car-a', 100, 40)];
+        const el = await mount();
+        await zoomTo(el, { x: 700, y: 700, width: 200, height: 200 });
+
+        await el.syncFromArchive('img1.jpg', [{ kind: 'car', id: 'car-a' }]);
+        await el.updateComplete;
+
+        // Centred on the car, at the same 200x200, clamped to the frame.
+        expect(zoomOf(el)).to.deep.equal({ x: 20, y: 0, width: 200, height: 200 });
+      });
+
+      it('leaves the zoom alone when what changed is already on screen', async () => {
+        widen();
+        archive.getManifest().images[0].labels = [car('car-a', 720, 40)];
+        const el = await mount();
+        await zoomTo(el, { x: 700, y: 50, width: 200, height: 200 });
+
+        await el.syncFromArchive('img1.jpg', [{ kind: 'car', id: 'car-a' }]);
+        await el.updateComplete;
+
+        expect(zoomOf(el)).to.deep.equal({ x: 700, y: 50, width: 200, height: 200 });
+      });
+
+      it('gives the zoom up when what changed does not fit at this level', async () => {
+        widen();
+        archive.getManifest().images[0].labels = [car('car-a', 50, 900)];
+        const el = await mount();
+        await zoomTo(el, { x: 700, y: 700, width: 200, height: 200 });
+
+        await el.syncFromArchive('img1.jpg', [{ kind: 'car', id: 'car-a' }]);
+        await el.updateComplete;
+
+        expect(zoomOf(el)).to.be.null;
+      });
+
+      it('moves the view no more than it lights anything, for an undone add', async () => {
+        widen();
+        const el = await mount();
+        await zoomTo(el, { x: 700, y: 700, width: 200, height: 200 });
+
+        await el.syncFromArchive('img1.jpg', [{ kind: 'car', id: 'gone' }]);
+        await el.updateComplete;
+
+        expect(zoomOf(el)).to.deep.equal({ x: 700, y: 700, width: 200, height: 200 });
       });
     });
   });

@@ -257,6 +257,26 @@ The same component backs the editor (`src` → `<img>`) and the live view (`stre
   never writing it. Cars draw **first**: their rectangles are the overlay's only area fills, and a
   point or sensor on a car must not be tinted over.
 
+### Zoom is one transform above the overlay (#44)
+
+* `rr-editor-view` owns a nullable **rect of the authored frame**; `rr-viewer` applies it to a layer
+  carrying the media **and** the SVG. That placement is the whole feature: two children of one
+  transformed box stay one box by construction (#41), and because `getScreenCTM()` walks up through
+  it, `imagePxPerScreenPx` and `symbolSize` are zoom-aware with **no arithmetic changed anywhere** —
+  annotations stay 36 screen px, cars stay 2.09 track widths, the grab radius stays 14 screen px.
+  `hitTest`, `carUnderPointer`, `carCovering`, `dragHandles`, `dragTo` and `isClick` needed no edit,
+  and a zoom implemented by moving the viewBox and transforming the media separately would undo #41.
+* **`null` is fit** — the absence of a zoom, not a rect covering the frame. Zoom is **view state**:
+  it records nothing, `SPEC.md` § Undo and redo already names it among what undo does not restore,
+  and it survives an image change and a live chain. New and Open drop it.
+* The rect→transform, the pan clamp, the cap and the reveal decision are pure and live in
+  `geometry.ts`; jsdom can prove all of them and **cannot** prove the transform lands on screen —
+  `tests/rr-viewer.test.ts` stubs the CTM, so a viewer test shows the property was applied and
+  nothing more. Do not describe a test here as visual verification.
+* A **pan is measured on the glass** (`originalEvent.clientX/Y`), the one gesture in the editor that
+  is: panning moves the transform image coordinates are reported through, so a delta taken from them
+  would measure the pan's own effect.
+
 ### `geometry.ts` holds the arithmetic, because a component cannot be tested
 
 jsdom does not lay out or paint, so anything left inside a Lit element is untestable until
@@ -400,8 +420,11 @@ those rather than hardcoding new colors.
   construction, loosely typed manifest reads) are debt, not precedent — don't add more, and prefer a
   narrow local interface or a type guard over widening.
 * Styles belong in the component's `static styles`. Inline `style=` attributes survive in
-  `rr-live-view` and `rr-settings-dialog`; new code doesn't add to them. Shoelace
-  part/custom-property overrides (`style="--width: 500px"`) are the accepted exception.
+  `rr-live-view` and `rr-settings-dialog`; new code doesn't add to them. **Custom properties** are
+  the accepted exception, in both directions: Shoelace part overrides (`style="--width: 500px"`),
+  and a value a component can only compute at render time (`rr-viewer`'s zoom transform, whose
+  *rule* stays in `static styles` and whose three numbers are written as `--zoom-*`). A rule written
+  inline is still a rule in the wrong place.
 * Compose from small elements. All custom elements are `rr-<noun>[-<qualifier>]`; non-element modules
   use plain camelCase filenames (`marker.ts`, `capture.ts`). Add the `HTMLElementTagNameMap`
   declaration block at the bottom of every element file.

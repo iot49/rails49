@@ -793,3 +793,306 @@ function coincidentEnds(cars: readonly CarLabel[], at: Point): CarEnd[] {
   }
   return ends;
 }
+
+/**
+ * A rectangle in **authored-frame** pixels — the region of the photograph the
+ * editor is zoomed into (#44).
+ *
+ * The frame rather than the image's own pixels, like every other coordinate the
+ * editor holds (`SPEC.md` § Output encoding): a zoom is per **layout**, and the
+ * images of one archive need not all be the same pixel size, so a rect in an
+ * image's own grid would name a different region on the next frame.
+ *
+ * Distinct from {@link Size} and {@link FrameSize}, which measure a thing and
+ * not a place.
+ */
+export interface Rect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * The tightest zoom the format can record: one authored-frame pixel across
+ * {@link DEFAULT_GRAB_RADIUS_SCREEN_PX} screen pixels.
+ *
+ * **Derived, not chosen.** Coordinates are stored as whole pixels — the click
+ * path rounds, and so does {@link dragTo} — so once one stored pixel is about a
+ * fingertip wide, further zoom buys precision the manifest cannot hold. Reusing
+ * the grab radius rather than introducing a constant is the point: the two
+ * numbers answer the same question, "how big is the thing doing the pointing".
+ *
+ * It is also what disposes of the accidental two-pixel drag, with no second
+ * threshold: a rect a few pixels across is grown to this scale instead of
+ * landing at 200×.
+ */
+export const MAX_ZOOM_SCREEN_PX_PER_FRAME_PX = DEFAULT_GRAB_RADIUS_SCREEN_PX;
+
+/** The rectangle two corners describe, in either order and either direction. */
+export function rectBetween(a: Point, b: Point): Rect {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    width: Math.abs(b.x - a.x),
+    height: Math.abs(b.y - a.y),
+  };
+}
+
+/**
+ * Grows `rect` about its centre until zooming to it would not exceed
+ * {@link MAX_ZOOM_SCREEN_PX_PER_FRAME_PX}.
+ *
+ * The rect is fitted into the viewport by the **meet** rule, so the scale it
+ * produces is the *smaller* of the two axis ratios — which is why the growth
+ * factor is the smaller of the two shortfalls: the axis that reaches its
+ * minimum first is the one that governs what is on screen.
+ *
+ * Both axes grow by the same factor, so the rect keeps its shape and the region
+ * the user drew stays centred in what they get.
+ *
+ * An unmeasured viewport — jsdom, a pane that has never laid out — caps
+ * nothing: there is no screen to be too close to.
+ */
+export function capZoomRect(rect: Rect, viewport: Size): Rect {
+  if (viewport.width <= 0 || viewport.height <= 0) return rect;
+
+  const minWidth = viewport.width / MAX_ZOOM_SCREEN_PX_PER_FRAME_PX;
+  const minHeight = viewport.height / MAX_ZOOM_SCREEN_PX_PER_FRAME_PX;
+  // A rect with no area at all has no shape to keep, so it becomes the smallest
+  // rect the cap allows. It arrives only from a drag that never moved, which
+  // the click slop already answers — this is the floor under that, not a case
+  // the editor produces.
+  if (rect.width <= 0 && rect.height <= 0) {
+    return {
+      x: rect.x - minWidth / 2,
+      y: rect.y - minHeight / 2,
+      width: minWidth,
+      height: minHeight,
+    };
+  }
+
+  const factor = Math.min(
+    rect.width > 0 ? minWidth / rect.width : Infinity,
+    rect.height > 0 ? minHeight / rect.height : Infinity
+  );
+  if (factor <= 1) return rect;
+
+  const width = rect.width * factor;
+  const height = rect.height * factor;
+  return {
+    x: rect.x + (rect.width - width) / 2,
+    y: rect.y + (rect.height - height) / 2,
+    width,
+    height,
+  };
+}
+
+/**
+ * Moves `rect` so it sits inside the frame, keeping its size.
+ *
+ * The same rule {@link clampToViewport} sets, one frame along: a rect smaller
+ * than the image is kept inside it, and a rect larger than the image is
+ * **centred** rather than pushed off the opposite edge. That is what stops a
+ * pan from walking the photograph out of the viewport entirely.
+ */
+export function clampZoomRect(rect: Rect, frame: FrameSize): Rect {
+  return {
+    ...rect,
+    x: clampZoomAxis(rect.x, rect.width, frame.width),
+    y: clampZoomAxis(rect.y, rect.height, frame.height),
+  };
+}
+
+/** One axis of {@link clampZoomRect}: inside where it fits, centred where not. */
+function clampZoomAxis(position: number, size: number, extent: number): number {
+  if (size >= extent) return (extent - size) / 2;
+  return Math.max(0, Math.min(position, extent - size));
+}
+
+/**
+ * The zoom a drag from `from` to `to` asks for, or `null` when it asks for the
+ * unzoomed view.
+ *
+ * Capped before it is clamped, because the cap changes the size and the clamp
+ * answers where a rect of that size can sit.
+ *
+ * **A rect that spans the frame on *either* axis is `null`**, not a rect: fit is
+ * the absence of a zoom (`rr-viewer` then draws exactly what it drew before zoom
+ * existed), and the meet rule takes the *smaller* of the two axis ratios — so a
+ * rect as wide as the photograph and only a little tall is already fitted by its
+ * width, and one **wider** than the photograph would be scaled *down*, showing
+ * less than fit. A drag can produce either: the overlay covers the letterbox
+ * bars and `rr-viewer` captures the pointer, so a rect may legitimately run off
+ * both edges. Either axis, therefore, and not both: what is left is strictly
+ * inside the frame on both axes, which is the invariant that keeps every zoom at
+ * least as close as fit.
+ */
+export function zoomRectFromDrag(
+  from: Point,
+  to: Point,
+  frame: FrameSize,
+  viewport: Size
+): Rect | null {
+  const capped = capZoomRect(rectBetween(from, to), viewport);
+  if (capped.width >= frame.width || capped.height >= frame.height) return null;
+  return clampZoomRect(capped, frame);
+}
+
+/**
+ * Where a pan puts the zoom rect: the pointer's travel, applied to the rect the
+ * gesture started on.
+ *
+ * `delta` is how far the **pointer** has moved since the press, in frame pixels,
+ * so the rect moves the opposite way — the photograph follows the finger, which
+ * is the only direction a drag on an image can mean.
+ *
+ * Measured from the press and applied to the starting rect for the same reason
+ * {@link dragTo} is: accumulating per-event deltas drifts, and re-reading the
+ * live rect would feed the transform its own output.
+ */
+export function panZoomRect(from: Rect, delta: Point, frame: FrameSize): Rect {
+  return clampZoomRect({ ...from, x: from.x - delta.x, y: from.y - delta.y }, frame);
+}
+
+/**
+ * The CSS transform that puts a zoom rect on screen: `translate(x, y)` then
+ * `scale(scale)`, about an origin at the top-left of the viewport.
+ *
+ * In **screen** pixels, because it is applied to the layer that carries the
+ * media and the overlay together — which is the whole mechanism (#44). One
+ * transform above both keeps them one box by construction, exactly as #41 left
+ * them, and it is what makes every screen-pixel tolerance in this file
+ * zoom-aware without a line of arithmetic changing: `getScreenCTM` walks up
+ * through it, so `imagePxPerScreenPx` already knows.
+ */
+export interface ZoomTransform {
+  readonly scale: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+/** No zoom: what the viewer renders when `zoom` is null, and the fit view. */
+const IDENTITY_ZOOM: ZoomTransform = { scale: 1, x: 0, y: 0 };
+
+/**
+ * The transform for `zoom`, or the identity when there is none to apply.
+ *
+ * Composed of the two mappings that already exist rather than a third one: the
+ * media letterboxes into the viewport by **meet** (`object-fit: contain`, and
+ * `preserveAspectRatio="xMidYMid meet"` over the same box), and the authored
+ * frame covers that box through {@link overlayFit}'s scale. So a frame rect
+ * becomes a viewport rect, and the transform is what fits *that* into the
+ * viewport — again by meet, so a rect whose aspect ratio differs from the
+ * viewport's shows **more** than was asked for on one axis and never less.
+ *
+ * `media` is passed rather than assumed equal to `frame` because the two can
+ * disagree in shape, and it is the media that decides where the letterbox is.
+ * The identity is returned wherever there is nothing to compute from — no zoom,
+ * an unmeasured viewport, a frame with no extent — so a caller can apply the
+ * result unconditionally.
+ */
+export function zoomTransform(
+  zoom: Rect | null,
+  media: FrameSize | null,
+  frame: FrameSize,
+  viewport: Size
+): ZoomTransform {
+  if (!zoom) return IDENTITY_ZOOM;
+  if (viewport.width <= 0 || viewport.height <= 0) return IDENTITY_ZOOM;
+  if (frame.width <= 0 || frame.height <= 0) return IDENTITY_ZOOM;
+
+  // Where the photograph sits inside the viewport, letterbox bars excluded.
+  const content = media && media.width > 0 && media.height > 0 ? media : frame;
+  const fit = Math.min(viewport.width / content.width, viewport.height / content.height);
+  const boxWidth = content.width * fit;
+  const boxHeight = content.height * fit;
+  const boxX = (viewport.width - boxWidth) / 2;
+  const boxY = (viewport.height - boxHeight) / 2;
+
+  // The rect, in the viewport's own pixels. The authored frame covers the
+  // photograph's box whatever its own shape — that is `overlayFit`'s stretch,
+  // and dividing by the frame is the same scale read the other way round.
+  const x = boxX + (zoom.x / frame.width) * boxWidth;
+  const y = boxY + (zoom.y / frame.height) * boxHeight;
+  const width = (zoom.width / frame.width) * boxWidth;
+  const height = (zoom.height / frame.height) * boxHeight;
+
+  const scale = Math.min(
+    width > 0 ? viewport.width / width : Infinity,
+    height > 0 ? viewport.height / height : Infinity
+  );
+  if (!Number.isFinite(scale) || scale <= 0) return IDENTITY_ZOOM;
+
+  return {
+    scale,
+    x: viewport.width / 2 - scale * (x + width / 2),
+    y: viewport.height / 2 - scale * (y + height / 2),
+  };
+}
+
+/**
+ * The smallest rectangle covering every point, or `null` for none.
+ *
+ * A zero-area rect for a single point is the right answer rather than a
+ * degenerate one: it is a place, and the reveal rule below asks only whether it
+ * fits inside the current zoom.
+ */
+export function boundsOfPoints(points: readonly Point[]): Rect | null {
+  if (points.length === 0) return null;
+  let minX = points[0].x;
+  let maxX = points[0].x;
+  let minY = points[0].y;
+  let maxY = points[0].y;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Where the zoom must be for a reveal to be visible: unchanged, panned, or gone.
+ *
+ * The navigation invariant, under zoom (`SPEC.md` § Undo and redo): *undo may
+ * move the user; it may never change something they cannot see*. Selecting the
+ * entry's image covers the case where the change is on another frame; this
+ * covers the one that only exists once the view can be a corner of a frame —
+ * zoomed into one corner, undoing an edit in another corner of the **same**
+ * image.
+ *
+ * Three answers, in order:
+ *
+ * * Already inside the rect, or no zoom at all: **unchanged**. An undo that
+ *   changes what the user is looking at must not move them as well.
+ * * Fits at this zoom level: **panned** to centre it, then clamped like any
+ *   other pan. Keeping the level is what makes zoom worth persisting — a zoom
+ *   that survives nineteen image changes and dies on every undo is not persistent.
+ * * Does not fit: **`null`**, the unzoomed view, which shows everything.
+ */
+export function revealZoom(zoom: Rect | null, bounds: Rect | null, frame: FrameSize): Rect | null {
+  if (zoom === null || bounds === null) return zoom;
+  if (rectContains(zoom, bounds)) return zoom;
+  if (bounds.width > zoom.width || bounds.height > zoom.height) return null;
+
+  return clampZoomRect(
+    {
+      ...zoom,
+      x: bounds.x + bounds.width / 2 - zoom.width / 2,
+      y: bounds.y + bounds.height / 2 - zoom.height / 2,
+    },
+    frame
+  );
+}
+
+/** Whether `inner` lies wholly within `outer`, boundary included. */
+function rectContains(outer: Rect, inner: Rect): boolean {
+  return (
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
+}

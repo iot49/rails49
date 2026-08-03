@@ -1,4 +1,5 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, svg } from 'lit';
+import type { SVGTemplateResult } from 'lit';
 import { customElement, property, state, query } from 'lit/decorators.js';
 import { renderMarker, markerDefs, markerStyles } from './marker.js';
 import type { MarkerData } from './marker.js';
@@ -7,8 +8,15 @@ import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
 import type { SensorSymbolSize } from './sensorMarker.js';
 import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from './carMarker.js';
 import type { CarSymbolSize, CarWarning, PendingCar } from './carMarker.js';
-import { coupledEnds, couplerPoints, overlayFit, sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
-import type { FrameSize } from './geometry.js';
+import {
+  coupledEnds,
+  couplerPoints,
+  overlayFit,
+  sensorDiameterPx,
+  zoomTransform,
+  SYMBOL_SIZE_SCREEN_PX,
+} from './geometry.js';
+import type { FrameSize, Rect, Size } from './geometry.js';
 import { highlightStyles } from './highlight.js';
 import { isKnownClass } from './vocabulary.js';
 import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
@@ -30,6 +38,30 @@ export const viewerStyles = css`
     align-items: center;
     justify-content: center;
     background: #000;
+    /* The zoom layer inside is transformed, so it grows past this box. The
+       host clips too; saying it here keeps the clip beside the thing clipped. */
+    overflow: hidden;
+  }
+
+  .zoom-layer {
+    /* One transform, above **both** the media and the overlay (#44).
+       That is the whole mechanism: two children of one transformed box stay
+       one box by construction, exactly as #41 left them, and getScreenCTM
+       walks up through this — so every screen-pixel tolerance and every
+       world-pixel size downstream is already zoom-aware.
+
+       The three custom properties are written per render because the
+       transform is computed from a measurement (geometry.ts, zoomTransform);
+       the rule itself stays here with the rest of the CSS. Unzoomed they
+       default to the identity, which is exactly what this element rendered
+       before zoom existed. */
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transform-origin: 0 0;
+    transform: translate(var(--zoom-x, 0px), var(--zoom-y, 0px)) scale(var(--zoom-scale, 1));
   }
 
   img, video {
@@ -70,6 +102,18 @@ export const viewerStyles = css`
     user-select: none;
     touch-action: none;
   }
+
+  /* The zoom rect in flight. Drawn in the overlay rather than as an HTML box on
+     the glass: an HTML band would need its own image-to-screen mapping, which
+     is the hand-rolled arithmetic this component exists to avoid, in a second
+     box that would then have to be kept aligned with the first (#41). Its
+     stroke is set per render from symbolSize, so it is screen-constant like
+     every other annotation. */
+  .zoom-band {
+    fill: none;
+    stroke: #fff;
+    pointer-events: none;
+  }
 `;
 
 /**
@@ -92,6 +136,17 @@ const LABEL_SIZE_RATIO = 0.42;
  * (`carMarker.ts` § `renderCoupler`) rather than two of these.
  */
 const CAR_HANDLE_SIZE_RATIO = 0.3;
+
+/**
+ * Stroke width of the zoom band in flight, as a fraction of the
+ * screen-constant symbol size.
+ *
+ * A screen size for the same reason a crosshair is one: the band annotates the
+ * photograph rather than measuring it, and a stroke in image pixels would be
+ * invisible on a large frame and a slab on a small one. The dashes are derived
+ * from it, so the whole band scales as one thing.
+ */
+const ZOOM_BAND_STROKE_RATIO = 0.06;
 
 /**
  * A pointer gesture, in **image pixel coordinates**.
@@ -171,6 +226,25 @@ export interface ViewerHighlight {
   readonly calibration: readonly number[];
 }
 
+/**
+ * How big the viewport is, in **screen** pixels — the box the media
+ * letterboxes into (#44).
+ *
+ * Emitted because only the viewer measures it, and the editor needs it for the
+ * one piece of zoom arithmetic that is about the screen rather than the
+ * photograph: the cap on how far a rect may zoom in, which is stated as
+ * screen pixels per authored-frame pixel (`geometry.ts` §
+ * `MAX_ZOOM_SCREEN_PX_PER_FRAME_PX`).
+ *
+ * A separate event rather than a field on every pointer detail: it changes when
+ * the window does, not when the pointer does, and `rr-media-frame` already
+ * establishes the shape for "something the viewer alone can see".
+ */
+export interface ViewerViewportDetail {
+  readonly width: number;
+  readonly height: number;
+}
+
 /** A right-click, in image pixel coordinates. Same shape, coarser event. */
 export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'originalEvent'> {
   /**
@@ -212,8 +286,16 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * says so from `rr-media-frame`, and a symbol that looked right would argue the
  * opposite. It cannot arise from resizing the window, which is what #41 was.
  *
+ * **Zoom is one transform above both children** (#44). `zoom` is a rect of the
+ * authored frame — `null` for the whole of it — applied to a layer carrying the
+ * media *and* the overlay, so they remain one box by construction rather than
+ * by two transforms being kept in sync. Because `getScreenCTM` walks up through
+ * that layer, `imagePxPerScreenPx` and `symbolSize` become zoom-aware with no
+ * arithmetic changed anywhere: annotations stay a constant **screen** size,
+ * objects stay a constant **world** size, and a grab radius stays a fingertip.
+ *
  * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `sensors`,
- * `cars`, `pendingCar`, `dpt`, `resolution`.
+ * `cars`, `pendingCar`, `highlight`, `zoom`, `zoomPreview`, `dpt`, `resolution`.
  *
  * @fires rr-pointer-down - Pointer pressed. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-move - Pointer moved. Detail: {@link ViewerPointerDetail}
@@ -221,6 +303,7 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * @fires rr-pointer-cancel - Gesture abandoned by the browser. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-contextmenu - Right-click. Detail: {@link ViewerContextMenuDetail}
  * @fires rr-media-frame - Media loaded, with its size against the archive's. Detail: {@link ViewerMediaFrameDetail}
+ * @fires rr-viewport - The viewport was measured at a new size. Detail: {@link ViewerViewportDetail}
  */
 @customElement('rr-viewer')
 export class RrViewer extends LitElement {
@@ -301,6 +384,36 @@ export class RrViewer extends LitElement {
    * away again on a timer. `null` in the live view, which has no history.
    */
   @property({ attribute: false }) highlight: ViewerHighlight | null = null;
+  /**
+   * The region of the authored frame on screen, or `null` for the whole of it
+   * (#44).
+   *
+   * Transient view state like `pendingCar` and `highlight`: the editor owns it,
+   * nothing about it is in the manifest, and it never enters the history
+   * (`SPEC.md` § Undo and redo names zoom explicitly). **`null` is fit** —
+   * literally the absence of a zoom, which is exactly what this element
+   * rendered before the property existed, rather than a rect computed from the
+   * frame.
+   *
+   * In **authored-frame** pixels, so one rect stays meaningful across every
+   * image of an archive even where the images differ in pixel size. It is
+   * applied as one transform above the media *and* the overlay, so the two
+   * stay one box and every screen-pixel tolerance downstream stays correct
+   * with no arithmetic changed.
+   *
+   * `null` in the live view, which sets no zoom: the capability is free there
+   * because it is a property here, but nothing wires a control to it (#44).
+   */
+  @property({ attribute: false }) zoom: Rect | null = null;
+  /**
+   * The zoom rect being dragged out, or `null` when none is.
+   *
+   * The band, and the zoom's counterpart to `pendingCar`: the editor decides
+   * what the gesture means and this element draws the feedback. Drawn in the
+   * overlay with a screen-constant stroke, in the same frame as everything else
+   * — never as an HTML box positioned in screen coordinates.
+   */
+  @property({ attribute: false }) zoomPreview: Rect | null = null;
   @property({ type: Object }) resolution: FrameSize = { width: 1920, height: 1080 };
 
   /**
@@ -325,7 +438,20 @@ export class RrViewer extends LitElement {
    */
   @state() private mediaSize: FrameSize | null = null;
 
+  /**
+   * The viewport's size in screen pixels, or zeros until it has laid out.
+   *
+   * What the zoom transform is computed against: fitting a rect into a box
+   * needs the box's aspect ratio, and no CSS length expresses that. Zeros are
+   * the honest answer before layout — jsdom, a hidden pane — and
+   * {@link zoomTransform} answers them with the identity rather than a
+   * transform derived from a box that does not exist.
+   */
+  @state() private viewportSize: Size = { width: 0, height: 0 };
+
   @query('svg') private svgElement!: SVGSVGElement;
+  /** The box the media letterboxes into — what {@link viewportSize} measures. */
+  @query('.viewport') private viewportElement!: HTMLElement;
   /**
    * The group the overlay's content lives in — the authored frame, scaled onto
    * the media's pixel grid.
@@ -379,10 +505,12 @@ export class RrViewer extends LitElement {
 
   /**
    * The scale changed, so the measurement did — and no `ResizeObserver` fires
-   * for it. The media's size is not the element's.
+   * for it. The media's size is not the element's, and neither is the **zoom**:
+   * a zoom moves the frame group's transform without the element resizing at
+   * all, and every screen-constant symbol is sized off that transform.
    */
   protected updated(changed: Map<string, unknown>) {
-    if (!changed.has('mediaSize') && !changed.has('resolution')) return;
+    if (!changed.has('mediaSize') && !changed.has('resolution') && !changed.has('zoom')) return;
     // Deferred a frame, exactly as the `ResizeObserver` defers: the new
     // transform is not in the DOM until this update has painted, and measuring
     // it here would both read the old one and schedule a second update out of a
@@ -423,6 +551,11 @@ export class RrViewer extends LitElement {
    * `ui/CLAUDE.md` forbids hand-rolling.
    */
   private measureScale() {
+    // First, and outside the guard below: the viewport has a size well before
+    // there is a media transform to read, and the zoom transform is computed
+    // from it.
+    this.measureViewport();
+
     const ctm = this.frameMatrix();
     // Zero before layout. The previous value is a better answer than one
     // derived from a matrix that has not been laid out.
@@ -432,6 +565,29 @@ export class RrViewer extends LitElement {
     if (this.imagePxPerScreenPx !== ratio) {
       this.imagePxPerScreenPx = ratio;
     }
+  }
+
+  /**
+   * Re-measure the viewport, and say so when it changed.
+   *
+   * Reported as an event because the editor needs the same number for the zoom
+   * cap and cannot measure it — it does not own this element's box. Only a
+   * *change* is announced, so a resize storm costs one event per distinct size
+   * and a browser that lays nothing out (jsdom) announces nothing at all.
+   */
+  private measureViewport() {
+    const rect = this.viewportElement?.getBoundingClientRect?.();
+    if (!rect) return;
+    if (rect.width === this.viewportSize.width && rect.height === this.viewportSize.height) return;
+
+    this.viewportSize = { width: rect.width, height: rect.height };
+    this.dispatchEvent(
+      new CustomEvent<ViewerViewportDetail>('rr-viewport', {
+        detail: this.viewportSize,
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 
   /**
@@ -612,6 +768,26 @@ export class RrViewer extends LitElement {
     return isKnownClass(car.class) ? null : { text: car.class, frame: this.resolution };
   }
 
+  /**
+   * The zoom rect being dragged out, dashed, over everything else.
+   *
+   * Last in the overlay for the same reason the rubber band is last of the car
+   * layer: it is the gesture in flight, and it has to be legible over whatever
+   * it is being drawn across.
+   */
+  private renderZoomBand(rect: Rect): SVGTemplateResult {
+    const stroke = this.symbolSize * ZOOM_BAND_STROKE_RATIO;
+    return svg`<rect
+      class="zoom-band"
+      x=${rect.x}
+      y=${rect.y}
+      width=${rect.width}
+      height=${rect.height}
+      stroke-width=${stroke}
+      stroke-dasharray="${stroke * 3} ${stroke * 2}"
+    />`;
+  }
+
   render() {
     // Derived here rather than passed in: a coupling is exact coincidence
     // between two cars (`geometry.ts` § `couplerPoints`), so it is a property
@@ -626,9 +802,16 @@ export class RrViewer extends LitElement {
     // loads the two are the same and the transform is the identity.
     const viewBoxSize = this.mediaSize ?? this.resolution;
     const fit = overlayFit(this.mediaSize, this.resolution);
+    // One transform for the media and the overlay together, so the two stay one
+    // box (#41) whatever the zoom is (#44). The identity when there is no zoom.
+    const zoom = zoomTransform(this.zoom, this.mediaSize, this.resolution, this.viewportSize);
 
     return html`
       <div class="viewport">
+       <div
+        class="zoom-layer"
+        style="--zoom-x: ${zoom.x}px; --zoom-y: ${zoom.y}px; --zoom-scale: ${zoom.scale}"
+       >
         ${this.src ? html`<img .src=${this.src} @load=${this.onMediaLoad} />` : ''}
         ${this.stream
           ? html`<video
@@ -695,8 +878,12 @@ export class RrViewer extends LitElement {
                 this.highlight?.sensors.includes(s.id) ?? false
               )
             )}
+
+            <!-- The zoom band in flight, over every object it crosses. -->
+            ${this.zoomPreview ? this.renderZoomBand(this.zoomPreview) : ''}
           </g>
         </svg>
+       </div>
       </div>
     `;
   }
@@ -725,5 +912,6 @@ declare global {
     'rr-pointer-cancel': CustomEvent<ViewerPointerDetail>;
     'rr-pointer-contextmenu': CustomEvent<ViewerContextMenuDetail>;
     'rr-media-frame': CustomEvent<ViewerMediaFrameDetail>;
+    'rr-viewport': CustomEvent<ViewerViewportDetail>;
   }
 }

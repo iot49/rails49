@@ -21,8 +21,17 @@ import {
   sensorDiameterPx,
   SYMBOL_SIZE_SCREEN_PX,
   trackWidthPx,
+  boundsOfPoints,
+  capZoomRect,
+  clampZoomRect,
+  panZoomRect,
+  rectBetween,
+  revealZoom,
+  zoomRectFromDrag,
+  zoomTransform,
+  MAX_ZOOM_SCREEN_PX_PER_FRAME_PX,
 } from '../src/geometry.js';
-import type { HitScene, HitTolerance } from '../src/geometry.js';
+import type { HitScene, HitTolerance, Rect } from '../src/geometry.js';
 
 function car(id: string, p0: { x: number; y: number }, p1: { x: number; y: number }): CarLabel {
   return { id, class: 'stock', p0, p1, provenance: 'human' };
@@ -983,6 +992,301 @@ describe('overlayFit', () => {
       sx: 1,
       sy: 1,
       aspectMismatch: false,
+    });
+  });
+});
+
+describe('zoom (#44)', () => {
+  const frame = { width: 1000, height: 1000 };
+  /** A square viewport, so the letterbox is out of the way unless asked for. */
+  const viewport = { width: 800, height: 800 };
+
+  describe('rectBetween', () => {
+    it('is the same rectangle whichever corner the drag started from', () => {
+      const forwards = rectBetween({ x: 10, y: 20 }, { x: 110, y: 220 });
+      const backwards = rectBetween({ x: 110, y: 220 }, { x: 10, y: 20 });
+      expect(forwards).to.deep.equal({ x: 10, y: 20, width: 100, height: 200 });
+      expect(backwards).to.deep.equal(forwards);
+    });
+  });
+
+  describe('capZoomRect', () => {
+    it('leaves a rect that does not reach the cap alone', () => {
+      const rect = { x: 100, y: 100, width: 400, height: 400 };
+      expect(capZoomRect(rect, viewport)).to.deep.equal(rect);
+    });
+
+    it('grows a tiny rect about its centre to exactly the cap', () => {
+      // 800 screen px over 14 px per frame px is 57.14 frame px across.
+      const capped = capZoomRect({ x: 500, y: 500, width: 2, height: 2 }, viewport);
+      const min = 800 / MAX_ZOOM_SCREEN_PX_PER_FRAME_PX;
+      expect(capped.width).to.be.closeTo(min, 1e-9);
+      expect(capped.height).to.be.closeTo(min, 1e-9);
+      // Centred on what was drawn: the gesture named a place, and the cap
+      // changes how much of it is shown, not where.
+      expect(capped.x + capped.width / 2).to.be.closeTo(501, 1e-9);
+      expect(capped.y + capped.height / 2).to.be.closeTo(501, 1e-9);
+    });
+
+    it('keeps the rect square with the cap, so the drawn shape survives', () => {
+      const capped = capZoomRect({ x: 0, y: 0, width: 4, height: 2 }, viewport);
+      expect(capped.width / capped.height).to.be.closeTo(2, 1e-9);
+    });
+
+    it('is governed by the axis that reaches its minimum first', () => {
+      // A tall thin rect: the height already fills the viewport, so the zoom it
+      // produces is nowhere near the cap and nothing needs growing — the meet
+      // rule shows the extra width for free.
+      const rect = { x: 0, y: 0, width: 2, height: 800 };
+      expect(capZoomRect(rect, viewport)).to.deep.equal(rect);
+    });
+
+    it('gives a rect with no area at all the smallest rect the cap allows', () => {
+      const capped = capZoomRect({ x: 100, y: 100, width: 0, height: 0 }, viewport);
+      const min = 800 / MAX_ZOOM_SCREEN_PX_PER_FRAME_PX;
+      expect(capped.width).to.be.closeTo(min, 1e-9);
+      expect(capped.x + capped.width / 2).to.be.closeTo(100, 1e-9);
+      expect(Number.isNaN(capped.width)).to.be.false;
+    });
+
+    it('caps nothing against an unmeasured viewport', () => {
+      // jsdom, or a pane that has never laid out: there is no screen to be too
+      // close to, and inventing one would move a rect for no reason.
+      const rect = { x: 0, y: 0, width: 1, height: 1 };
+      expect(capZoomRect(rect, { width: 0, height: 0 })).to.deep.equal(rect);
+    });
+  });
+
+  describe('clampZoomRect', () => {
+    it('leaves a rect that is already inside alone', () => {
+      const rect = { x: 100, y: 100, width: 200, height: 200 };
+      expect(clampZoomRect(rect, frame)).to.deep.equal(rect);
+    });
+
+    it('pushes a rect back inside the frame, keeping its size', () => {
+      expect(clampZoomRect({ x: 900, y: -50, width: 200, height: 200 }, frame)).to.deep.equal({
+        x: 800,
+        y: 0,
+        width: 200,
+        height: 200,
+      });
+    });
+
+    it('centres a rect larger than the frame rather than pinning it to an edge', () => {
+      // The same rule clampToViewport applies to the context menu: pinned, not
+      // pushed off the opposite side.
+      expect(clampZoomRect({ x: 0, y: 0, width: 1200, height: 1200 }, frame)).to.deep.equal({
+        x: -100,
+        y: -100,
+        width: 1200,
+        height: 1200,
+      });
+    });
+  });
+
+  describe('zoomRectFromDrag', () => {
+    it('is the dragged rectangle when it is neither too small nor off the frame', () => {
+      expect(zoomRectFromDrag({ x: 300, y: 200 }, { x: 100, y: 600 }, frame, viewport)).to.deep.equal(
+        { x: 100, y: 200, width: 200, height: 400 }
+      );
+    });
+
+    it('caps an accidental few-pixel drag instead of zooming to 200x', () => {
+      const rect = zoomRectFromDrag({ x: 500, y: 500 }, { x: 506, y: 506 }, frame, viewport);
+      expect(rect).to.not.be.null;
+      expect(rect!.width).to.be.closeTo(800 / MAX_ZOOM_SCREEN_PX_PER_FRAME_PX, 1e-9);
+    });
+
+    it('clamps a rect dragged out over the letterbox back onto the frame', () => {
+      // The overlay covers the bars, so a drag legitimately reports coordinates
+      // outside the image.
+      const rect = zoomRectFromDrag({ x: 900, y: 900 }, { x: 1200, y: 1200 }, frame, viewport);
+      expect(rect).to.deep.equal({ x: 700, y: 700, width: 300, height: 300 });
+    });
+
+    it('is null — the unzoomed view — for a rect covering the whole frame', () => {
+      // Fit is the absence of a zoom, not a rect that happens to be the frame.
+      expect(zoomRectFromDrag({ x: -50, y: -50 }, { x: 1050, y: 1050 }, frame, viewport)).to.be.null;
+    });
+
+    it('is null for a rect that spans the frame on one axis only', () => {
+      // A wide, short drag run off both side edges — which a captured pointer
+      // over the letterbox bars produces. Meet fits it by its width, which is
+      // already the fit scale, and a rect *wider* than the photograph would
+      // scale it below fit: less than the unzoomed view, which no drag asked
+      // for.
+      expect(zoomRectFromDrag({ x: -100, y: 400 }, { x: 1100, y: 500 }, frame, viewport)).to.be.null;
+      expect(zoomRectFromDrag({ x: 400, y: -100 }, { x: 500, y: 1100 }, frame, viewport)).to.be.null;
+    });
+  });
+
+  describe('panZoomRect', () => {
+    const rect = { x: 400, y: 400, width: 200, height: 200 };
+
+    it('moves the rect against the pointer, so the photograph follows the finger', () => {
+      expect(panZoomRect(rect, { x: 50, y: -30 }, frame)).to.deep.equal({
+        x: 350,
+        y: 430,
+        width: 200,
+        height: 200,
+      });
+    });
+
+    it('clamps at the frame edge rather than letting the image leave the viewport', () => {
+      expect(panZoomRect(rect, { x: 1000, y: 0 }, frame).x).to.equal(0);
+      expect(panZoomRect(rect, { x: -1000, y: 0 }, frame).x).to.equal(800);
+    });
+
+    it('is measured from the rect it is given, not from the last one it produced', () => {
+      // Every event of one gesture applies the total travel to the rect the
+      // press started on — the same rule dragTo follows, and what keeps a pan
+      // from feeding the transform its own output.
+      const once = panZoomRect(rect, { x: 100, y: 0 }, frame);
+      expect(panZoomRect(rect, { x: 100, y: 0 }, frame)).to.deep.equal(once);
+    });
+  });
+
+  describe('zoomTransform', () => {
+    /** Where a point of the authored frame lands on screen, under `t`. */
+    function onScreen(
+      t: { scale: number; x: number; y: number },
+      media: { width: number; height: number },
+      view: { width: number; height: number },
+      at: { x: number; y: number }
+    ) {
+      // The unzoomed mapping first — meet, exactly as the media letterboxes —
+      // then the transform above it.
+      const fit = Math.min(view.width / media.width, view.height / media.height);
+      const boxX = (view.width - media.width * fit) / 2;
+      const boxY = (view.height - media.height * fit) / 2;
+      return {
+        x: t.scale * (boxX + (at.x / frame.width) * media.width * fit) + t.x,
+        y: t.scale * (boxY + (at.y / frame.height) * media.height * fit) + t.y,
+      };
+    }
+
+    it('is the identity when there is no zoom', () => {
+      expect(zoomTransform(null, frame, frame, viewport)).to.deep.equal({ scale: 1, x: 0, y: 0 });
+    });
+
+    it('is the identity against an unmeasured viewport', () => {
+      // jsdom lays nothing out, and a transform derived from a zero box would
+      // put the photograph at NaN.
+      const rect = { x: 0, y: 0, width: 100, height: 100 };
+      expect(zoomTransform(rect, frame, frame, { width: 0, height: 0 })).to.deep.equal({
+        scale: 1,
+        x: 0,
+        y: 0,
+      });
+    });
+
+    it('puts the rect exactly in the viewport when the two are the same shape', () => {
+      const rect = { x: 0, y: 0, width: 500, height: 500 };
+      const t = zoomTransform(rect, frame, frame, viewport);
+      expect(t.scale).to.be.closeTo(2, 1e-9);
+      const topLeft = onScreen(t, frame, viewport, { x: 0, y: 0 });
+      const bottomRight = onScreen(t, frame, viewport, { x: 500, y: 500 });
+      expect(topLeft.x).to.be.closeTo(0, 1e-9);
+      expect(topLeft.y).to.be.closeTo(0, 1e-9);
+      expect(bottomRight.x).to.be.closeTo(800, 1e-9);
+      expect(bottomRight.y).to.be.closeTo(800, 1e-9);
+    });
+
+    it('shows more than the rect on the axis whose aspect differs, never less', () => {
+      // The meet rule everything else here uses. A square rect in a 2:1
+      // viewport is fitted by its height, and the extra width is shown.
+      const view = { width: 800, height: 400 };
+      const rect = { x: 0, y: 0, width: 500, height: 500 };
+      const t = zoomTransform(rect, frame, frame, view);
+      const topLeft = onScreen(t, frame, view, { x: 0, y: 0 });
+      const bottomRight = onScreen(t, frame, view, { x: 500, y: 500 });
+      // Vertically exact, horizontally centred with room to spare on both
+      // sides — the rect is inside the viewport, and then some.
+      expect(topLeft.y).to.be.closeTo(0, 1e-9);
+      expect(bottomRight.y).to.be.closeTo(400, 1e-9);
+      expect(topLeft.x).to.be.greaterThan(0);
+      expect(bottomRight.x).to.be.lessThan(800);
+      expect(bottomRight.x - topLeft.x).to.be.closeTo(400, 1e-9);
+    });
+
+    it('measures the letterbox from the media, not from the authored frame', () => {
+      // The media is what object-fit letterboxes, so where the photograph sits
+      // in the viewport follows its shape. A 2:1 photo of a square frame is the
+      // inconsistent archive overlayFit stretches over — the zoom must land on
+      // the photograph either way.
+      const media = { width: 1000, height: 500 };
+      const view = { width: 800, height: 800 };
+      const rect = { x: 0, y: 0, width: 500, height: 500 };
+      const t = zoomTransform(rect, media, frame, view);
+      const topLeft = onScreen(t, media, view, { x: 0, y: 0 });
+      const bottomRight = onScreen(t, media, view, { x: 500, y: 500 });
+      expect(topLeft.x).to.be.closeTo(0, 1e-9);
+      expect(bottomRight.x).to.be.closeTo(800, 1e-9);
+      // The half-height photograph fills half the viewport's height, centred.
+      expect(topLeft.y).to.be.closeTo(200, 1e-9);
+      expect(bottomRight.y).to.be.closeTo(600, 1e-9);
+    });
+
+    it('centres the region wherever on the frame it was drawn', () => {
+      const rect = { x: 600, y: 600, width: 200, height: 200 };
+      const t = zoomTransform(rect, frame, frame, viewport);
+      const centre = onScreen(t, frame, viewport, { x: 700, y: 700 });
+      expect(centre.x).to.be.closeTo(400, 1e-9);
+      expect(centre.y).to.be.closeTo(400, 1e-9);
+    });
+  });
+
+  describe('boundsOfPoints', () => {
+    it('is null for nothing to bound', () => {
+      expect(boundsOfPoints([])).to.be.null;
+    });
+
+    it('is a place, not an area, for one point', () => {
+      expect(boundsOfPoints([{ x: 5, y: 7 }])).to.deep.equal({ x: 5, y: 7, width: 0, height: 0 });
+    });
+
+    it('covers every point', () => {
+      expect(
+        boundsOfPoints([
+          { x: 10, y: 40 },
+          { x: 30, y: 20 },
+          { x: -5, y: 25 },
+        ])
+      ).to.deep.equal({ x: -5, y: 20, width: 35, height: 20 });
+    });
+  });
+
+  describe('revealZoom', () => {
+    const zoom: Rect = { x: 400, y: 400, width: 200, height: 200 };
+
+    it('leaves an unzoomed view unzoomed', () => {
+      expect(revealZoom(null, { x: 0, y: 0, width: 10, height: 10 }, frame)).to.be.null;
+    });
+
+    it('leaves the zoom alone when the entry changed nothing to point at', () => {
+      // A completeness toggle or a rename: the history says so by carrying no
+      // highlights, and moving the user for it would be a move with no reason.
+      expect(revealZoom(zoom, null, frame)).to.deep.equal(zoom);
+    });
+
+    it('leaves the zoom alone when what changed is already on screen', () => {
+      expect(revealZoom(zoom, { x: 450, y: 450, width: 20, height: 20 }, frame)).to.deep.equal(zoom);
+    });
+
+    it('pans at the same zoom level when what changed fits', () => {
+      const moved = revealZoom(zoom, { x: 100, y: 100, width: 40, height: 40 }, frame);
+      expect(moved).to.deep.equal({ x: 20, y: 20, width: 200, height: 200 });
+    });
+
+    it('clamps the pan to the frame, as any other pan is clamped', () => {
+      const moved = revealZoom(zoom, { x: 980, y: 10, width: 10, height: 10 }, frame);
+      expect(moved).to.deep.equal({ x: 800, y: 0, width: 200, height: 200 });
+    });
+
+    it('falls back to the unzoomed view when what changed does not fit', () => {
+      // A twelve-car consist undone at once: there is no pan that shows it, so
+      // the honest answer is the view that shows everything.
+      expect(revealZoom(zoom, { x: 0, y: 0, width: 900, height: 20 }, frame)).to.be.null;
     });
   });
 });
