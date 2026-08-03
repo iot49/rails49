@@ -63,7 +63,7 @@ classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
 
 | Output | Tracked? | Consumed by |
 | :--- | :--- | :--- |
-| `config.json` | **gitignored** — absent on a fresh clone until you generate | `ui/vite.config.ts` (for `__RAILS_DOMAIN__`), the model export |
+| `config.json` | **gitignored** — absent on a fresh clone until you generate | the model export |
 | `lib/config/src/` | **committed** | `@occupancy/r49`, and TypeScript generally |
 
 `lib/config` is committed precisely so a fresh clone typechecks before anyone runs a generator. **Never hand-edit either output** — edit `config.yaml` and regenerate. `bin/test.sh` regenerates `lib/config` into a temp tree and diffs, so editing `config.yaml` without regenerating fails the full check with the command to run rather than surfacing at runtime.
@@ -93,7 +93,7 @@ Lit + Shoelace + Vite. Per-component contracts are documented at length in `ui/R
 * `rr-viewer` is shared by both the editor and live views — same component, `src` (image) in one, `stream` (video) in the other. Its media element and SVG overlay resolve to **one box** by construction (#41), so a marker lands on the pixel it names in either mode. It **reports pointer gestures but authors nothing**: typed `rr-pointer-*` events carry image-pixel coordinates, deciding what a gesture means is `rr-editor-view`'s job, and the arithmetic lives in the pure `ui/src/geometry.ts`. The editor's authoring surfaces — calibration points, sensors, car chaining with shared coupler handles, reclassify, the completeness affordance — and their invariants are documented in `ui/CLAUDE.md`.
 * `marker.ts` is a module, not a custom element, because custom elements break the SVG namespace inside `<svg>`. Its three exports (`renderMarker`, `markerDefs`, `markerStyles`) must be used together.
 * The app is entirely client-side: layouts are opened and saved as `.r49` files through the file picker, and inference runs in the browser via ONNX Runtime's WASM backend. There is no backend — don't reintroduce one without discussion.
-* `__RAILS_DOMAIN__` is injected at build time by `ui/vite.config.ts`, read from `config.json` (falling back to `config.yaml`, then `rails49.org`). It is used only to recognize the deployed site, which switches the ORT WASM assets over to the jsDelivr CDN because `bin/deploy.sh` strips them from the bundle.
+* **The ORT runtime ships from origin, and every stage of the build depends on that** (#15). `rails49.org/_headers` cross-origin-isolates `/ui/` so ORT gets more than one WASM thread; `require-corp` then forbids the cross-origin CDN the runtime used to come from. It fits under Cloudflare's 25 MiB limit only because the app imports `onnxruntime-web/wasm` rather than the package root, which would pull the 25.02 MiB jsep (WebGPU/WebNN) binary the `executionProviders: ['wasm']` sessions never use. `ui/ortAssets.ts` names the binary, its Emscripten glue and the copy targets; `bin/deploy.sh` repeats the filename because a shell script cannot import it, and `ui/tests/ortAssets.test.ts` is what keeps the two from drifting.
 * Vite copies `classifier/resnet/models/*.{ort,json}` into the bundle **only if that directory exists**, so builds succeed without a local model.
 
 ### Model files and releases
@@ -106,13 +106,13 @@ The model files are gitignored; only `classifier/resnet/models/version.txt` is t
 
 Which model ships is named in two places, and they must agree: the static-copy target in `ui/vite.config.ts` and the `_classifier.load()` call in `rr-live-view.ts`. The editor no longer loads a classifier (#19).
 
-`bin/deploy.sh` still strips `*.wasm` (26 MB, also over the limit) — those load from the jsDelivr CDN in production, selected by the `wasmPaths` branch in `rr-live-view.ts`. The script now aborts if anything in the deploy directory still exceeds 25 MiB.
+`bin/deploy.sh` strips nothing any more: it checks that `ort-wasm-simd-threaded.wasm` is present — the app cannot run without it, and it can no longer be fetched from a CDN — and aborts if anything in the deploy directory exceeds 25 MiB. `ui/vite.config.ts`'s `dropUnfetchableOrtWasm` deletes the second, hashed copy of that binary Rollup emits for the case where nothing sets `ort.env.wasm.wasmPaths`; the two places that do set it are pinned by `ui/tests/ortAssets.test.ts`.
 
 `bin/test.sh` also skips the Python checks when `uv sync` cannot resolve the environment (recent `onnxruntime` wheels have no macOS x86_64 build); every other Python failure is fatal.
 
 ### Deploy
 
-`bin/deploy.sh` regenerates `config.json`, builds the UI, rsyncs `ui/dist/` into `rails49.org/ui/` (gitignored), strips the large assets, and pushes `rails49.org/` to the Cloudflare Pages project `rails49-org` via `wrangler`. Credentials come from the environment or 1Password (`op://track-occupancy/Cloudflare Pages/…`).
+`bin/deploy.sh` regenerates `config.json`, builds the UI, rsyncs `ui/dist/` into `rails49.org/ui/` (gitignored), checks the bundle against Cloudflare's limits, and pushes `rails49.org/` — including the tracked `_headers` — to the Cloudflare Pages project `rails49-org` via `wrangler`. Credentials come from the environment or 1Password (`op://track-occupancy/Cloudflare Pages/…`).
 
 ## Agent skills
 

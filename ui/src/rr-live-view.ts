@@ -5,11 +5,13 @@ import { getDPT } from '@occupancy/r49';
 import { BrowserClassifier as Classifier } from '@occupancy/classifier/browser';
 import { getCameraStream } from './capture.js';
 import type { MarkerData, MarkerType } from './marker.js';
-import * as ort from 'onnxruntime-web';
+// Must match the specifier `@occupancy/classifier/browser` imports: two
+// specifiers are two module instances, and the `ort.env.wasm` configured here
+// would not be the one the classifier's session reads.
+import * as ort from 'onnxruntime-web/wasm';
 import './rr-viewer.js';
 import './rr-stats-bar.js';
 
-declare const __RAILS_DOMAIN__: string;
 import type { RrViewer } from './rr-viewer.js';
 
 function toMarkerType(label: string | undefined): MarkerType {
@@ -102,13 +104,19 @@ export class RRLiveView extends LitElement {
       return;
     }
     
-    // Set dynamic WASM path for subpath deployment
-    if (window.location.hostname.endsWith('pages.dev') || window.location.hostname === __RAILS_DOMAIN__) {
-      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.25.1/dist/';
-    } else {
-      ort.env.wasm.wasmPaths = '/ui/ort/';
+    // Same path everywhere: the runtime ships with the bundle. A cross-origin
+    // CDN would fail COEP, which production now sets to get threading (#15).
+    ort.env.wasm.wasmPaths = '/ui/ort/';
+
+    // Losing isolation costs ~1.5x and breaks nothing visibly — ORT just drops
+    // to one thread. Say it, since nothing else can.
+    if (!self.crossOriginIsolated) {
+      console.warn(
+        'Not crossOriginIsolated: ONNX Runtime is limited to a single WASM ' +
+        'thread. Check the COOP/COEP headers this page was served with.'
+      );
     }
-    
+
     this._classifier = new Classifier({
       labels: config.labels,
       dpt: config.dpt,

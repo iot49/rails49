@@ -355,11 +355,29 @@ carries the exact exports and glyphs. Two rules that don't show in the README ta
 
 ### Classifier loading lives only in the live view
 
-`rr-live-view.ts` is the sole place that constructs a `BrowserClassifier`. It branches on the
-hostname: `__RAILS_DOMAIN__` (injected at build time) or `*.pages.dev` points
-`ort.env.wasm.wasmPaths` at the jsDelivr CDN, because `bin/deploy.sh` strips the 26 MB of `.wasm`
-from the bundle; otherwise `/ui/ort/`. Then `load('/ui/models/model_int8.ort')`, whose filename must
-agree with `ui/vite.config.ts` (see the root `CLAUDE.md`).
+`rr-live-view.ts` is the sole place that constructs a `BrowserClassifier`. It points
+`ort.env.wasm.wasmPaths` at `/ui/ort/` — the same path everywhere, deployed or not (#15) — then
+`load('/ui/models/model_int8.ort')`, whose filename must agree with `ui/vite.config.ts` (see the
+root `CLAUDE.md`).
+
+**The ORT runtime is same-origin, and that is what pays for threading.** `rails49.org/_headers`
+cross-origin-isolates `/ui/`, without which ORT silently runs one WASM thread; `require-corp` then
+rejects any cross-origin subresource, so the jsDelivr branch that used to serve the runtime is gone
+and cannot come back on its own. It existed because the default `onnxruntime-web` entry asks for the
+jsep (WebGPU/WebNN) binary, which is 25.02 MiB — 0.02 over Cloudflare's per-file limit. The app
+requests `executionProviders: ['wasm']` and needs none of jsep, so both this file and
+`lib/classifier/src/browser.ts` import **`onnxruntime-web/wasm`**, whose 12.42 MiB binary fits.
+Those two specifiers must stay identical: two specifiers are two module instances, and the
+`ort.env.wasm` set here would not be the one the classifier's session reads. `ui/ortAssets.ts` holds
+the reasoning and the copy targets; `tests/ortAssets.test.ts` holds the chain to them.
+
+**Only two ORT files are copied** — the binary and `ort-wasm-simd-threaded.mjs`, its Emscripten
+glue, which ORT resolves against `wasmPaths` exactly like the binary. Everything else in ORT's
+`dist/` reaches the browser through Rollup; globbing the directory put 44 MB of webgl, webgpu and
+node builds in the bundle that nothing could fetch. `@occupancy/classifier` sets **no** default
+`wasmPaths` and throws if none is set: a library cannot know the app's base path, the old `/ort/`
+guess was a 404 under `/ui/`, and `vite.config.ts`'s `dropUnfetchableOrtWasm` removes the copy ORT
+would otherwise fall back to — so an unset path fails on a hashed filename with no clue attached.
 
 `rr-editor-view.ts` used to carry a byte-identical copy; it went with the v4 reduction (#19).
 **Do not reintroduce it there** — the duplication was a standing hazard, and nothing in the reduced

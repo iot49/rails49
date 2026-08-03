@@ -1,9 +1,29 @@
-import * as ort from 'onnxruntime-web';
+// The WASM-EP-only entry point, not the package root: the root pulls the jsep
+// (WebGPU/WebNN) binary, which is over Cloudflare's per-file limit and which
+// `executionProviders: ['wasm']` below never uses. See `ui/ortAssets.ts`.
+import * as ort from 'onnxruntime-web/wasm';
 import { type Point } from '@occupancy/r49';
 import { BaseClassifier, type ClassifierConfig } from './base.ts';
 
-// Ensure WASM paths are set (this can be overridden by the app)
-ort.env.wasm.wasmPaths = '/ort/';
+/**
+ * Where the ORT runtime is served from is the **app's** to say — it depends on
+ * the app's base path, which a library cannot know. This module used to guess
+ * `/ort/`, which is a 404 under `ui`'s `/ui/` base and survived only because
+ * the app overwrote it before the first session.
+ *
+ * There is no safe default left to fall back to: `ui` deletes the copy ORT
+ * would otherwise resolve from `import.meta.url` (see `ui/ortAssets.ts`), so an
+ * unset `wasmPaths` fetches a URL that isn't there. Say so at the point of
+ * failure rather than surfacing it as a 404 on a hashed filename.
+ */
+function assertWasmPathsConfigured() {
+  if (!ort.env.wasm.wasmPaths) {
+    throw new Error(
+      'Set ort.env.wasm.wasmPaths to where the app serves the ONNX Runtime ' +
+      'before loading a model — there is no default that works under a base path.'
+    );
+  }
+}
 
 export class BrowserClassifier extends BaseClassifier {
   private _canvas: HTMLCanvasElement;
@@ -20,6 +40,7 @@ export class BrowserClassifier extends BaseClassifier {
   }
 
   async load(source: string | Blob | ArrayBuffer) {
+    assertWasmPathsConfigured();
     try {
       let modelData: string | Uint8Array;
       if (source instanceof Blob) {

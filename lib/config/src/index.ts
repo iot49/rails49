@@ -38,6 +38,8 @@ export {
 // hyperparameters are Python's; neither needs a TypeScript binding, and
 // exporting them would invite a second consumer for values that have one.
 
-// Withheld: `global.rails_domain`. ui/vite.config.ts injects it at build
-// time as __RAILS_DOMAIN__, reading config.yaml directly — importing it
-// here would give that one value two paths into the bundle.
+// Withheld: `global.rails_domain`. Nothing in TypeScript consumes it any
+// more — the UI used to inject it as __RAILS_DOMAIN__ to recognize the
+// deployed site and send ORT's WASM to a CDN, which serving the runtime
+// from origin removed (#15). It stays in config.yaml as the project's
+// domain of record; give it a binding again only when something reads it.

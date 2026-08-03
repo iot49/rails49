@@ -40,12 +40,16 @@ echo "📁 Syncing UI assets to '$DEPLOY_DIR/ui'..."
 mkdir -p "$DEPLOY_DIR/ui"
 rsync -a --delete ui/dist/ "$DEPLOY_DIR/ui/"
 
-# 3. Clean up the large ONNX Runtime WASM binaries. They exceed Cloudflare's
-#    25 MiB per-file limit and are loaded from the jsDelivr CDN in production
-#    instead (see the wasmPaths branch in rr-live-view.ts / rr-editor-view.ts).
-#    The quantized model (model_int8.ort, 11 MB) is under the limit and ships.
-echo "🧹 Excluding large WASM files to stay under Cloudflare's 25 MiB file size limit..."
-find "$DEPLOY_DIR/ui" -name "*.wasm" -delete
+# 3. The ONNX Runtime WASM binary must ship from origin: `_headers` sets
+#    Cross-Origin-Embedder-Policy: require-corp on /ui/ so the app is
+#    crossOriginIsolated and ORT can use more than one thread (#15), and a
+#    cross-origin CDN would fail that check. Only the plain build is copied
+#    (see ui/ortAssets.ts) — the jsep one is over Cloudflare's limit.
+ORT_WASM="ort-wasm-simd-threaded.wasm"
+if [ ! -f "$DEPLOY_DIR/ui/ort/$ORT_WASM" ]; then
+  echo "❌ Error: $ORT_WASM is missing from the bundle; the app would not run."
+  exit 1
+fi
 
 # Fail loudly rather than deploying a bundle Cloudflare will reject.
 OVERSIZED=$(find "$DEPLOY_DIR" -type f -size +25M)
