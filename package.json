@@ -2,6 +2,7 @@
   "name": "rails49",
   "private": true,
   "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
