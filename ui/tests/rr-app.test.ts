@@ -3,6 +3,7 @@ import { fixture, html } from '@open-wc/testing';
 import '../src/rr-app.js';
 import { RRApp } from '../src/rr-app.js';
 import { R49Archive } from '@occupancy/r49';
+import type { NotifyDetail } from '../src/rr-editor-view.js';
 
 vi.mock('@occupancy/classifier/browser', () => {
   return {
@@ -68,6 +69,29 @@ describe('rr-app', () => {
 
     expect(exportSpy).toHaveBeenCalled();
     expect(notifySpy).toHaveBeenCalledWith('Saved to disk', 'success', 'download');
+  });
+
+  it('toasts a notice the editor sends up', async () => {
+    // The editor states its refusals but owns no place to put them; toasts
+    // live here. A refusal is a warning, never a danger — nothing failed.
+    const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+    (el as any)._archive = archive;
+    await el.updateComplete;
+    const notify = vi.spyOn(el as any, '_notify');
+
+    el.renderRoot.querySelector('rr-editor-view')!.dispatchEvent(
+      new CustomEvent<NotifyDetail>('rr-notify', {
+        detail: { message: 'That pixel is already inside a labeled car' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+
+    expect(notify).toHaveBeenCalledWith(
+      'That pixel is already inside a labeled car',
+      'warning',
+      'exclamation-triangle'
+    );
   });
 
   describe('undo, offered to the editor first', () => {

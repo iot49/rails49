@@ -7,6 +7,7 @@ import {
   samePoint,
   carWidthPx,
   carCorners,
+  carCovering,
   clampToViewport,
   couplerPoints,
   dragHandles,
@@ -124,6 +125,88 @@ describe('carCorners', () => {
       { x: 5, y: 6 },
       { x: 5, y: 6 },
     ]);
+  });
+});
+
+describe('carCovering', () => {
+  const dpt = 20;
+  const half = carWidthPx(dpt) / 2;
+
+  /** The scene as the car tool sees it: some cars, and a DPT to size them by. */
+  function carScene(cars: CarLabel[], sceneDpt: number | null = dpt): HitScene {
+    return { ...emptyScene, cars, dpt: sceneDpt };
+  }
+
+  it('finds nothing when no car is labelled', () => {
+    expect(carCovering(carScene([]), { x: 10, y: 10 })).to.equal(null);
+  });
+
+  it('finds nothing with no DPT, where there is no rectangle to be inside of', () => {
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    expect(carCovering(carScene([a], null), { x: 200, y: 50 })).to.equal(null);
+  });
+
+  it('finds the car whose rectangle the point is inside', () => {
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    expect(carCovering(carScene([a]), { x: 200, y: 50 })).to.equal(a);
+  });
+
+  it('finds nothing beside a car, past half its width', () => {
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    expect(carCovering(carScene([a]), { x: 200, y: 50 + half + 1 })).to.equal(null);
+  });
+
+  it('finds nothing beyond a car end, however close to its axis', () => {
+    // The rectangle is capped at the two ends: a click just past the coupler of
+    // the last car in a train starts the next car, which is the whole point of
+    // being able to keep labelling a consist.
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    expect(carCovering(carScene([a]), { x: 301, y: 50 })).to.equal(null);
+  });
+
+  it('counts a point exactly on the long edge as inside', () => {
+    // Boundary is inside: the refusal errs towards refusing, the same direction
+    // the width itself errs in. The car runs along y = 0 so that the edge is at
+    // `half` exactly — `50 + half` then measured back from 50 is not.
+    const a = car('a', { x: 100, y: 0 }, { x: 300, y: 0 });
+    expect(carCovering(carScene([a]), { x: 200, y: half })).to.equal(a);
+    expect(carCovering(carScene([a]), { x: 200, y: -half })).to.equal(a);
+  });
+
+  it('counts a point exactly on the end cap as inside', () => {
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    expect(carCovering(carScene([a]), { x: 300, y: 50 })).to.equal(a);
+  });
+
+  it('follows a diagonal span rather than its bounding box', () => {
+    // The corner of the axis-aligned bounding box of a 45-degree car is far
+    // outside the car itself — the case a naive min/max test gets wrong.
+    const a = car('a', { x: 0, y: 0 }, { x: 200, y: 200 });
+    expect(carCovering(carScene([a]), { x: 100, y: 100 })).to.equal(a);
+    expect(carCovering(carScene([a]), { x: 200, y: 0 })).to.equal(null);
+  });
+
+  it('measures a diagonal car across its own axis', () => {
+    const a = car('a', { x: 0, y: 0 }, { x: 200, y: 200 });
+    // Perpendicular to a 45-degree span, at just under and just over half width.
+    const step = (half - 0.5) / Math.SQRT2;
+    expect(carCovering(carScene([a]), { x: 100 + step, y: 100 - step })).to.equal(a);
+    const past = (half + 0.5) / Math.SQRT2;
+    expect(carCovering(carScene([a]), { x: 100 + past, y: 100 - past })).to.equal(null);
+  });
+
+  it('returns the first car in scene order where two overlap', () => {
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    const b = car('b', { x: 200, y: 20 }, { x: 200, y: 80 });
+    expect(carCovering(carScene([a, b]), { x: 200, y: 50 })).to.equal(a);
+  });
+
+  it('covers only its own pixel when a car has no length', () => {
+    // The editor refuses to author one, so it can only arrive from outside; a
+    // span with no axis has no rectangle to be inside of.
+    const a = car('a', { x: 5, y: 6 }, { x: 5, y: 6 });
+    expect(carCovering(carScene([a]), { x: 5, y: 6 })).to.equal(a);
+    expect(carCovering(carScene([a]), { x: 6, y: 6 })).to.equal(null);
   });
 });
 

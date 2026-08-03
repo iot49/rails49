@@ -13,6 +13,7 @@ import { MIN_DPT } from '@occupancy/config';
 import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
 import {
+  carCovering,
   cardinalDirection,
   dragHandles,
   dragTo,
@@ -396,6 +397,28 @@ interface LiveGesture {
    */
   dragging: boolean;
 }
+
+/**
+ * A transient message for the user, carried up to `rr-app`'s toast.
+ *
+ * The editor states its own refusals rather than swallowing them — a gesture
+ * that does nothing and says nothing reads as a broken editor — but it does not
+ * own a place to put them: toasts live in `rr-app`, so this goes up with every
+ * other `rr-*` event. It is a **notice, not an error**: nothing failed, the
+ * editor declined to author something.
+ */
+export interface NotifyDetail {
+  readonly message: string;
+}
+
+/**
+ * Why the car tool refused a click, in one sentence.
+ *
+ * One string for both halves of the rule — a click on a car's **body** and one
+ * on its **end handle** — because to the user they are the same refusal, and
+ * two wordings for it would read as two different rules.
+ */
+const ALREADY_LABELED = 'That pixel is already inside a labeled car — a car is labeled once.';
 
 /**
  * Main editor view: opens an archive, manages its images, reports DPT, and
@@ -846,6 +869,17 @@ export class RREditorView extends LitElement {
     return this._currentImage()?.labels.find(car => car.id === id);
   }
 
+  /** Asks `rr-app` to show a transient message — see {@link NotifyDetail}. */
+  private _notify(message: string) {
+    this.dispatchEvent(
+      new CustomEvent<NotifyDetail>('rr-notify', {
+        detail: { message },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   /** Tells `rr-app` to re-render the undo affordances. */
   private _notifyHistoryChange() {
     this.dispatchEvent(new CustomEvent('rr-history-change', { bubbles: true, composed: true }));
@@ -1167,6 +1201,13 @@ export class RREditorView extends LitElement {
    * the context menu is for (#35), so a click on one does nothing. Doing
    * nothing is the right answer rather than falling through to the tool and
    * stacking something on top of the label the user was aiming at.
+   *
+   * With the **car tool** live it says so, in the same words a click on the
+   * car's body gets (#43): a handle sits inside the rectangle that refusal is
+   * measured against, so the two are one rule to the user and only the code
+   * knows the click was routed here by the hit-test instead. Under the other
+   * tools there is nothing to explain — the user was not trying to author a
+   * car — so the click stays silent.
    */
   private async _editHit(hit: HitTarget) {
     switch (hit.kind) {
@@ -1181,8 +1222,11 @@ export class RREditorView extends LitElement {
         await this._openSensorName(hit.id);
         return;
       }
-      default:
+      case 'car-endpoint':
+      case 'coupler': {
+        if (this._tool === 'car') this._notify(ALREADY_LABELED);
         return;
+      }
     }
   }
 
@@ -1204,14 +1248,26 @@ export class RREditorView extends LitElement {
         if (!this._calibrated()) return;
         await this._placeSensor(px);
         return;
-      case 'car':
+      case 'car': {
         if (!this._calibrated() || !this._currentImage()) return;
+        // A pixel already inside a car's rectangle carries a label, so a chain
+        // started there would stack a second box on the same vehicle (#43) —
+        // the generalisation of the rule that already stops a click on a car
+        // *end* from starting one, from the handle out to the whole body. Only
+        // the click that **starts** a chain is checked: every click after it is
+        // deliberately aimed at an existing end, which is how a car is coupled
+        // onto a train already drawn.
+        if (carCovering(this._scene(), px)) {
+          this._notify(ALREADY_LABELED);
+          return;
+        }
         // The first click of a chain: it names one end and writes nothing. An
         // abandoned chain therefore costs the manifest and the undo stack
         // nothing at all.
         this._mode = { kind: 'placing-car', anchor: px, chain: [] };
         this._cursor = px;
         return;
+      }
     }
   }
 

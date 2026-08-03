@@ -10,6 +10,7 @@ import type { RRCalibrationDialog } from '../src/rr-calibration-dialog.js';
 import type { RRSensorDialog } from '../src/rr-sensor-dialog.js';
 import type { RRToolPalette, EditorTool } from '../src/rr-tool-palette.js';
 import type { RRContextMenu } from '../src/rr-context-menu.js';
+import type { NotifyDetail } from '../src/rr-editor-view.js';
 import type { SlCheckbox } from '@shoelace-style/shoelace';
 
 // Mock ResizeObserver for RRViewer
@@ -1425,6 +1426,11 @@ describe('rr-editor-view', () => {
       await rightClickAt(el, { x: 900, y: 900 });
     }
 
+    /** The rubber band the viewer is currently drawing — the anchor made visible. */
+    function band(el: RREditorView) {
+      return el.shadowRoot!.querySelector('rr-viewer')!.pendingCar;
+    }
+
     /** Selects an image the way `rr-thumbnail-bar` reports one. */
     async function selectImage(el: RREditorView, index: number) {
       el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
@@ -1578,12 +1584,131 @@ describe('rr-editor-view', () => {
       expect(cars()).to.have.length(1);
     });
 
-    describe('chaining a train', () => {
-      /** The rubber band the viewer is currently drawing, if any. */
-      function band(el: RREditorView) {
-        return el.shadowRoot!.querySelector('rr-viewer')!.pendingCar;
+    describe('a click inside an existing car (#43)', () => {
+      /** One car across the middle of the image, and the chain ended. */
+      async function withOneCar(history?: EditHistory) {
+        const el = await mountWithCarTool(history);
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await endChain(el);
+        return el;
       }
 
+      it('takes no anchor and writes nothing', async () => {
+        const history = new EditHistory();
+        history.attach(archive);
+        const el = await withOneCar(history);
+        const before = history.size;
+
+        // Squarely on the body of the car just drawn — a pixel that already
+        // carries a label, so a second one would be a duplicate box.
+        await clickAt(el, { x: 250, y: 100 });
+
+        expect(cars()).to.have.length(1);
+        expect(band(el)).to.equal(null);
+        expect(history.size).to.equal(before);
+      });
+
+      /** Every reason the editor gave, in order. */
+      function noticesOf(el: RREditorView): string[] {
+        const notices: string[] = [];
+        el.addEventListener('rr-notify', e =>
+          notices.push((e as CustomEvent<NotifyDetail>).detail.message)
+        );
+        return notices;
+      }
+
+      it('says why it refused, rather than doing nothing visibly', async () => {
+        const el = await withOneCar();
+        const notices = noticesOf(el);
+
+        await clickAt(el, { x: 250, y: 100 });
+
+        expect(notices).to.have.length(1);
+        expect(notices[0]).to.contain('already');
+      });
+
+      it('gives a click on the car\'s own end handle the same reason', async () => {
+        // The hit-test routes that click to the object under it rather than to
+        // the tool, but it lands inside the same rectangle — one rule to the
+        // user, so one wording.
+        const el = await withOneCar();
+        const notices = noticesOf(el);
+
+        await clickAt(el, { x: 400, y: 100 });
+
+        expect(cars()).to.have.length(1);
+        expect(band(el)).to.equal(null);
+        expect(notices).to.deep.equal([
+          'That pixel is already inside a labeled car — a car is labeled once.',
+        ]);
+      });
+
+      it('says nothing about a car end under another tool', async () => {
+        // Nothing to explain: the user was not trying to author a car.
+        const el = await withOneCar();
+        await selectTool(el, 'sensor');
+        const notices = noticesOf(el);
+
+        await clickAt(el, { x: 400, y: 100 });
+
+        expect(notices).to.deep.equal([]);
+      });
+
+      it('starts a chain as before outside every car', async () => {
+        const el = await withOneCar();
+
+        await clickAt(el, { x: 250, y: 400 });
+        expect(band(el)).to.not.equal(null);
+
+        await clickAt(el, { x: 600, y: 400 });
+        expect(cars()).to.have.length(2);
+      });
+
+      it('lets a live chain run its next click through an existing car', async () => {
+        // Only the click that *starts* a chain is checked. Coupling onto a
+        // train already drawn is exactly a click on an existing car's end.
+        const el = await withOneCar();
+
+        await clickAt(el, { x: 250, y: 400 });
+        await clickAt(el, { x: 250, y: 100 });
+
+        expect(cars()).to.have.length(2);
+        expect(cars()[1].p1).to.deep.equal({ x: 250, y: 100 });
+      });
+
+      it('still lets an endpoint be dragged into another car', async () => {
+        // A drag is an edit made under live width-rectangle feedback, not an
+        // accidental new label.
+        const el = await withOneCar();
+        await clickAt(el, { x: 250, y: 400 });
+        await clickAt(el, { x: 600, y: 400 });
+        await endChain(el);
+
+        await drag(el, [{ x: 600, y: 400 }, { x: 300, y: 100 }, { x: 250, y: 100 }]);
+
+        expect(cars()).to.have.length(2);
+        expect(cars()[1].p1).to.deep.equal({ x: 250, y: 100 });
+      });
+
+      it('opens an archive whose cars already overlap, and edits it', async () => {
+        // The rule gates authoring only; nothing validates a file.
+        archive.getManifest().images[0].labels = [
+          { id: 'aaaaaaaaaaa', class: 'stock', provenance: 'human',
+            p0: { x: 100, y: 100 }, p1: { x: 400, y: 100 } },
+          { id: 'bbbbbbbbbbb', class: 'stock', provenance: 'human',
+            p0: { x: 150, y: 100 }, p1: { x: 450, y: 100 } },
+        ];
+        const el = await mountWithCarTool();
+
+        expect(cars()).to.have.length(2);
+        // And an end of either is still draggable.
+        await drag(el, [{ x: 450, y: 100 }, { x: 470, y: 100 }]);
+        expect(cars()[1].p1).to.deep.equal({ x: 470, y: 100 });
+      });
+    });
+
+    describe('chaining a train', () => {
       /** A pointer move with no button down — what the band follows. */
       async function moveTo(el: RREditorView, point: Point) {
         gesture(el, 'rr-pointer-move', point, 1);
