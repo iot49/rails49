@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fixture, html } from '@open-wc/testing';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { fixture, fixtureCleanup, html } from '@open-wc/testing';
 import '../src/rr-app.js';
 import { RRApp } from '../src/rr-app.js';
 import { R49Archive } from '@occupancy/r49';
@@ -49,6 +49,11 @@ describe('rr-app', () => {
     vi.spyOn(window, 'alert').mockImplementation(() => {});
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   });
+
+  // `fixture` does not tear down on its own under vitest, and `rr-app` listens
+  // on `window`: a mounted-and-forgotten app from an earlier test answers the
+  // `beforeunload` a later one dispatches.
+  afterEach(fixtureCleanup);
 
   it('is defined', () => {
     const el = document.createElement('rr-app');
@@ -296,6 +301,54 @@ describe('rr-app', () => {
       expect(view.undoImage).toBeNull();
       expect(view.redoImage).toBe('img2.jpg');
       expect(history.canRedo).toBe(true);
+    });
+  });
+
+  // These prove the listener is registered and reads `isDirty`, and nothing
+  // more. No browser here renders a leave-site dialog — jsdom dispatches the
+  // event and records `defaultPrevented`, exactly as the viewer's CTM stub and
+  // the File System Access fakes prove routing rather than behaviour.
+  describe('the guard on closing the tab (#49)', () => {
+    /** An app whose history has one unsaved edit on it. */
+    async function mountDirty() {
+      const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+      (el as any)._archive = archive;
+      const history = (el as any)._history as EditHistory;
+      history.attach(archive);
+      await history.record('rename layout', { kind: 'layout' }, () => {
+        archive.getManifest().layout.name = 'Renamed';
+      });
+      return { el, history };
+    }
+
+    function fireBeforeUnload(): Event {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event;
+    }
+
+    it('cancels the unload while there are unsaved changes', async () => {
+      const { history } = await mountDirty();
+      expect(history.isDirty).toBe(true);
+
+      expect(fireBeforeUnload().defaultPrevented).toBe(true);
+    });
+
+    it('lets a clean session close silently', async () => {
+      const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+      (el as any)._archive = archive;
+
+      expect(fireBeforeUnload().defaultPrevented).toBe(false);
+    });
+
+    // The registration is permanent and the predicate checked at fire time, so
+    // a detached `rr-app` left listening would cancel every unload forever —
+    // a regression nothing else in the suite would catch.
+    it('stops guarding once disconnected', async () => {
+      const { el } = await mountDirty();
+      el.remove();
+
+      expect(fireBeforeUnload().defaultPrevented).toBe(false);
     });
   });
 

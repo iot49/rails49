@@ -111,6 +111,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#43]: https://github.com/iot49/rails49/issues/43
 > [#44]: https://github.com/iot49/rails49/issues/44
 > [#48]: https://github.com/iot49/rails49/issues/48
+> [#49]: https://github.com/iot49/rails49/issues/49
 
 ## State and data flow
 
@@ -178,8 +179,12 @@ hijack Cmd+Z mid-typing. A press with a drag still live returns nothing (see `hi
 `_undo`/`_redo` already do nothing when the stack hands back no entry.
 
 * `rr-file-new` and `rr-file-open` **confirm before discarding unsaved changes** (`_history.isDirty`),
-  since replacing the archive takes the undo stack with it. This is the one destructive act undo
-  cannot cover.
+  since replacing the archive takes the undo stack with it. **Closing or reloading the tab is guarded
+  by the same predicate** ([#49]): a `beforeunload` listener registered in `connectedCallback` beside
+  the keydown one, permanently, with `isDirty` checked at fire time. It calls `preventDefault()` *and*
+  sets the legacy `returnValue`, and shares nothing with `_confirmDiscard()`, which answers with a
+  boolean `beforeunload` cannot use — all it may do is cancel and let the browser ask, in wording
+  nobody can set. Together these are the destructive acts undo cannot cover.
 * `rr-file-save` marks the history position saved rather than clearing it — undoing past a save is
   legitimate, because the bytes on disk are unaffected.
 * Undo and redo reveal what they changed, in the order the invariant states ([#37]): `selectImage`

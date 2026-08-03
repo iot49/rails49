@@ -325,9 +325,9 @@ export class EditHistory {
    * Whether the archive differs from what was last saved.
    *
    * Falls out of the save marker rather than needing separate bookkeeping, and
-   * it is what makes the confirm-on-discard gate possible — the one destructive
-   * act undo structurally cannot cover, since New and Open take the stack with
-   * them.
+   * it is what gates the three destructive acts undo structurally cannot cover:
+   * New and Open take the stack with them, and closing or reloading the tab
+   * takes the whole session (#49).
    */
   get isDirty(): boolean {
     return this._index !== this._savedIndex;

@@ -113,12 +113,42 @@ export class RRApp extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('beforeunload', this._onBeforeUnload);
   }
 
   disconnectedCallback() {
     window.removeEventListener('keydown', this._onKeyDown);
+    window.removeEventListener('beforeunload', this._onBeforeUnload);
     super.disconnectedCallback();
   }
+
+  /**
+   * The third act undo cannot cover: closing or reloading the tab (#49).
+   *
+   * `_confirmDiscard()` is not shared — it answers with a boolean out of
+   * `window.confirm`, which this cannot use. All `beforeunload` may do is
+   * cancel and let the browser ask, in wording nobody can set. That generic
+   * dialog is accepted on the cost asymmetry `SPEC.md` § Undo and redo states:
+   * one extra click on a deliberate close, against a whole hand-labeling
+   * session, since the history is never persisted and there is no autosave.
+   *
+   * Registration is permanent and the predicate checked here, at fire time —
+   * `EditHistory` does not expose `isDirty`'s edges to add and remove on, and
+   * the bfcache eligibility that would buy is worthless in an app with no
+   * back-navigation to restore.
+   */
+  private _onBeforeUnload = (event: BeforeUnloadEvent) => {
+    if (!this._history.isDirty) return;
+    event.preventDefault();
+    // The legacy property stays alongside `preventDefault()` deliberately: the
+    // engines converged on the modern form at different times, and one still
+    // gating on `returnValue` would leave this guard silently inert in exactly
+    // the situation it exists for, with nothing to surface it. It is set
+    // **truthy, not `''`** — the legacy gate gives the dialog only when
+    // `returnValue` is *non-empty*, so the empty string is the value that means
+    // "do not ask" and would be the inert guard this line exists to prevent.
+    event.returnValue = true;
+  };
 
   /**
    * Cmd/Ctrl+Z and Cmd+Shift+Z / Ctrl+Y, editor view only.
