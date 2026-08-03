@@ -8,7 +8,7 @@ The track occupancy detection workflow is modular and spans multiple directories
 
 ### 1. Data Preparation — ⚠️ PARKED, this step does not run
 
-`pnpm --filter dataset prep` is a **stub that exits non-zero**. It derived one 136×136 crop per v3 point marker, tagged by the marker's type; v4 stores no point markers. Deriving from car spans alone puts every crop centre on a car, so the vocabulary collapses to one degenerate tag with no negatives.
+`pnpm --filter dataset prep` is a **stub that exits non-zero**. It derived one 144×144 crop per v3 point marker, tagged by the marker's type; v4 stores no point markers. Deriving from car spans alone puts every crop centre on a car, so the vocabulary collapses to one degenerate tag with no negatives.
 
 **There is consequently no corpus to train on today.** The route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18) and the [Dataset Preparation Guide](../../dataset/README.md).
 

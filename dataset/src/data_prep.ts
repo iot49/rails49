@@ -1,7 +1,7 @@
 // PARKED — the marker-driven crop derivation is gone, not ported. See #18.
 //
 // This script used to walk every point marker in every archive and cut one
-// 136x136 crop per marker, tagged by the marker's type. v4 stores no point
+// 144x144 crop per marker, tagged by the marker's type. v4 stores no point
 // markers: a label is a car span, and a sensor is a query point on the layout.
 //
 // Deriving crops from car spans alone does not produce a trainable dataset.

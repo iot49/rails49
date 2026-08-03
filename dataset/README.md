@@ -7,7 +7,7 @@ layout archives. **Both are currently parked and neither runs.**
 
 ### `pnpm run prep` — ⚠️ PARKED (exits non-zero)
 
-It scanned `r49/` for archives and cut one 136×136 crop per point marker, tagged
+It scanned `r49/` for archives and cut one 144×144 crop per point marker, tagged
 by the marker's type, split deterministically 80/20 by a hash of archive, image
 and marker id.
 

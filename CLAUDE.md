@@ -41,7 +41,7 @@ The whole system is one data path; each directory is a stage in it.
 .r49 archives (dataset/r49/)      v4: layout photos, calibration, zero labels
         │  ✗ PARKED — no derivation runs today (see below)
         ▼
-dataset/data/                     136×136 crops, deterministic 80/20 split, data.csv
+dataset/data/                     144×144 crops, deterministic 80/20 split, data.csv
         │  classifier/resnet/TRAIN.ipynb   (Fastai ResNet-18 → ONNX → ORT)
         ▼
 classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
