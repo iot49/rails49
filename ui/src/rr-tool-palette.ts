@@ -1,5 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+import { COMPACT_MAX_HEIGHT_PX, compactStripStyles } from './layout.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
@@ -54,8 +55,8 @@ const TOOLS: readonly ToolSpec[] = [
  * *car* tool is gated, but a sensor is a single point and would draw fine
  * uncalibrated — blaming the rectangle would put a false reason on the one tool
  * whose gating is a deliberate deviation. It is also kept to one short line:
- * the strip is 100px wide, and a paragraph here is the first thing clipped on a
- * laptop-height window.
+ * the column is 100px wide and the strip it becomes on a short window is one
+ * row tall, and a paragraph fits neither.
  */
 const GATE_REASON = 'Calibrate first — the labeling tools need DPT.';
 
@@ -96,7 +97,8 @@ export class RRToolPalette extends LitElement {
   /** Whether DPT resolves. False disables every gated tool. */
   @property({ type: Boolean }) calibrated = false;
 
-  static styles = css`
+  static styles = [
+    css`
     :host {
       display: flex;
       flex-direction: column;
@@ -165,7 +167,27 @@ export class RRToolPalette extends LitElement {
       text-align: center;
       padding: 0 0.25em;
     }
-  `;
+
+  `,
+
+    // The turn itself, shared with rr-toolbar. After the rules above, which is
+    // what lets it override them.
+    compactStripStyles,
+
+    css`
+      @media (max-height: ${COMPACT_MAX_HEIGHT_PX}px) {
+        /* Turning moves the reason from under the buttons to beside them. It
+           keeps its size — it is a disabled control's stated reason and has to
+           stay legible at the size the control is hardest to reach at — and
+           spends width instead, capped so it wraps to a second short line
+           rather than pushing the strip across the window. */
+        .gate-reason {
+          text-align: left;
+          max-width: 24ch;
+        }
+      }
+    `,
+  ];
 
   private _onSelect(spec: ToolSpec) {
     if (this._disabled(spec) || spec.tool === this.tool) return;

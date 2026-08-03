@@ -1,12 +1,17 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+import { COMPACT_MAX_HEIGHT_PX, compactStripStyles } from './layout.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 /**
- * Vertical tool palette for the editor.
+ * Tool palette for the editor: file actions and undo/redo.
  *
- * File actions and undo/redo. The v3 labeling tools — the four marker-type
+ * A column at the side of the editor, and a row in the strip along its top
+ * below `COMPACT_MAX_HEIGHT_PX` — see `layout.ts` for why the two elements in
+ * that strip must turn together.
+ *
+ * The v3 labeling tools — the four marker-type
  * modes, delete, and the two-point calibrate mode — were removed with the v4
  * reduction (#19): v4 has no point markers, and its calibration is a list of
  * world-coordinate points rather than a draggable pair. The car, sensor and
@@ -31,7 +36,8 @@ export class RRToolbar extends LitElement {
   @property({ attribute: false }) undoLabel: string | null = null;
   @property({ attribute: false }) redoLabel: string | null = null;
 
-  static styles = css`
+  static styles = [
+    css`
     :host {
       display: flex;
       flex-direction: column;
@@ -88,7 +94,23 @@ export class RRToolbar extends LitElement {
       color: var(--sl-color-neutral-100);
     }
 
-  `;
+  `,
+
+    // The turn itself, shared with rr-tool-palette. After the rules above,
+    // which is what lets it override them.
+    compactStripStyles,
+
+    css`
+      @media (max-height: ${COMPACT_MAX_HEIGHT_PX}px) {
+        :host {
+          /* A shadow off this element's right edge would land inside the
+             strip, drawn down its middle. The sidebar casts the strip's one
+             edge instead. */
+          box-shadow: none;
+        }
+      }
+    `,
+  ];
 
   private _onFileNew() {
     this.dispatchEvent(new CustomEvent('rr-file-new', {

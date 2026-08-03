@@ -26,6 +26,7 @@ import type { DragHandle, HitScene, HitTarget, HitTolerance } from './geometry.j
 import type { PendingCar } from './carMarker.js';
 import { classChoices, rootClass } from './vocabulary.js';
 import type { ClassChoice } from './vocabulary.js';
+import { COMPACT_MAX_HEIGHT_PX } from './layout.js';
 import { revealTarget } from './history.js';
 import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
 import type {
@@ -591,6 +592,57 @@ export class RREditorView extends LitElement {
 
     .complete-bar .detail {
       color: var(--sl-color-neutral-600);
+    }
+
+    /* The sidebar reflows rather than scrolls (#42).
+     *
+     * Below the breakpoint the column does not fit — layout.ts carries the
+     * measurement — and what falls off the bottom is the tool palette, which
+     * is what decides whether a click places a calibration point, a sensor or
+     * a car. The column is scrollable, but a flat green strip advertises
+     * nothing and the platform's overlay scrollbar stays hidden until a scroll
+     * has already begun, so the tools read as simply absent.
+     *
+     * Of the two fixes the ticket offered — reflow, or scroll with a visible
+     * affordance — this is the reflow. A scroll hint would still leave the
+     * palette a gesture away from a control the editor is unusable without,
+     * and there is no shortage of *width* at these sizes: turning the strip
+     * sideways spends the axis the window still has. The toolbar and the tool
+     * palette turn with it at the same breakpoint; the strip wraps, so a
+     * window too narrow for one row costs a second row rather than a hidden
+     * button.
+     *
+     * The overflow-y: auto above is left inherited deliberately. The
+     * strip is meant to fit at every size the editor supports and did in
+     * every size measured — but "meant to" is not a guarantee across fonts and
+     * zoom levels, and the host clips, so removing the scroll would trade a
+     * hard-to-find control for an unreachable one. It is the floor under the
+     * reflow, not the design.
+     *
+     * The readout bars give back their vertical padding at the same time. They
+     * wrap to two lines at this width and were the other thing taking height
+     * from the viewer. */
+    @media (max-height: ${COMPACT_MAX_HEIGHT_PX}px) {
+      :host {
+        flex-direction: column;
+      }
+
+      .sidebar {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        width: auto;
+        /* The column's shadow, turned through the same right angle as the
+           column: one edge for the whole strip, which is why rr-toolbar drops
+           its own here rather than drawing one down the strip's middle. */
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+
+      .dpt-bar,
+      .frame-warning,
+      .complete-bar {
+        padding: 0.3rem 1rem;
+      }
     }
   `;
 

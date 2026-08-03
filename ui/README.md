@@ -98,6 +98,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#35]: https://github.com/iot49/rails49/issues/35
 > [#36]: https://github.com/iot49/rails49/issues/36
 > [#41]: https://github.com/iot49/rails49/issues/41
+> [#42]: https://github.com/iot49/rails49/issues/42
 
 ## State and data flow
 
@@ -227,7 +228,9 @@ Classifier selection is **not implemented**: there is no classifier tab, and the
 
 ### `rr-toolbar`
 
-Vertical palette for the editor: file actions and undo/redo.
+File actions and undo/redo. A column at the side of the editor, and **a row at or below
+`COMPACT_MAX_HEIGHT_PX`**, where it and the tool palette share a strip along the top instead
+([#42]). See `layout.ts`.
 
 | Property | Type | Description |
 |---|---|---|
@@ -279,6 +282,11 @@ number" — and it opens and closes live, so an undone calibration disables the 
 
 The `car` tool authors a two-click span through `rr-editor-view` ([#32]); this element only says
 which tool a click means.
+
+At or below `COMPACT_MAX_HEIGHT_PX` the palette lies down beside the toolbar in a strip along the
+top ([#42]), and the gate reason moves from under the buttons to beside them — at the same size,
+wrapped to a short measure, because a disabled control's stated reason has to stay legible at the
+size the control is hardest to reach at. See `layout.ts`.
 
 ---
 
@@ -817,6 +825,14 @@ authoring, the right-click menu, and the per-image completeness flag.
   chain is a wall undo cannot cross** and only this component knows one is live ([#33]). See
   *Chaining* below.
 
+* **Layout.** A fixed 100px sidebar beside a flexible main column — and at or below
+  `COMPACT_MAX_HEIGHT_PX` a wrapping strip along the top above it, because the sidebar's two
+  elements need 721px stacked and a short window does not have it ([#42]). The strip **reflows
+  rather than scrolls**: the column was already scrollable, but a flat green strip advertises
+  nothing and the platform's overlay scrollbar stays hidden until a scroll has begun, so the tool
+  palette — which decides what a click means — read as simply absent. The scroll is kept underneath
+  it as a floor, since the host clips and a strip that somehow outgrows the window must not become
+  unreachable. See `layout.ts`.
 * Creates blob URLs for every image in the manifest, revoking the previous set on reload.
 * Image add (camera or file), delete, and reorder go through the corresponding `R49Archive` methods,
   each wrapped in `history.record` with target `images`. Deletion passes `retain` so the image's
@@ -1047,6 +1063,38 @@ Overlay showing live classification stats. Displays FPS, marker count, and time 
 | `count` | `number` | Markers classified per frame |
 | `sampleTime` | `number` | Milliseconds per marker |
 | `latency` | `number` | Whole-frame time; set by `rr-live-view` but **not currently rendered** |
+
+---
+
+### `layout.ts`
+
+The height at which the editor's chrome reflows, and the rules the two elements that reflow with it
+share. Not a stylesheet of general layout helpers — one agreement between three components.
+
+| Export | Description |
+|---|---|
+| `COMPACT_MAX_HEIGHT_PX` | Window height at or below which the editor's sidebar reflows into a horizontal strip. `800` |
+| `compactStripStyles` | `CSSResult`. The turn itself — the rules `rr-toolbar` and `rr-tool-palette` state identically. **Append after the component's own rules**; it overrides them at equal specificity, so order is what makes it win |
+
+Three components reflow together at this height — `rr-editor-view` turns its sidebar column into a
+strip along the top, `rr-toolbar` and `rr-tool-palette` turn their own contents sideways to sit in
+it — and they must switch at the same height or the reflow half-applies: **a horizontal strip
+holding two vertical stacks is taller than the column it replaced**, which is the bug being fixed.
+
+The value is interpolated into each component's `static styles`. A media query cannot read a custom
+property, so this is the one place a shared constant cannot reach across on its own; the agreement
+is asserted instead, in `tests/layout.test.ts`.
+
+The breakpoint is set above the measurement rather than at it. Stacked, the sidebar is 721px in the
+state that decides it — an archive open and **not yet calibrated**, so five toolbar buttons, three
+palette buttons and the gate reason under them — and the header takes 60px above, making 781px the
+window where the column exactly fills the space with nothing to spare ([#42]). That state rather
+than the calibrated 635px the ticket measured: an archive is uncalibrated before it is calibrated,
+so the taller arrangement is the one a user meets first.
+
+`compactStripStyles` exists because the breakpoint agreeing is not the whole hazard — two copies of
+the rules *inside* the query could drift while all three components still switch at the same
+height. `tests/layout.test.ts` asserts both.
 
 ---
 
