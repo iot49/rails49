@@ -497,6 +497,62 @@ export function hitTest(scene: HitScene, at: Point, tolerance: HitTolerance): Hi
 }
 
 /**
+ * The car whose rectangle covers `at`, or `null` when none does.
+ *
+ * The **area** question to {@link hitTest}'s handle question, deliberately kept
+ * apart from it and reading the same `HitScene` so both see one set of objects.
+ * The hit-test answers "what can this gesture grab", and a car's body grabs
+ * nothing — the only edits a span supports are to its two ends. This answers
+ * "is this pixel already labelled", which only the car tool's **first** click
+ * asks (#43), to refuse stacking a second box on a car that already carries
+ * one. Nothing here rejects an *archive*: cars already overlapping open, render
+ * and edit exactly as before.
+ *
+ * Measured in the span's own frame rather than against the corners
+ * {@link carCorners} returns, so a diagonal car is tested across its own axis
+ * and not across a bounding box half again too big. The **boundary is inside**:
+ * a click on the rectangle's edge is refused, which errs in the same direction
+ * the width itself errs in.
+ *
+ * With no DPT there is **no rectangle**, so nothing covers anything — the same
+ * answer `renderCar` gives by drawing none. The car tool is gated on DPT
+ * resolving, so this branch is the uncalibrated archive rather than a state the
+ * refusal has an opinion about.
+ *
+ * A car with no length has no axis and so no rectangle; it covers only the
+ * exact point it sits on, matching {@link carCorners} collapsing to that point.
+ * The editor refuses to author such a car, so it can only arrive from outside.
+ *
+ * Where several cars cover the pixel the first in scene order wins. Nothing
+ * distinguishes them for the caller's purpose — one is enough to refuse — but
+ * the answer is the scene's own order rather than an arbitrary one.
+ */
+export function carCovering(scene: HitScene, at: Point): CarLabel | null {
+  if (scene.dpt === null) return null;
+  const half = carWidthPx(scene.dpt) / 2;
+  for (const car of scene.cars) {
+    const dx = car.p1.x - car.p0.x;
+    const dy = car.p1.y - car.p0.y;
+    const length = Math.hypot(dx, dy);
+    if (length === 0) {
+      if (samePoint(at, car.p0)) return car;
+      continue;
+    }
+    const ax = at.x - car.p0.x;
+    const ay = at.y - car.p0.y;
+    // Both distances scaled by the span's length rather than divided by it:
+    // a point exactly on the edge must read as exactly on the edge, and a
+    // division introduces the rounding that would put it just outside.
+    const along = ax * dx + ay * dy;
+    const across = ax * dy - ay * dx;
+    if (along >= 0 && along <= length * length && Math.abs(across) <= half * length) {
+      return car;
+    }
+  }
+  return null;
+}
+
+/**
  * What a drag handle addresses in the manifest.
  *
  * Keyed the way the rest of the editor keys — label `id` for a car, sensor `id`,

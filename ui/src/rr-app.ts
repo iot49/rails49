@@ -4,7 +4,7 @@ import { R49Archive, MANIFEST_VERSION } from '@occupancy/r49';
 import { EditHistory, revealTarget, type HistoryEntry } from './history.js';
 import './rr-header.js';
 import './rr-editor-view.js';
-import type { RREditorView } from './rr-editor-view.js';
+import type { NotifyDetail, RREditorView } from './rr-editor-view.js';
 import './rr-live-view.js';
 import { setBasePath } from '@shoelace-style/shoelace/dist/utilities/base-path.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -76,6 +76,18 @@ export class RRApp extends LitElement {
     });
     this.renderRoot.appendChild(alert);
     return (alert as any).toast();
+  }
+
+  /**
+   * A child's transient message, toasted here because this is where toasts
+   * live.
+   *
+   * `warning` rather than `danger`: everything that reaches this event is the
+   * editor **declining** to author something, which is the editor working. A
+   * red alert for a refused click would read as a failure the user has to fix.
+   */
+  private _onNotify(e: CustomEvent<NotifyDetail>) {
+    this._notify(e.detail.message, 'warning', 'exclamation-triangle');
   }
 
   connectedCallback() {
@@ -292,6 +304,7 @@ export class RRApp extends LitElement {
                 @rr-file-open=${this._onFileOpen}
                 @rr-file-save=${this._onFileSave}
                 @rr-history-change=${this._onHistoryChange}
+                @rr-notify=${this._onNotify}
                 @rr-undo=${this._undo}
                 @rr-redo=${this._redo}
               ></rr-editor-view>`

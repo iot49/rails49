@@ -85,7 +85,9 @@ rr-app                          ← shell: owns the archive and the view mode
 > toggle — plus the decision that **deleting a car clears the flag**, recorded
 > with its reasoning in `../SPEC.md` § Labeling completeness. [#41] made the
 > media and the overlay resolve to **one box** at every window size, so an object
-> no longer drifts off the pixel it names as the window is resized.
+> no longer drifts off the pixel it names as the window is resized. [#43] refused
+> the **first** click of a new chain when it lands inside a car already labelled
+> on that image, so a second box cannot be stacked on the same vehicle.
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -99,6 +101,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#36]: https://github.com/iot49/rails49/issues/36
 > [#41]: https://github.com/iot49/rails49/issues/41
 > [#42]: https://github.com/iot49/rails49/issues/42
+> [#43]: https://github.com/iot49/rails49/issues/43
 
 ## State and data flow
 
@@ -150,7 +153,11 @@ Application shell. Owns the archive and routes between the two views.
 `_status`. Starts with no archive loaded.
 
 **Handles:** `rr-view-toggle`, `rr-layout-change`, `rr-file-new`, `rr-file-open`, `rr-file-save`,
-`rr-undo`, `rr-redo`, `rr-history-change`.
+`rr-undo`, `rr-redo`, `rr-history-change`, `rr-notify`.
+
+`rr-notify` is a child's transient message, toasted here because this is where toasts live. It is
+raised at `warning`, never `danger`: everything that reaches it is the editor **declining** to
+author something, which is the editor working rather than failing.
 
 **Keyboard:** Cmd/Ctrl+Z and Cmd+Shift+Z / Ctrl+Y, bound on `window`, **editor view only**. The
 handler bails when a field has focus, testing `event.composedPath()[0]` rather than `event.target` —
@@ -501,6 +508,7 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | `SYMBOL_SIZE_SCREEN_PX` | Size of a screen-constant symbol (markers, crosshairs, labels), in screen pixels |
 | `carWidthPx(dpt)` | Car width in image pixels: `dpt × STANDARD_WIDTH / STANDARD_GAUGE` — 2.09 track widths |
 | `carCorners(p0, p1, dpt)` | The four corners of the oriented rectangle, in polygon order from the `p0` side |
+| `carCovering(scene, at)` | The car whose rectangle covers a pixel, or `null` — the **area** question to `hitTest`'s handle question, off the same scene, asked only by the car tool's first click ([#43]). Boundary is inside; no DPT means no rectangle, so nothing covers |
 | `hitTest(scene, at, tolerance)` | The `HitTarget` under an image-pixel coordinate, or `null` |
 | `HitScene` | `{ cars, sensors, calibrationPoints, dpt }` — everything grabbable for one image of one layout, plus the scale the world-sized ones are drawn at |
 | `HitTarget` | `car-endpoint` / `coupler` (both carrying `ends`), `sensor` (`id`), `calibration` (`index`) |
@@ -537,7 +545,9 @@ photograph: an 8-megapixel image and a 720p one must feel the same.
 
 **Nearest wins**, whatever its kind; an exact tie goes to the denser geometry (car ends, sensors,
 calibration points, in that order). Only handles are hit — the body of a car is not grabbable,
-because the only edits a span supports are to its two ends.
+because the only edits a span supports are to its two ends. `carCovering` is the separate question
+"is this pixel already labelled", which only the car tool's first click asks; it measures in the
+span's own frame, so a diagonal car is tested across its axis and not across a bounding box.
 
 **A coupler is exact coincidence, not proximity.** Nothing about a coupling is stored; it is two or
 more car ends at the identical pixel, which chaining and the shared handle both guarantee by writing
@@ -814,7 +824,9 @@ authoring, the right-click menu, and the per-image completeness flag.
 | `canUndo` / `canRedo` | `boolean` | Passed through to `rr-toolbar` |
 | `undoLabel` / `redoLabel` | `string \| null` | Passed through to `rr-toolbar` |
 
-**Emits:** `rr-history-change` after recording an edit.
+**Emits:** `rr-history-change` after recording an edit, and `rr-notify` (`{ message }`) when the
+**car tool** refuses a click for landing inside a car already labelled ([#43]) — a refusal that said
+nothing would read as a broken editor, and `rr-app` owns the toast.
 
 **Methods:**
 
@@ -978,8 +990,16 @@ authoring, the right-click menu, and the per-image completeness flag.
     rectangle around the chord. That rectangle is the whole reason calibration gates this tool.
   * The anchor is **view state**: abandoning a chain — right-click, a tool change, an image change,
     a lost DPT, a new archive — writes nothing and records nothing.
-  * A click on an **existing car end** starts nothing while idle. Abutting cars are what chaining is
-    for, and a chain's *second* click lands wherever it is aimed, existing end included.
+  * A click **inside a car already labelled on this image** starts nothing while idle, and says so
+    through `rr-notify` ([#43]) — a refusal that did nothing visibly would read as a broken editor.
+    It generalises the older rule that a click on an existing car **end** starts nothing, from the
+    handle out to the whole width rectangle (`carCovering`): both exist so a second box cannot be
+    stacked on the vehicle being aimed at, and the end handle now gives the **same reason** — the
+    hit-test routes that click elsewhere, but to the user it is one rule. Under another tool a car
+    end stays silent: nothing to explain, since no car was being authored. Abutting cars are what chaining is for, and a chain's
+    *second* click lands wherever it is aimed, existing end included. Only the click that **starts**
+    a chain is checked; a drag may still take an endpoint into another car, and an archive that
+    already contains overlapping cars opens and edits unchanged.
   * Endpoints **drag** and the menu **deletes**, through the same paths as everything else, keyed by
     label `id`. Deleting one car of a train leaves no residue — a train is derived from coincident
     endpoints, so nothing else names the car that went.

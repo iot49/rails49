@@ -21,10 +21,17 @@ context menu), the tool palette and calibration gate, sensor authoring, car auth
 reclassify, and the completeness affordance are all built. Every authoring surface v4 asks for
 exists, but the editor is not finished — check GitHub Issues for what is open. **A missing
 affordance is usually a deferral, not a bug.** One gap is deliberate and stated in the code: a
-click on an existing car end starts no car *while idle* — a car end has nothing a click can edit,
-and starting one there would stack a label on the object being aimed at. A chain's second click
-lands wherever it is aimed, existing end included; that is how a car is coupled onto a train
-already drawn.
+click **inside a car already labelled on this image** starts no car *while idle* — it would stack a
+second box on the vehicle being aimed at — and it says so rather than doing nothing visibly (#43).
+That is the whole width rectangle, `geometry.ts` § `carCovering`, generalising the older rule that a
+click on a car *end* starts nothing — and the end handle now gives the **same reason**, because a
+handle sits inside the same rectangle and two wordings would read as two rules. Under another tool a
+car end stays silent: no car was being authored, so there is nothing to explain. A chain's second
+click lands wherever it is aimed, existing end included; that is how a car is coupled onto a train
+already drawn. Only the click that **starts** a
+chain is checked: a drag may still take an endpoint into another car, and an archive that already
+contains overlapping cars opens and edits unchanged — this gates authoring, and adds no validation
+at the format layer.
 
 Where README and the code disagree, the code wins and README is the thing to correct:
 **a change to a component's properties or events belongs in README in the same commit.**
@@ -223,6 +230,12 @@ component that happens to need it first. Rules it encodes, each wrong somewhere 
 * **A coupler is exact coincidence.** Nothing about a coupling is stored; a proximity test would
   fuse cars placed separately. `hitTest` and `couplerPoints` apply the one rule, so what draws as a
   coupling is exactly what grabs as one.
+* **`hitTest` is what a gesture can grab; `carCovering` is whether a pixel is already labelled.**
+  Two questions, deliberately not one — a car's body grabs nothing, and only the car tool's first
+  click asks the second one (#43). Both read the same `HitScene`, so the two can never disagree
+  about what is on screen. It measures in the span's own frame, so a diagonal car is tested
+  across its axis rather than across a bounding box half again too big, and the boundary counts as
+  inside.
 * One `DEFAULT_GRAB_RADIUS_SCREEN_PX` for every tool — it describes the pointing device, not the
   object. `CLICK_SLOP_SCREEN_PX` is smaller (hand tremor, not aim), and `isClick` keeps a swipe on
   a phone from placing a point.
