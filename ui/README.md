@@ -87,7 +87,10 @@ rr-app                          ← shell: owns the archive and the view mode
 > media and the overlay resolve to **one box** at every window size, so an object
 > no longer drifts off the pixel it names as the window is resized. [#43] refused
 > the **first** click of a new chain when it lands inside a car already labelled
-> on that image, so a second box cannot be stacked on the same vehicle.
+> on that image, so a second box cannot be stacked on the same vehicle. [#37]
+> finished the reveal: an undo or redo now **highlights the object it changed**,
+> and the toolbar names the image when the edit lands on one the user is not
+> looking at.
 >
 > [#19]: https://github.com/iot49/rails49/issues/19
 > [#27]: https://github.com/iot49/rails49/issues/27
@@ -99,6 +102,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#33]: https://github.com/iot49/rails49/issues/33
 > [#35]: https://github.com/iot49/rails49/issues/35
 > [#36]: https://github.com/iot49/rails49/issues/36
+> [#37]: https://github.com/iot49/rails49/issues/37
 > [#41]: https://github.com/iot49/rails49/issues/41
 > [#42]: https://github.com/iot49/rails49/issues/42
 > [#43]: https://github.com/iot49/rails49/issues/43
@@ -170,8 +174,10 @@ hijack Cmd+Z mid-typing. A press with a drag still live returns nothing (see `hi
   cannot cover.
 * `rr-file-save` marks the history position saved rather than clearing it — undoing past a save is
   legitimate, because the bytes on disk are unaffected.
-* Undo and redo reveal what they changed: an entry scoped to another image calls
-  `rr-editor-view.syncFromArchive(filename)`, which selects that image before the change lands.
+* Undo and redo reveal what they changed, in the order the invariant states ([#37]): `selectImage`
+  on the **pending** entry's image, then the apply, then `syncFromArchive(filename, highlights)`,
+  which lights the objects the entry touched. `undoImage`/`redoImage` go down with the labels so the
+  editor can qualify the tooltips.
 * **Undo is offered to the editor first** ([#33]): `_undo` awaits `rr-editor-view.interceptUndo()`
   and stops there when it returns true. A live chain is a wall undo cannot cross, and only the editor
   knows one is live — so the protocol is one question asked here rather than chain state pushed up.
@@ -243,7 +249,7 @@ File actions and undo/redo. A column at the side of the editor, and **a row at o
 |---|---|---|
 | `canUndo` | `boolean` | Enables the undo button |
 | `canRedo` | `boolean` | Enables the redo button |
-| `undoLabel` | `string \| null` | Phrase for the tooltip — "Undo delete image" |
+| `undoLabel` | `string \| null` | Phrase for the tooltip — "Undo delete image", or "Undo delete car — img_3.jpg" when the entry lands on another image. **Arrives qualified**: `rr-editor-view` composes it, since only it knows which image is on screen |
 | `redoLabel` | `string \| null` | As above, for redo |
 
 **Emits:** `rr-file-new`, `rr-file-open`, `rr-file-save`, `rr-undo`, `rr-redo`.
@@ -346,6 +352,7 @@ image pixel coordinates.
 | `sensors` | `readonly Sensor[]` | Diamonds to draw. Per **layout**, so the same list draws over every image; empty in the live view |
 | `cars` | `readonly CarLabel[]` | Car spans to draw: a chord inside its width rectangle. Per **image**, so switching images swaps the whole list; empty in the live view |
 | `pendingCar` | `PendingCar \| null` | The **rubber band** — `{ anchor, to }` for the chain in flight. The one thing here that is not in the manifest; empty in the live view |
+| `highlight` | `ViewerHighlight \| null` | The objects a reveal is pointing at — `{ cars, sensors, calibration }`, ids for the first two and **indices** for the third. Already resolved by `rr-editor-view`; the viewer draws it and decides nothing. `null` in the live view |
 | `dpt` | `number \| null` | The scale the **world-sized** symbols are drawn at. `null` falls them back to `symbolSize` |
 | `resolution` | `{ width, height }` | `camera.resolution` — the frame every coordinate is **authored** in. Not the viewBox: the viewBox is the media's own size, and this is scaled onto it |
 
@@ -591,7 +598,7 @@ must be used together** — styles in the host's `static styles`, the renderer o
 
 | Export | Type | Description |
 |---|---|---|
-| `renderCalibrationPoint(point, index, size, frame)` | `(CalibrationPoint, number, number, FrameSize) => SVGTemplateResult` | A crosshair centered on `point.px`, a small circle at the exact pixel, and a `text` label carrying the world coordinate. `size` is in image pixels — `rr-viewer`'s `symbolSize`, so the crosshair is constant on screen; `frame` is its `resolution` |
+| `renderCalibrationPoint(point, index, size, frame, highlighted?)` | `(CalibrationPoint, number, number, FrameSize, boolean?) => SVGTemplateResult` | A crosshair centered on `point.px`, a small circle at the exact pixel, and a `text` label carrying the world coordinate. `size` is in image pixels — `rr-viewer`'s `symbolSize`, so the crosshair is constant on screen; `frame` is its `resolution` |
 | `calibrationMarkerStyles` | `CSSResult` | Crosshair and label colors, non-scaling strokes, and the label's own outline |
 
 There are no `<defs>` and so no third export: a crosshair is two lines, and nothing is reused.
@@ -656,7 +663,7 @@ must be used together** — styles in the host's `static styles`, the renderer o
 
 | Export | Type | Description |
 |---|---|---|
-| `renderSensor(sensor, size, frame)` | `(Sensor, SensorSymbolSize, FrameSize) => SVGTemplateResult` | A diamond centered on the sensor, a filled core at the exact pixel, and a `text` label. `frame` is `rr-viewer`'s `resolution` |
+| `renderSensor(sensor, size, frame, highlighted?)` | `(Sensor, SensorSymbolSize, FrameSize, boolean?) => SVGTemplateResult` | A diamond centered on the sensor, a filled core at the exact pixel, and a `text` label. `frame` is `rr-viewer`'s `resolution`; `highlighted` adds `highlight.ts`'s class |
 | `SensorSymbolSize` | `{ diameterPx, labelPx }` | **Two independent sizes.** `diameterPx` is a *world* size — one track width, so the diamond shrinks with the photograph; `labelPx` is a *screen* size, from the viewer's `symbolSize` |
 | `sensorLabelText(sensor)` | `(Sensor) => string` | The sensor's `name`, or its `id` when it has none |
 | `sensorMarkerStyles` | `CSSResult` | Diamond and label colors, the translucent fill, non-scaling strokes |
@@ -689,7 +696,7 @@ must be used together** — styles in the host's `static styles`, the renderers 
 
 | Export | Type | Description |
 |---|---|---|
-| `renderCar(car, size, coupled?, warning?)` | `(CarLabel, CarSymbolSize, CoupledEnds?, CarWarning \| null) => SVGTemplateResult` (`CoupledEnds` is `geometry.ts`'s) | The translucent width rectangle, the chord between the two ends, and a handle at each **free** end. The group carries `data-label-id`, and `unknown-class` when a warning is given |
+| `renderCar(car, size, coupled?, warning?, highlighted?)` | `(CarLabel, CarSymbolSize, CoupledEnds?, CarWarning \| null, boolean?) => SVGTemplateResult` (`CoupledEnds` is `geometry.ts`'s) | The translucent width rectangle, the chord between the two ends, and a handle at each **free** end. The group carries `data-label-id`, `unknown-class` when a warning is given, and `highlight.ts`'s class when a reveal points at it |
 | `renderCoupler(at, size)` | `(Point, CarSymbolSize) => SVGTemplateResult` | The **one shared handle** a coupling renders as — half again the size of a free end's, ringed so it reads as a joint |
 | `renderPendingCar(pending, size)` | `(PendingCar, CarSymbolSize) => SVGTemplateResult` | The **rubber band**: the car the next click would write, dashed, rectangle and all |
 | `CarSymbolSize` | `{ dpt, handlePx, labelPx }` | The **DPT the rectangle is derived from** — not a width — plus screen-constant handle and warning-label sizes |
@@ -822,7 +829,8 @@ authoring, the right-click menu, and the per-image completeness flag.
 | `archive` | `R49Archive \| null` | |
 | `history` | `EditHistory \| null` | The undo stack; every mutation below runs through it |
 | `canUndo` / `canRedo` | `boolean` | Passed through to `rr-toolbar` |
-| `undoLabel` / `redoLabel` | `string \| null` | Passed through to `rr-toolbar` |
+| `undoLabel` / `redoLabel` | `string \| null` | The pending edits' phrases. **Qualified here** before they reach `rr-toolbar` |
+| `undoImage` / `redoImage` | `string \| null` | The image each pending entry lands on, or `null` for a layout-scoped one. Compared against the image on screen to qualify the tooltip — "delete car — img_3.jpg" ([#37]) |
 
 **Emits:** `rr-history-change` after recording an edit, and `rr-notify` (`{ message }`) when the
 **car tool** refuses a click for landing inside a car already labelled ([#43]) — a refusal that said
@@ -830,9 +838,16 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
 
 **Methods:**
 
-* `syncFromArchive(revealFilename?)` — rebuilds the blob URLs and optionally selects an image, and
-  ends any chain in progress. Called by `rr-app` after undo or redo, which is how an entry scoped to
-  another image brings that image into view before the change lands.
+* `syncFromArchive(revealFilename?, highlights?)` — rebuilds the blob URLs, optionally selects an
+  image, ends any chain in progress, and **lights what the entry changed**. Called by `rr-app`
+  *after* undo or redo has applied. `highlights` are the entry's candidates, held as the history gave
+  them and **resolved on every render** — by `id` for a car or sensor, by pixel for a calibration
+  point, which has no id — so an object the apply removed lights nothing, and an edit arriving while
+  the glow is up cannot leave it on a renumbered crosshair. The glow comes off again after
+  `HIGHLIGHT_DURATION_MS`, and on an image change, an archive change or disconnect.
+* `selectImage(filename)` — moves the selection and nothing else. Called by `rr-app` *before* the
+  snapshot lands, which is the order the navigation invariant states: select, apply, highlight
+  ([#37], `../SPEC.md` § Undo and redo).
 * `interceptUndo()` — `Promise<boolean>`. `rr-app` offers every undo here first, because **a live
   chain is a wall undo cannot cross** and only this component knows one is live ([#33]). See
   *Chaining* below.
@@ -1118,6 +1133,29 @@ height. `tests/layout.test.ts` asserts both.
 
 ---
 
+### `highlight.ts`
+
+The transient glow a reveal puts on the object an undo or redo just changed ([#37]). A module, and
+one module for all three marker types, because it is **one signal**: "this is what moved". The class
+and the styles are **used together**, like every other marker pair.
+
+| Export | Description |
+|---|---|
+| `HIGHLIGHT_CLASS` | The class the three renderers put on their group |
+| `highlightStyles` | `CSSResult`. The keyframes and the rule. **Used together with the class**, like every other marker pair — `rr-viewer` carries it last in `static styles` |
+| `HIGHLIGHT_DURATION_MS` | 1400. Shared by the fade and by the timer in `rr-editor-view` that removes the class |
+
+**White, and a glow rather than a colour change.** Each object type has its own ink by requirement
+(`../SPEC.md` § Reference points), so a highlight in any of those colours would read as a fourth kind
+of object; and a car drawn red because its class is unknown has to stay visibly red while it is lit.
+`drop-shadow` follows the rendered shape, so there is nothing per-symbol to author.
+
+Two consecutive reveals of the **same** object do not restart the animation — the class was never
+absent between them — so the glow stays up and fades once, measured from the last of them. That is
+the right reading of a held-down Cmd+Z walking back over one car.
+
+---
+
 ### `capture.ts`
 
 Camera helpers, shared by both views.
@@ -1139,10 +1177,12 @@ exporter or to `lib/r49/tests/fixtures.test.ts`.
 
 | Export | Description |
 |---|---|
-| `EditHistory` | `attach`, `record`, `beginGesture`, `undo`, `redo`, `markSaved`; `canUndo`/`canRedo`/`undoLabel`/`redoLabel`/`isDirty`/`size`/`bytes` |
+| `EditHistory` | `attach`, `record`, `beginGesture`, `undo`, `redo`, `markSaved`; `canUndo`/`canRedo`/`undoEntry`/`redoEntry`/`undoLabel`/`redoLabel`/`isDirty`/`size`/`bytes` |
 | `HistoryTarget` | `{ kind: 'layout' }`, `{ kind: 'image', filename }`, or `{ kind: 'images' }` |
-| `HistoryEntry` | What `undo`/`redo` return, so the caller can reveal what changed |
-| `revealTarget(entry)` | The image an entry must bring into view before it lands, or `undefined`. The navigation invariant in one function — `rr-app` and the chain's own undo both read it |
+| `HistoryEntry` | What `undo`/`redo` return, so the caller can reveal what changed. Carries `highlights` |
+| `HistoryHighlight` | One object an entry changed: `{ kind: 'car' \| 'sensor', id }` or `{ kind: 'calibration', px }` |
+| `changedObjects(target, before, after)` | The diff behind `highlights`. Pure, and exported for its own tests |
+| `revealTarget(entry)` | The image an entry must bring into view before it lands, or `undefined`. The navigation invariant in one function — `rr-app` and the chain's own undo both read it. Takes `null` too, since callers ask it of a *pending* entry |
 | `HistoryGesture` | An open gesture. One method, `commit()`, returning whether an entry was recorded |
 | `DEFAULT_HISTORY_BUDGET_BYTES` | 256 MB. A UI constant, **not** a `config.yaml` value — nothing outside `ui/` can read it |
 
@@ -1172,9 +1212,13 @@ archive is replaced — every caller owes it an ending. `rr-editor-view` closes 
 `pointerId` and on disconnect, and `attach` drops one outright. `commit()` pushes its entry **before
 it yields**, so closing a stale gesture and opening the next one in the same handler records both.
 
-What is built and what is not: this covers layout metadata, image add/remove/reorder, calibration
-points, and the calibration drag. The chain interception described in `../SPEC.md` § Undo and redo
-arrives with car authoring — there is no chain yet for it to intercept.
+**An entry knows what it changed**, and it is a *diff* of its own two snapshots rather than anything
+the caller declared ([#37]). That is the only honest answer available here — the mutation is an
+opaque callback — and it is the answer that stays right when one gesture moves two cars. Cars and
+sensors are identified by `id`; a calibration point has none, so it is identified by the whole point,
+which means a **moved** point comes back twice, once at each end of the move. Exactly one of those
+exists once the snapshot has landed, and resolving that is `rr-editor-view`'s job. Because the diff
+is symmetric, undo and redo light the same objects.
 
 ---
 

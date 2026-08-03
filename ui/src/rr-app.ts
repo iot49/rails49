@@ -136,26 +136,38 @@ export class RRApp extends LitElement {
       this.requestUpdate();
       return;
     }
+    // Before the snapshot lands, not after — see {@link _reveal}.
+    this._editorView()?.selectImage(revealTarget(this._history.undoEntry));
     const entry = await this._history.undo();
     if (entry) await this._reveal(entry);
   }
 
   private async _redo() {
+    this._editorView()?.selectImage(revealTarget(this._history.redoEntry));
     const entry = await this._history.redo();
     if (entry) await this._reveal(entry);
   }
 
   /**
    * The navigation invariant: undo may move the user, but it may never change
-   * something they cannot see. An entry scoped to another image selects that
-   * image before the change lands.
+   * something they cannot see (`SPEC.md` § Undo and redo).
    *
-   * Object-level highlighting arrives with car authoring — for now the only
-   * sub-image geometry is the image itself.
+   * Three steps, in this order: **select** the image the entry targets, which
+   * the caller has already done from the *pending* entry; **apply**, which the
+   * stack does; and **highlight** what changed, here. Selecting first means the
+   * snapshot never lands while the editor's own state still points at the frame
+   * the user is leaving. What it does *not* buy is an intermediate paint — Lit
+   * batches the selection and the apply into one update — so the highlight, not
+   * the ordering, is what actually shows the user what moved.
+   *
+   * The highlight is object-level (#37) and resolved by the editor, because
+   * only it knows which image is on screen. What the entry changed is diffed
+   * out of its own snapshots, so a gesture that moved two cars lights both and
+   * an undone *add* lights nothing at all.
    */
   private async _reveal(entry: HistoryEntry) {
     const view = this._editorView();
-    await view?.syncFromArchive(revealTarget(entry));
+    await view?.syncFromArchive(revealTarget(entry), entry.highlights);
     if (this._archive) {
       this._status = this._archive.getManifest().layout.name || this._status;
     }
@@ -300,6 +312,8 @@ export class RRApp extends LitElement {
                 .canRedo=${this._history.canRedo}
                 .undoLabel=${this._history.undoLabel}
                 .redoLabel=${this._history.redoLabel}
+                .undoImage=${revealTarget(this._history.undoEntry) ?? null}
+                .redoImage=${revealTarget(this._history.redoEntry) ?? null}
                 @rr-file-new=${this._onFileNew}
                 @rr-file-open=${this._onFileOpen}
                 @rr-file-save=${this._onFileSave}

@@ -3,6 +3,7 @@ import type { SVGTemplateResult, CSSResult } from 'lit';
 import type { CalibrationPoint, WorldPoint } from '@occupancy/r49';
 import { placeLabel } from './geometry.js';
 import type { FrameSize } from './geometry.js';
+import { HIGHLIGHT_CLASS } from './highlight.js';
 
 /**
  * Calibration-point rendering for SVG: a crosshair labelled with its world
@@ -85,12 +86,16 @@ function formatWorld(world: WorldPoint): string {
  * @param frame The image's bounds, `rr-viewer`'s `resolution`. Only the label
  *   reads it, to flip inwards at an edge instead of being clipped; the
  *   crosshair is drawn on its pixel wherever that pixel is.
+ * @param highlighted Whether a reveal is pointing at this point (#37) — the
+ *   shared glow from `highlight.ts`. The caller resolves *which* point that is
+ *   by pixel rather than by this index, since an undo renumbers the list.
  */
 export function renderCalibrationPoint(
   point: CalibrationPoint,
   index: number,
   size: number,
-  frame: FrameSize
+  frame: FrameSize,
+  highlighted = false
 ): SVGTemplateResult {
   const { x, y } = point.px;
   const arm = size / 2;
@@ -104,7 +109,10 @@ export function renderCalibrationPoint(
   const placement = placeLabel({ x, y }, label, fontSize, gap * 1.6, frame);
 
   return svg`
-    <g class="calibration-point" data-calibration-index="${index}">
+    <g
+      class="calibration-point ${highlighted ? HIGHLIGHT_CLASS : ''}"
+      data-calibration-index="${index}"
+    >
       <line x1="${x - arm}" y1="${y}" x2="${x + arm}" y2="${y}" />
       <line x1="${x}" y1="${y - arm}" x2="${x}" y2="${y + arm}" />
       <circle cx="${x}" cy="${y}" r="${gap}" />

@@ -3,6 +3,7 @@ import { render, svg } from 'lit';
 import type { CarLabel } from '@occupancy/r49';
 import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from '../src/carMarker.js';
 import { carWidthPx } from '../src/geometry.js';
+import { HIGHLIGHT_CLASS } from '../src/highlight.js';
 
 /** Render a lit SVGTemplateResult into a detached <svg> and return it. */
 function renderSvg(template: ReturnType<typeof svg>): SVGElement {
@@ -105,6 +106,17 @@ describe('renderCar()', () => {
   it('keys the group on the label id, never on position', () => {
     const el = renderSvg(renderCar(car(), size(90)));
     expect(el.querySelector('g')!.getAttribute('data-label-id')).toBe('C1abcdefghi');
+  });
+
+  it('carries the highlight class when a reveal points at it', () => {
+    // What an undo lights up so the user can see which object it touched
+    // (#37). It rides on the same group as the class warning, so one object is
+    // one element however many things are being said about it.
+    const lit = renderSvg(renderCar(car(), size(90), undefined, null, true));
+    const plain = renderSvg(renderCar(car(), size(90)));
+
+    expect(lit.querySelector('g')!.classList.contains(HIGHLIGHT_CLASS)).toBe(true);
+    expect(plain.querySelector('g')!.classList.contains(HIGHLIGHT_CLASS)).toBe(false);
   });
 
   it('survives a zero-length span', () => {

@@ -7,6 +7,7 @@ import type {
   ViewerContextMenuDetail,
   ViewerPointerEventName,
 } from '../src/rr-viewer.js';
+import { HIGHLIGHT_CLASS } from '../src/highlight.js';
 
 // Mock ResizeObserver
 class MockResizeObserver {
@@ -492,10 +493,14 @@ describe('rr-viewer', () => {
           .resolution=${resolution}
         ></rr-viewer>
       `);
-      const groups = [...el.shadowRoot!.querySelectorAll('g')].map(g => g.getAttribute('class'));
+      // By membership rather than by the whole class attribute: a group carries
+      // more than its kind — a warning, a reveal highlight — and draw order is
+      // what this is about.
+      const groups = [...el.shadowRoot!.querySelectorAll('g')].map(g => [...g.classList]);
+      const first = (kind: string) => groups.findIndex(classes => classes.includes(kind));
 
-      expect(groups.indexOf('car')).to.be.lessThan(groups.indexOf('calibration-point'));
-      expect(groups.indexOf('car')).to.be.lessThan(groups.indexOf('sensor'));
+      expect(first('car')).to.be.lessThan(first('calibration-point'));
+      expect(first('car')).to.be.lessThan(first('sensor'));
     });
 
     describe('couplings', () => {
@@ -604,6 +609,70 @@ describe('rr-viewer', () => {
 
         expect(el.shadowRoot!.querySelector('.car-pending')).to.not.exist;
       });
+    });
+  });
+
+  // What an undo lit up (#37). The viewer is told which objects to glow and
+  // draws that; deciding what changed is the history's job and resolving it
+  // against the manifest is the editor's.
+  describe('the reveal highlight', () => {
+    const cars = [
+      { id: 'C1abcdefghi', class: 'stock', provenance: 'human' as const,
+        p0: { x: 100, y: 100 }, p1: { x: 300, y: 100 } },
+      { id: 'C2abcdefghi', class: 'stock', provenance: 'human' as const,
+        p0: { x: 600, y: 400 }, p1: { x: 800, y: 400 } },
+    ];
+    const sensors = [{ id: 'S1abcdefghi', x: 100, y: 100 }];
+    const points = [
+      { px: { x: 40, y: 40 }, world: { x: 0, y: 0, z: 0 } },
+      { px: { x: 90, y: 90 }, world: { x: 0, y: 250, z: 0 } },
+    ];
+
+    /** Whether the `index`th element of `selector` carries the glow. */
+    const lit = (el: RrViewer, selector: string) =>
+      [...el.shadowRoot!.querySelectorAll(selector)].map(node =>
+        node.classList.contains(HIGHLIGHT_CLASS)
+      );
+
+    it('lights only the objects it is given, by id', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer
+          .cars=${cars}
+          .sensors=${sensors}
+          .calibrationPoints=${points}
+          .dpt=${90}
+          .resolution=${resolution}
+          .highlight=${{ cars: ['C2abcdefghi'], sensors: [], calibration: [1] }}
+        ></rr-viewer>
+      `);
+
+      expect(lit(el, '.car')).to.deep.equal([false, true]);
+      expect(lit(el, '.sensor')).to.deep.equal([false]);
+      expect(lit(el, '.calibration-point')).to.deep.equal([false, true]);
+    });
+
+    it('lights nothing by default, so the live view is unaffected', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .cars=${cars} .sensors=${sensors} .dpt=${90} .resolution=${resolution}></rr-viewer>
+      `);
+      expect(lit(el, '.car')).to.deep.equal([false, false]);
+      expect(lit(el, '.sensor')).to.deep.equal([false]);
+    });
+
+    it('goes out when the highlight is cleared', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer
+          .sensors=${sensors}
+          .resolution=${resolution}
+          .highlight=${{ cars: [], sensors: ['S1abcdefghi'], calibration: [] }}
+        ></rr-viewer>
+      `);
+      expect(lit(el, '.sensor')).to.deep.equal([true]);
+
+      el.highlight = null;
+      await el.updateComplete;
+
+      expect(lit(el, '.sensor')).to.deep.equal([false]);
     });
   });
 

@@ -2,6 +2,7 @@ import { svg, css } from 'lit';
 import type { SVGTemplateResult, CSSResult } from 'lit';
 import type { CarLabel, Point } from '@occupancy/r49';
 import { carCorners, placeLabel } from './geometry.js';
+import { HIGHLIGHT_CLASS } from './highlight.js';
 import type { CoupledEnds, FrameSize } from './geometry.js';
 
 /**
@@ -187,19 +188,26 @@ export interface CarWarning {
  * @param coupled Which ends a shared handle covers. Both free by default.
  * @param warning The non-conformance to show, or `null` when the class is one
  *   the authored vocabulary names.
+ * @param highlighted Whether a reveal is pointing at this car (#37). The glow
+ *   is `highlight.ts`'s and sits on the same group as everything else said
+ *   about the car, so one label is one element.
  */
 export function renderCar(
   car: CarLabel,
   size: CarSymbolSize,
   coupled: CoupledEnds = NO_COUPLED_ENDS,
-  warning: CarWarning | null = null
+  warning: CarWarning | null = null,
+  highlighted = false
 ): SVGTemplateResult {
   const { p0, p1 } = car;
   const corners = size.dpt === null ? null : carCorners(p0, p1, size.dpt);
   const handle = size.handlePx / 2;
 
   return svg`
-    <g class="car ${warning ? 'unknown-class' : ''}" data-label-id="${car.id}">
+    <g
+      class="car ${warning ? 'unknown-class' : ''} ${highlighted ? HIGHLIGHT_CLASS : ''}"
+      data-label-id="${car.id}"
+    >
       ${
         corners
           ? svg`<polygon points="${corners.map(c => `${c.x},${c.y}`).join(' ')}" />`

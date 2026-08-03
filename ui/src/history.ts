@@ -1,4 +1,4 @@
-import type { R49Archive, Image, Layout } from '@occupancy/r49';
+import type { R49Archive, CalibrationPoint, Image, Layout, Point } from '@occupancy/r49';
 
 /**
  * Undo/redo for the editor, as scoped snapshots of the manifest.
@@ -38,6 +38,24 @@ export type HistoryTarget =
   | { kind: 'images' };
 
 /**
+ * One object an entry changed, for the reveal to point at.
+ *
+ * Keyed the way the editor keys everything else: by `id` where the format gives
+ * one, because applying a snapshot replaces the objects wholesale and an index
+ * or a reference would name a different object a moment later. A calibration
+ * point has no id — nothing references one individually — so it is named by the
+ * pixel it sits on, which is the same handle `_pointIsStillAt` uses.
+ *
+ * It is a **candidate**, not a promise that the object is there: an undone
+ * *add* changed a car that no longer exists once the snapshot lands, and
+ * resolving is the consumer's job (see `rr-editor-view`).
+ */
+export type HistoryHighlight =
+  | { readonly kind: 'car'; readonly id: string }
+  | { readonly kind: 'sensor'; readonly id: string }
+  | { readonly kind: 'calibration'; readonly px: Point };
+
+/**
  * One undoable edit. Returned by {@link EditHistory.undo} and
  * {@link EditHistory.redo} so the caller can satisfy the navigation invariant:
  * an undo that changes another image must reveal that image before the user is
@@ -51,6 +69,15 @@ export interface HistoryEntry {
   readonly blobs: ReadonlyMap<string, Uint8Array>;
   /** Approximate retained size, the unit the budget is spent in. */
   readonly bytes: number;
+  /**
+   * The objects this entry moved, added or removed — what a reveal highlights.
+   *
+   * Computed once, from the entry's own two snapshots, and therefore the same
+   * list in both directions: undo and redo are one operation with the fields
+   * swapped, so they touch the same objects. Empty for an edit with no
+   * sub-image geometry to point at — a completeness toggle, a rename, a scale.
+   */
+  readonly highlights: readonly HistoryHighlight[];
 }
 
 /**
@@ -61,15 +88,108 @@ export interface HistoryEntry {
  * move the user, but it may never change something they cannot see. Two callers
  * need it — `rr-app` for an ordinary undo, `rr-editor-view` for the one a live
  * chain intercepts — and one rule stated twice is one rule that can drift.
+ *
+ * `null` is accepted because the callers ask it of a *pending* entry as well as
+ * of a completed one, and an empty stack has none: "no entry" and "an entry
+ * about no image" both mean "do not move the user".
  */
-export function revealTarget(entry: HistoryEntry): string | undefined {
-  return entry.target.kind === 'image' ? entry.target.filename : undefined;
+export function revealTarget(entry: HistoryEntry | null): string | undefined {
+  return entry?.target.kind === 'image' ? entry.target.filename : undefined;
 }
 
 interface MutableEntry extends HistoryEntry {
   before: string;
   after: string;
   blobs: Map<string, Uint8Array>;
+}
+
+/**
+ * Which objects differ between an entry's two snapshots.
+ *
+ * A **diff, not a record of what the caller meant**: the mutation is an opaque
+ * callback here, so the only honest answer to "what changed" is the one the
+ * snapshots give — and it is the answer that stays right when one gesture moves
+ * two cars, or when a delete takes a `labeled_complete` with it.
+ *
+ * Identity is `id` for cars and sensors and the **whole point** for calibration
+ * points, which carry no id. A moved object therefore appears twice, once at
+ * each end of the move; the consumer resolves both against the manifest as it
+ * stands after the apply, and exactly one of them is there.
+ *
+ * An `images` entry yields nothing, and a `layout.scale` edit yields nothing:
+ * neither changes an object the overlay draws. What an images entry changed is
+ * the image list, which the thumbnail bar shows whole; what a scale edit
+ * changed is every car rectangle at once, and lighting all of them would be a
+ * highlight that points at nothing in particular.
+ */
+export function changedObjects(
+  target: HistoryTarget,
+  before: string,
+  after: string
+): readonly HistoryHighlight[] {
+  switch (target.kind) {
+    case 'images':
+      return [];
+    case 'image': {
+      const labels = (json: string) => (JSON.parse(json) as Image | null)?.labels ?? [];
+      return changedIds(labels(before), labels(after)).map(id => ({ kind: 'car', id }) as const);
+    }
+    case 'layout': {
+      const layout = (json: string) => JSON.parse(json) as Layout | null;
+      const b = layout(before);
+      const a = layout(after);
+      return [
+        ...changedIds(b?.sensors ?? [], a?.sensors ?? []).map(
+          id => ({ kind: 'sensor', id }) as const
+        ),
+        ...changedPoints(b?.calibration.points ?? [], a?.calibration.points ?? []).map(
+          px => ({ kind: 'calibration', px }) as const
+        ),
+      ];
+    }
+  }
+}
+
+/** Ids whose object is absent from one side, or different on the two. */
+function changedIds(
+  before: readonly { readonly id: string }[],
+  after: readonly { readonly id: string }[]
+): string[] {
+  const index = (items: readonly { readonly id: string }[]) =>
+    new Map(items.map(item => [item.id, JSON.stringify(item)]));
+  const b = index(before);
+  const a = index(after);
+  return [...new Set([...b.keys(), ...a.keys()])].filter(id => b.get(id) !== a.get(id));
+}
+
+/**
+ * The pixels of the calibration points one side has and the other does not.
+ *
+ * By **value**, because a point has no id and its index is not a name — a
+ * deletion renumbers every point after it, and a diff by index would light up
+ * the whole tail. A point that moved is in neither intersection, so both of its
+ * positions come back; a point whose world coordinate was retyped comes back
+ * once, since the pixel it is grabbed by is the same one.
+ */
+function changedPoints(
+  before: readonly CalibrationPoint[],
+  after: readonly CalibrationPoint[]
+): Point[] {
+  const key = (p: CalibrationPoint) =>
+    `${p.px.x},${p.px.y}|${p.world.x},${p.world.y},${p.world.z}`;
+  const b = new Set(before.map(key));
+  const a = new Set(after.map(key));
+
+  const pixels: Point[] = [];
+  const seen = new Set<string>();
+  for (const point of [...before, ...after]) {
+    if (b.has(key(point)) && a.has(key(point))) continue;
+    const px = `${point.px.x},${point.px.y}`;
+    if (seen.has(px)) continue;
+    seen.add(px);
+    pixels.push(point.px);
+  }
+  return pixels;
 }
 
 /**
@@ -174,14 +294,31 @@ export class EditHistory {
     return this._index < this._entries.length;
   }
 
+  /**
+   * The edit `undo()` would reverse, **without** reversing it, or null.
+   *
+   * What the affordances are named from, and what lets a caller honour the
+   * order the navigation invariant states: an entry scoped to another image
+   * selects that image *first*, then applies. Reading the entry off the stack
+   * is the only way to know which image that is before the snapshot lands.
+   */
+  get undoEntry(): HistoryEntry | null {
+    return this.canUndo ? this._entries[this._index - 1] : null;
+  }
+
+  /** The edit `redo()` would reapply, without reapplying it. Mirror of {@link undoEntry}. */
+  get redoEntry(): HistoryEntry | null {
+    return this.canRedo ? this._entries[this._index] : null;
+  }
+
   /** Label of the edit `undo()` would reverse, or null. */
   get undoLabel(): string | null {
-    return this.canUndo ? this._entries[this._index - 1].label : null;
+    return this.undoEntry?.label ?? null;
   }
 
   /** Label of the edit `redo()` would reapply, or null. */
   get redoLabel(): string | null {
-    return this.canRedo ? this._entries[this._index].label : null;
+    return this.redoEntry?.label ?? null;
   }
 
   /**
@@ -332,7 +469,19 @@ export class EditHistory {
 
     // Linear redo: any new edit discards the abandoned branch.
     this._drop(this._entries.splice(this._index));
-    this._entries.push({ label, target, before, after, blobs, bytes });
+    this._entries.push({
+      label,
+      target,
+      before,
+      after,
+      blobs,
+      bytes,
+      // Diffed once, here, rather than on every reveal: the snapshots are
+      // immutable from this point, so the answer cannot change, and a reveal is
+      // on the keystroke path where an undo of a fully labeled image would
+      // otherwise re-parse both snapshots.
+      highlights: changedObjects(target, before, after),
+    });
     this._index = this._entries.length;
     this._bytes += bytes;
     this._evict();

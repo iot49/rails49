@@ -3,6 +3,7 @@ import type { SVGTemplateResult, CSSResult } from 'lit';
 import type { Sensor } from '@occupancy/r49';
 import { placeLabel } from './geometry.js';
 import type { FrameSize } from './geometry.js';
+import { HIGHLIGHT_CLASS } from './highlight.js';
 
 /**
  * Sensor rendering for SVG: a ringed diamond labelled with its name, or with
@@ -122,11 +123,14 @@ export interface SensorSymbolSize {
  * @param frame The image's bounds, `rr-viewer`'s `resolution`. Only the label
  *   reads it, to flip inwards at an edge instead of being clipped; the diamond
  *   is drawn on its pixel wherever that pixel is.
+ * @param highlighted Whether a reveal is pointing at this sensor (#37) — the
+ *   shared glow from `highlight.ts`, on the group so the label is lit with it.
  */
 export function renderSensor(
   sensor: Sensor,
   size: SensorSymbolSize,
-  frame: FrameSize
+  frame: FrameSize,
+  highlighted = false
 ): SVGTemplateResult {
   const { x, y } = sensor;
   const arm = size.diameterPx / 2;
@@ -141,7 +145,7 @@ export function renderSensor(
   const placement = placeLabel({ x, y }, label, size.labelPx, size.labelPx * 0.7, frame);
 
   return svg`
-    <g class="sensor" data-sensor-id="${sensor.id}">
+    <g class="sensor ${highlighted ? HIGHLIGHT_CLASS : ''}" data-sensor-id="${sensor.id}">
       <polygon points="${x},${y - arm} ${x + arm},${y} ${x},${y + arm} ${x - arm},${y}" />
       <circle cx="${x}" cy="${y}" r="${core}" />
       <text

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { R49Archive, MANIFEST_VERSION, type ManifestData } from '@occupancy/r49';
+import { R49Archive, MANIFEST_VERSION, type CarLabel, type ManifestData, type Point } from '@occupancy/r49';
 import { EditHistory } from '../src/history.js';
 
 // No DOM here at all: history.ts is a plain module, which is the point of
@@ -252,6 +252,120 @@ describe('EditHistory', () => {
     });
     expect(history.size).toBe(1);
     expect(history.canUndo).toBe(true);
+  });
+});
+
+describe('EditHistory highlights', () => {
+  // What an entry changed, so the reveal after an undo can point at it. Derived
+  // from the entry's own before/after snapshots, which is what makes it
+  // symmetric: undo and redo touch the same objects.
+
+  const car = (id: string, x: number): CarLabel => ({
+    id,
+    class: 'stock',
+    provenance: 'human',
+    p0: { x, y: 0 },
+    p1: { x: x + 10, y: 0 },
+  });
+
+  it('names the car an image entry changed', async () => {
+    const archive = await makeArchive();
+    const history = attached(archive);
+    const image = archive.getManifest().images[1];
+    image.labels = [car('car-a', 0)];
+
+    await history.record('place car', { kind: 'image', filename: image.filename }, () => {
+      image.labels = [...image.labels, car('car-b', 100)];
+    });
+
+    expect(history.undoEntry?.highlights).toEqual([{ kind: 'car', id: 'car-b' }]);
+  });
+
+  it('names the sensor a layout entry moved', async () => {
+    const archive = await makeArchive();
+    const history = attached(archive);
+    const manifest = archive.getManifest();
+    manifest.layout = {
+      ...manifest.layout,
+      sensors: [
+        { id: 'sensor-a', x: 10, y: 10 },
+        { id: 'sensor-b', x: 20, y: 20 },
+      ],
+    };
+
+    await history.record('move sensor', { kind: 'layout' }, () => {
+      manifest.layout = {
+        ...manifest.layout,
+        sensors: [manifest.layout.sensors[0], { id: 'sensor-b', x: 90, y: 20 }],
+      };
+    });
+
+    expect(history.undoEntry?.highlights).toEqual([{ kind: 'sensor', id: 'sensor-b' }]);
+  });
+
+  it('names both ends of a calibration point that moved', async () => {
+    // Points carry no id, so a move is a disappearance and an appearance. Both
+    // are offered and the consumer resolves them against the manifest as it
+    // stands after the apply — whichever end exists then is the one on screen.
+    const archive = await makeArchive();
+    const history = attached(archive);
+    const manifest = archive.getManifest();
+    const world = { x: 0, y: 0, z: 0 };
+    const points = (px: Point) => ({ points: [{ px, world }, { px: { x: 5, y: 5 }, world }] });
+    manifest.layout = { ...manifest.layout, calibration: points({ x: 1, y: 1 }) };
+
+    await history.record('move calibration point', { kind: 'layout' }, () => {
+      manifest.layout = { ...manifest.layout, calibration: points({ x: 80, y: 40 }) };
+    });
+
+    expect(history.undoEntry?.highlights).toEqual([
+      { kind: 'calibration', px: { x: 1, y: 1 } },
+      { kind: 'calibration', px: { x: 80, y: 40 } },
+    ]);
+  });
+
+  it('names one point when only its world coordinate changed', async () => {
+    // The pixel is the handle, and it did not move: two refs on the same pixel
+    // would be one highlight twice over.
+    const archive = await makeArchive();
+    const history = attached(archive);
+    const manifest = archive.getManifest();
+    const px = { x: 3, y: 4 };
+    manifest.layout = {
+      ...manifest.layout,
+      calibration: { points: [{ px, world: { x: 0, y: 0, z: 0 } }] },
+    };
+
+    await history.record('edit calibration point', { kind: 'layout' }, () => {
+      manifest.layout = {
+        ...manifest.layout,
+        calibration: { points: [{ px, world: { x: 250, y: 0, z: 0 } }] },
+      };
+    });
+
+    expect(history.undoEntry?.highlights).toEqual([{ kind: 'calibration', px }]);
+  });
+
+  it('offers nothing to point at for an edit with no geometry', async () => {
+    // A completeness toggle, a rename, a scale change, an image reorder: each is
+    // a real entry that reveals its image, and none of them has a sub-image
+    // object to light up.
+    const archive = await makeArchive();
+    const history = attached(archive);
+    const manifest = archive.getManifest();
+
+    await history.record('mark labeled complete', { kind: 'image', filename: 'img_0.jpg' }, () => {
+      manifest.images[0].labeled_complete = true;
+    });
+    expect(history.undoEntry?.highlights).toEqual([]);
+
+    await history.record('edit scale', { kind: 'layout' }, () => {
+      manifest.layout = { ...manifest.layout, scale: 'N' };
+    });
+    expect(history.undoEntry?.highlights).toEqual([]);
+
+    await history.record('reorder images', { kind: 'images' }, () => archive.reorderImages(0, 2));
+    expect(history.undoEntry?.highlights).toEqual([]);
   });
 });
 

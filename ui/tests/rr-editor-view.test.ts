@@ -3,6 +3,7 @@ import { fixture, html } from '@open-wc/testing';
 import { R49Archive, getDPT } from '@occupancy/r49';
 import type { CalibrationPoint, CarLabel, Point, Sensor, WorldPoint } from '@occupancy/r49';
 import { EditHistory } from '../src/history.js';
+import { HIGHLIGHT_DURATION_MS } from '../src/highlight.js';
 import { classChoices, rootClass } from '../src/vocabulary.js';
 import '../src/rr-editor-view.js';
 import { RREditorView } from '../src/rr-editor-view.js';
@@ -2661,6 +2662,195 @@ describe('rr-editor-view', () => {
 
       await archive.addImage('img2.jpg', new Uint8Array([1, 2, 3]));
       expect(images()[1].labeled_complete).to.be.false;
+    });
+  });
+
+  describe('the reveal after an undo (#37)', () => {
+    // `rr-app` hands the editor what an entry changed; the editor decides which
+    // of those objects still exist on the image now on screen, and lights them.
+    // Nothing here asserts that a glow is visible — jsdom neither lays out nor
+    // paints — only which objects are marked as lit.
+
+    const car = (id: string, x: number): CarLabel => ({
+      id,
+      class: 'stock',
+      provenance: 'human',
+      p0: { x, y: 100 },
+      p1: { x: x + 200, y: 100 },
+    });
+
+    /** What the viewer was told to light. */
+    const highlightOf = (el: RREditorView) =>
+      el.shadowRoot!.querySelector('rr-viewer')!.highlight;
+
+    function addSecondImage() {
+      archive.getManifest().images.push({
+        filename: 'img2.jpg',
+        labeled_complete: false,
+        labels: [],
+      });
+    }
+
+    /** Selects an image the way the thumbnail bar reports a click on one. */
+    async function selectImage(el: RREditorView, index: number) {
+      el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
+        new CustomEvent('rr-image-select', { detail: { index }, bubbles: true, composed: true })
+      );
+      await el.updateComplete;
+    }
+
+    it('lights the car an entry changed, on the image it revealed', async () => {
+      addSecondImage();
+      archive.getManifest().images[1].labels = [car('car-a', 100), car('car-b', 600)];
+      const el = await mount();
+
+      await el.syncFromArchive('img2.jpg', [{ kind: 'car', id: 'car-b' }]);
+      await el.updateComplete;
+
+      expect(highlightOf(el)).to.deep.equal({
+        cars: ['car-b'],
+        sensors: [],
+        calibration: [],
+      });
+    });
+
+    it('drops an object the apply removed, rather than throwing', async () => {
+      // The undone *add*: the entry names a car that is no longer there once
+      // the snapshot has landed. Revealing it is a no-op, not an error.
+      const el = await mount();
+
+      await el.syncFromArchive('img1.jpg', [{ kind: 'car', id: 'gone' }]);
+      await el.updateComplete;
+
+      expect(highlightOf(el)).to.be.null;
+    });
+
+    it('lights a layout object without changing the image on screen', async () => {
+      addSecondImage();
+      archive.getManifest().layout.sensors = [
+        { id: 'sensor-a', x: 10, y: 10 },
+        { id: 'sensor-b', x: 20, y: 20 },
+      ];
+      const el = await mount();
+      await selectImage(el, 1);
+
+      await el.syncFromArchive(undefined, [{ kind: 'sensor', id: 'sensor-b' }]);
+      await el.updateComplete;
+
+      expect(highlightOf(el)!.sensors).to.deep.equal(['sensor-b']);
+      expect(el.shadowRoot!.querySelector('rr-thumbnail-bar')!.selectedIndex).to.equal(1);
+    });
+
+    it('resolves a calibration point by pixel, since an undo renumbers them', async () => {
+      archive.getManifest().layout.calibration.points = [
+        { px: { x: 10, y: 20 }, world: { x: 0, y: 0, z: 0 } },
+        { px: { x: 30, y: 40 }, world: { x: 250, y: 0, z: 0 } },
+      ];
+      const el = await mount();
+
+      await el.syncFromArchive(undefined, [{ kind: 'calibration', px: { x: 30, y: 40 } }]);
+      await el.updateComplete;
+
+      expect(highlightOf(el)!.calibration).to.deep.equal([1]);
+    });
+
+    it('follows a calibration point through a renumbering while the glow is up', async () => {
+      // The viewer can only address a point by index, and an edit landing
+      // during the 1400 ms — another undo, a delete — renumbers the list. An
+      // index resolved when the reveal landed would light a different
+      // crosshair, which is the staleness `_pointIsStillAt` exists to refuse.
+      const points = archive.getManifest().layout.calibration;
+      points.points = [
+        { px: { x: 10, y: 20 }, world: { x: 0, y: 0, z: 0 } },
+        { px: { x: 30, y: 40 }, world: { x: 250, y: 0, z: 0 } },
+      ];
+      const el = await mount();
+      await el.syncFromArchive(undefined, [{ kind: 'calibration', px: { x: 30, y: 40 } }]);
+      await el.updateComplete;
+      expect(highlightOf(el)!.calibration).to.deep.equal([1]);
+
+      points.points = [{ px: { x: 30, y: 40 }, world: { x: 250, y: 0, z: 0 } }];
+      el.requestUpdate();
+      await el.updateComplete;
+
+      expect(highlightOf(el)!.calibration).to.deep.equal([0]);
+    });
+
+    it('takes the glow away again', async () => {
+      // Transient by a timer, because the object stays where it is: a highlight
+      // that outlived its edit would claim every later look at the image.
+      vi.useFakeTimers();
+      try {
+        archive.getManifest().images[0].labels = [car('car-a', 100)];
+        const el = await mount();
+
+        await el.syncFromArchive('img1.jpg', [{ kind: 'car', id: 'car-a' }]);
+        await el.updateComplete;
+        expect(highlightOf(el)!.cars).to.deep.equal(['car-a']);
+
+        vi.advanceTimersByTime(HIGHLIGHT_DURATION_MS);
+        await el.updateComplete;
+
+        expect(highlightOf(el)).to.be.null;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('drops a stale glow when the user switches image', async () => {
+      addSecondImage();
+      archive.getManifest().images[0].labels = [car('car-a', 100)];
+      const el = await mount();
+      await el.syncFromArchive('img1.jpg', [{ kind: 'car', id: 'car-a' }]);
+      await el.updateComplete;
+
+      await selectImage(el, 1);
+
+      expect(highlightOf(el)).to.be.null;
+    });
+
+    describe('the toolbar tooltips', () => {
+      const toolbar = (el: RREditorView) => el.shadowRoot!.querySelector('rr-toolbar')!;
+
+      it('names the image when the undo would land on another one', async () => {
+        addSecondImage();
+        const el = await fixture<RREditorView>(html`
+          <rr-editor-view
+            .archive=${archive}
+            .undoLabel=${'delete car'}
+            .undoImage=${'img2.jpg'}
+            .canUndo=${true}
+          ></rr-editor-view>
+        `);
+
+        expect(toolbar(el).undoLabel).to.equal('delete car — img2.jpg');
+      });
+
+      it('says only the edit when it lands on the image on screen', async () => {
+        const el = await fixture<RREditorView>(html`
+          <rr-editor-view
+            .archive=${archive}
+            .undoLabel=${'delete car'}
+            .undoImage=${'img1.jpg'}
+            .canUndo=${true}
+          ></rr-editor-view>
+        `);
+
+        expect(toolbar(el).undoLabel).to.equal('delete car');
+      });
+
+      it('says only the edit for a layout-scoped entry, which has no image', async () => {
+        const el = await fixture<RREditorView>(html`
+          <rr-editor-view
+            .archive=${archive}
+            .redoLabel=${'move sensor'}
+            .redoImage=${null}
+            .canRedo=${true}
+          ></rr-editor-view>
+        `);
+
+        expect(toolbar(el).redoLabel).to.equal('move sensor');
+      });
     });
   });
 

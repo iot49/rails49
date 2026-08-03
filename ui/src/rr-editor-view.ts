@@ -29,9 +29,16 @@ import { classChoices, rootClass } from './vocabulary.js';
 import type { ClassChoice } from './vocabulary.js';
 import { COMPACT_MAX_HEIGHT_PX } from './layout.js';
 import { revealTarget } from './history.js';
-import type { EditHistory, HistoryGesture, HistoryTarget } from './history.js';
+import type {
+  EditHistory,
+  HistoryGesture,
+  HistoryHighlight,
+  HistoryTarget,
+} from './history.js';
+import { HIGHLIGHT_DURATION_MS } from './highlight.js';
 import type {
   ViewerContextMenuDetail,
+  ViewerHighlight,
   ViewerMediaFrameDetail,
   ViewerPointerDetail,
 } from './rr-viewer.js';
@@ -474,6 +481,17 @@ export class RREditorView extends LitElement {
   @property({ type: Boolean }) canRedo = false;
   @property({ attribute: false }) undoLabel: string | null = null;
   @property({ attribute: false }) redoLabel: string | null = null;
+  /**
+   * The image the pending undo would land on, or `null` for a layout-scoped
+   * entry that lands on none.
+   *
+   * Qualifying the tooltip with it is this component's job rather than
+   * `rr-toolbar`'s or `rr-app`'s, because it is the only one that knows **both**
+   * numbers: `rr-app` owns the stack and the editor owns which image is on
+   * screen. The toolbar is handed a finished phrase.
+   */
+  @property({ attribute: false }) undoImage: string | null = null;
+  @property({ attribute: false }) redoImage: string | null = null;
   @state() private _currentImageIndex = 0;
   @state() private _imageUrls: Map<string, string> = new Map();
   /**
@@ -525,6 +543,17 @@ export class RREditorView extends LitElement {
    * editor on every mouse move for nothing.
    */
   @state() private _cursor: Point | null = null;
+  /**
+   * The objects a reveal is currently pointing at, or `null` when none is.
+   *
+   * View state, like the chain: it is written nowhere and survives nothing.
+   * Resolved against the manifest **as it stands after the apply** and held as
+   * ids, so it is subject to the same rule as everything else here — an object
+   * reference would be stale the moment the next snapshot lands.
+   */
+  @state() private _highlight: readonly HistoryHighlight[] | null = null;
+  /** Clears {@link _highlight}. Restarted by each reveal, cancelled on teardown. */
+  private _highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
   @query('rr-calibration-dialog') private _calibrationDialog!: RRCalibrationDialog;
   @query('rr-sensor-dialog') private _sensorDialog!: RRSensorDialog;
@@ -684,6 +713,7 @@ export class RREditorView extends LitElement {
     if (changedProperties.has('archive')) {
       this._tool = 'calibration';
       this._abandonPlacement();
+      this._clearHighlight();
       this._frameMismatch = null;
     }
     this._enforceGate();
@@ -781,7 +811,10 @@ export class RREditorView extends LitElement {
    * component, and an entry scoped to another image must bring that image into
    * view before the change lands. See `history.ts`.
    */
-  public async syncFromArchive(revealFilename?: string): Promise<void> {
+  public async syncFromArchive(
+    revealFilename?: string,
+    highlights: readonly HistoryHighlight[] = []
+  ): Promise<void> {
     // An undo can select another image, and an anchor is a pixel on the image
     // it was clicked on: carried across, the next click would write a car with
     // one end from each frame. Labels are never carried between images
@@ -790,7 +823,26 @@ export class RREditorView extends LitElement {
     // A chain undoing *itself* does not come through here — it keeps its chain
     // by construction, and calls {@link _reveal} directly.
     this._abandonPlacement();
-    await this._reveal(revealFilename);
+    await this._reveal(revealFilename, highlights);
+  }
+
+  /**
+   * Brings an image into view **before** the entry that changes it is applied.
+   *
+   * The order the navigation invariant states (`SPEC.md` § Undo and redo): an
+   * entry scoped to another image selects that image first, then applies, then
+   * highlights. `rr-app` calls this with what the *pending* entry targets, then
+   * applies the snapshot, then calls {@link syncFromArchive} with the same
+   * filename and what the entry changed.
+   *
+   * It moves the selection and nothing else — no blob URLs are rebuilt, because
+   * an entry that lands on an existing image adds no bytes to fetch, and the
+   * reveal that follows rebuilds them anyway.
+   */
+  public selectImage(filename: string | undefined): void {
+    if (!filename || !this.archive) return;
+    const index = this.archive.getManifest().images.findIndex(img => img.filename === filename);
+    if (index >= 0) this._currentImageIndex = index;
   }
 
   /**
@@ -801,7 +853,10 @@ export class RREditorView extends LitElement {
    * invariant — undo may move the user, but it may never change something they
    * cannot see.
    */
-  private async _reveal(revealFilename?: string): Promise<void> {
+  private async _reveal(
+    revealFilename?: string,
+    highlights: readonly HistoryHighlight[] = []
+  ): Promise<void> {
     if (!this.archive) return;
     await this._refreshImageUrls();
     const images = this.archive.getManifest().images;
@@ -810,6 +865,83 @@ export class RREditorView extends LitElement {
       if (index >= 0) this._currentImageIndex = index;
     }
     this._currentImageIndex = Math.max(0, Math.min(this._currentImageIndex, images.length - 1));
+    // Last, and on the image now on screen: highlighting before the selection
+    // would resolve car ids against the frame the user is leaving.
+    this._showHighlight(highlights);
+  }
+
+  /**
+   * Lights what an entry changed, for as long as {@link HIGHLIGHT_DURATION_MS}.
+   *
+   * The candidates are **kept as the history gave them** — ids and pixels — and
+   * resolved afresh on every render, so nothing here can go stale while the
+   * glow is up. What this does decide is whether there is anything to light at
+   * all: an entry whose object the apply removed (an undone *add*) resolves to
+   * nothing, and lights nothing rather than throwing.
+   *
+   * Nothing to light clears the glow rather than leaving the previous one up. A
+   * completeness toggle changes something the user can see in the checkbox, and
+   * a stale glow beside it would name the wrong edit.
+   */
+  private _showHighlight(highlights: readonly HistoryHighlight[]) {
+    const { cars, sensors, calibration } = this._resolveHighlight(highlights);
+
+    this._clearHighlight();
+    if (cars.length + sensors.length + calibration.length === 0) return;
+
+    this._highlight = highlights;
+    this._highlightTimer = setTimeout(() => this._clearHighlight(), HIGHLIGHT_DURATION_MS);
+  }
+
+  /**
+   * The history's candidates as the objects on screen now, dropping what is not
+   * there.
+   *
+   * The one place a highlight is resolved, run both when a reveal lands and on
+   * every render after it. Cars and sensors stay ids all the way to the viewer,
+   * so nothing about them can go stale. A calibration point has no id and the
+   * viewer can only address one by index, so the pixel becomes an index **here**
+   * rather than being stored as one: an edit arriving during the 1400 ms the
+   * glow is up — including another undo — renumbers the list, and an index
+   * resolved earlier would then light a different crosshair.
+   */
+  private _resolveHighlight(highlights: readonly HistoryHighlight[]): ViewerHighlight {
+    const cars: string[] = [];
+    const sensors: string[] = [];
+    const calibration: number[] = [];
+    const points = this.archive?.getManifest().layout.calibration.points ?? [];
+
+    for (const highlight of highlights) {
+      switch (highlight.kind) {
+        case 'car':
+          if (this._car(highlight.id)) cars.push(highlight.id);
+          break;
+        case 'sensor':
+          if (this._sensor(highlight.id)) sensors.push(highlight.id);
+          break;
+        case 'calibration': {
+          const index = points.findIndex(point => samePoint(point.px, highlight.px));
+          if (index >= 0) calibration.push(index);
+          break;
+        }
+      }
+    }
+
+    return { cars, sensors, calibration };
+  }
+
+  /**
+   * Takes the glow off, wherever it is being taken off from — the timer, the
+   * next reveal, an image change, teardown.
+   *
+   * One method for the same reason {@link _abandonPlacement} is one: a piece of
+   * view state whose exits are scattered eventually leaks one, and a leaked
+   * timer here would clear a *later* reveal's highlight early.
+   */
+  private _clearHighlight() {
+    if (this._highlightTimer !== null) clearTimeout(this._highlightTimer);
+    this._highlightTimer = null;
+    this._highlight = null;
   }
 
   /**
@@ -850,10 +982,13 @@ export class RREditorView extends LitElement {
       return true;
     }
 
+    // Selected before the snapshot lands, exactly as `rr-app` does it: the
+    // interception is a different route into the stack, not a different rule.
+    this.selectImage(revealTarget(this.history?.undoEntry ?? null));
     const entry = (await this.history?.undo()) ?? null;
     if (entry) {
       this._notifyHistoryChange();
-      await this._reveal(revealTarget(entry));
+      await this._reveal(revealTarget(entry), entry.highlights);
     }
     // The reveal can have dropped the chain from under this — an undo that
     // removes a calibration point takes the DPT with it, and the gate ends the
@@ -896,6 +1031,9 @@ export class RREditorView extends LitElement {
   private _onImageSelect(e: CustomEvent) {
     this._currentImageIndex = e.detail.index;
     this._abandonPlacement();
+    // A glow names an object on the image it was resolved against, and the ids
+    // in it mean nothing on the next one.
+    this._clearHighlight();
     // The warning belongs to the image that earned it. The next image reports
     // its own size when it decodes, and one that never decodes must not inherit
     // this one's verdict.
@@ -1624,6 +1762,8 @@ export class RREditorView extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this._gesture) void this._endGesture(this._gesture);
+    // A timer outliving the element would write state into a detached one.
+    this._clearHighlight();
   }
 
   /** The live gesture, if this event belongs to it. */
@@ -1937,6 +2077,22 @@ export class RREditorView extends LitElement {
   }
 
   /**
+   * An edit's phrase, qualified with the image when it is not the one on
+   * screen — "delete car — img_3.jpg".
+   *
+   * The disabled state says the stack has a bottom; this says *where* the next
+   * undo will land. Without it "nothing happened" and "it happened on an image
+   * you are not looking at" read identically, which is the whole reason the
+   * buttons are not a duplicate of Cmd+Z (`SPEC.md` § Undo and redo) — and on a
+   * touch device, where the labeling actually happens, there is no Cmd+Z to be
+   * a duplicate of.
+   */
+  private _qualifiedLabel(label: string | null, image: string | null): string | null {
+    if (!label) return null;
+    return image && image !== this._currentImage()?.filename ? `${label} — ${image}` : label;
+  }
+
+  /**
    * The rubber band, or null when no chain is live.
    *
    * Before the pointer has moved it is the anchor twice over, which draws the
@@ -1958,8 +2114,8 @@ export class RREditorView extends LitElement {
         <rr-toolbar
           .canUndo=${this.canUndo}
           .canRedo=${this.canRedo}
-          .undoLabel=${this.undoLabel}
-          .redoLabel=${this.redoLabel}
+          .undoLabel=${this._qualifiedLabel(this.undoLabel, this.undoImage)}
+          .redoLabel=${this._qualifiedLabel(this.redoLabel, this.redoImage)}
         ></rr-toolbar>
 
         ${manifest
@@ -1986,6 +2142,7 @@ export class RREditorView extends LitElement {
               .sensors=${manifest.layout.sensors}
               .cars=${currentImage?.labels ?? []}
               .pendingCar=${this._pendingCar()}
+              .highlight=${this._highlight && this._resolveHighlight(this._highlight)}
               .dpt=${getDPT(manifest)}
               @rr-pointer-down=${this._onViewerPointerDown}
               @rr-pointer-move=${this._onViewerPointerMove}

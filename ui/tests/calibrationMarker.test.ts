@@ -5,6 +5,7 @@ import {
   renderCalibrationPoint,
   calibrationMarkerStyles,
 } from '../src/calibrationMarker.js';
+import { HIGHLIGHT_CLASS } from '../src/highlight.js';
 
 /** Render a lit SVGTemplateResult into a detached <svg> and return it. */
 function renderSvg(template: ReturnType<typeof svg>): SVGElement {
@@ -77,6 +78,14 @@ describe('renderCalibrationPoint()', () => {
     // so position in the list is what an editor gesture refers to.
     const el = renderSvg(renderCalibrationPoint(point(), 3, 40, frame));
     expect(el.querySelector('[data-calibration-index]')!.getAttribute('data-calibration-index')).toBe('3');
+  });
+
+  it('carries the highlight class when a reveal points at it', () => {
+    const lit = renderSvg(renderCalibrationPoint(point(), 0, 40, frame, true));
+    const plain = renderSvg(renderCalibrationPoint(point(), 0, 40, frame));
+
+    expect(lit.querySelector('g')!.classList.contains(HIGHLIGHT_CLASS)).toBe(true);
+    expect(plain.querySelector('g')!.classList.contains(HIGHLIGHT_CLASS)).toBe(false);
   });
 
   describe('label placement against the frame edges', () => {

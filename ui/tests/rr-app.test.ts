@@ -4,6 +4,7 @@ import '../src/rr-app.js';
 import { RRApp } from '../src/rr-app.js';
 import { R49Archive } from '@occupancy/r49';
 import type { NotifyDetail } from '../src/rr-editor-view.js';
+import type { EditHistory } from '../src/history.js';
 
 vi.mock('@occupancy/classifier/browser', () => {
   return {
@@ -131,6 +132,97 @@ describe('rr-app', () => {
       await (el as any)._redo();
 
       expect(intercept).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the reveal after an undo (#37)', () => {
+    /** An app on an archive of two images, with one car on the second. */
+    async function mountWithEdit() {
+      archive.setManifest({
+        version: 4,
+        layout: { name: 'Test', scale: 'N', calibration: { points: [] }, sensors: [] },
+        camera: { resolution: { width: 1920, height: 1080 } },
+        images: [
+          { filename: 'img1.jpg', labeled_complete: false, labels: [] },
+          { filename: 'img2.jpg', labeled_complete: false, labels: [] },
+        ],
+      });
+      const el = await fixture<RRApp>(html`<rr-app></rr-app>`);
+      (el as any)._archive = archive;
+      const history = (el as any)._history as EditHistory;
+      history.attach(archive);
+      await el.updateComplete;
+
+      const image = archive.getManifest().images[1];
+      await history.record('place car', { kind: 'image', filename: 'img2.jpg' }, () => {
+        image.labels = [
+          {
+            id: 'car-a',
+            class: 'stock',
+            provenance: 'human',
+            p0: { x: 10, y: 10 },
+            p1: { x: 200, y: 10 },
+          },
+        ];
+      });
+
+      // The editor says so after every edit it records; the record above went
+      // straight to the stack, so the affordances are told here instead.
+      const view = el.renderRoot.querySelector('rr-editor-view')!;
+      view.dispatchEvent(new CustomEvent('rr-history-change', { bubbles: true, composed: true }));
+      await el.updateComplete;
+
+      return { el, history, view };
+    }
+
+    it('selects the image before the snapshot lands, then reveals it', async () => {
+      // The order the navigation invariant states: undo may move the user, but
+      // it may never change something they cannot see (SPEC.md § Undo and redo).
+      const { el, history, view } = await mountWithEdit();
+      const select = vi.spyOn(view, 'selectImage');
+      const undo = vi.spyOn(history, 'undo');
+      const sync = vi.spyOn(view, 'syncFromArchive');
+
+      await (el as any)._undo();
+
+      expect(select).toHaveBeenCalledWith('img2.jpg');
+      expect(select.mock.invocationCallOrder[0]).toBeLessThan(undo.mock.invocationCallOrder[0]);
+      expect(undo.mock.invocationCallOrder[0]).toBeLessThan(sync.mock.invocationCallOrder[0]);
+    });
+
+    it('hands the editor what the entry changed, to highlight', async () => {
+      const { el, view } = await mountWithEdit();
+      const sync = vi.spyOn(view, 'syncFromArchive');
+
+      await (el as any)._undo();
+
+      expect(sync).toHaveBeenCalledWith('img2.jpg', [{ kind: 'car', id: 'car-a' }]);
+    });
+
+    it('does the same on redo', async () => {
+      const { el, history, view } = await mountWithEdit();
+      await history.undo();
+      const sync = vi.spyOn(view, 'syncFromArchive');
+
+      await (el as any)._redo();
+
+      expect(sync).toHaveBeenCalledWith('img2.jpg', [{ kind: 'car', id: 'car-a' }]);
+    });
+
+    it('tells the editor which image the pending entries land on', async () => {
+      // The editor qualifies the tooltip with it; only it knows which image is
+      // on screen.
+      const { el, history, view } = await mountWithEdit();
+
+      expect(view.undoImage).toBe('img2.jpg');
+      expect(view.redoImage).toBeNull();
+
+      await (el as any)._undo();
+      await el.updateComplete;
+
+      expect(view.undoImage).toBeNull();
+      expect(view.redoImage).toBe('img2.jpg');
+      expect(history.canRedo).toBe(true);
     });
   });
 

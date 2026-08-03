@@ -87,6 +87,20 @@ before it, which is worse than having no undo. Rules, from entries being scoped 
   out of the target being a subtree (a coupler drag's two cars share one image record). Undo and
   redo are **refused while a gesture is open** — the drag has already mutated outside the stack —
   so every ending path (a repeated `pointerId`, `disconnectedCallback`, `attach`) must close one.
+* **A reveal is three steps in one order** (#37): `selectImage` on the *pending* entry's image,
+  then the apply, then `syncFromArchive(filename, highlights)`. Undo may move the user; it may never
+  change something they cannot see. The ordering keeps the snapshot from landing while the editor
+  still points at the frame being left — it buys no intermediate paint, since Lit batches the two
+  into one update, so **the highlight is what actually shows the user what moved**.
+* **What an entry changed is diffed from its own snapshots**, never declared by the caller —
+  `changedObjects` in `history.ts`. The editor holds those candidates as the history gave them and
+  **resolves them on every render** — by `id` for a car or sensor, by pixel for a calibration point,
+  which has no id. So an undone **add** lights nothing rather than throwing, and an edit arriving
+  while the glow is up cannot leave it on a renumbered crosshair. The glow is `highlight.ts`,
+  transient by a timer, and view state: it is written nowhere and survives no image change.
+* The toolbar's tooltip is **qualified with the image** when the entry lands on another one
+  ("Undo delete car — img_3.jpg"). `rr-editor-view` composes it, because `rr-app` owns the stack and
+  the editor owns which image is on screen; neither knows both.
 
 `SPEC.md` § Undo and redo carries the reasoning.
 
@@ -286,6 +300,10 @@ carries the exact exports and glyphs. Two rules that don't show in the README ta
   handles with **no rectangle**: there is no derived width to claim, and authored cars must stay
   visible after a calibration point is deleted.
 * Labels flip inwards at a frame edge through the shared `placeLabel`.
+* `highlight.ts` spans all three: one white glow, on the group, for whichever object a reveal
+  points at. Its class and its styles are used together like every other pair here. White because
+  each type's own ink is a requirement, so a coloured highlight would read as a fourth kind of
+  object.
 
 ### Absolute `/ui/` paths
 

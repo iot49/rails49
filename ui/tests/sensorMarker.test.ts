@@ -3,6 +3,7 @@ import { render, svg } from 'lit';
 import type { Sensor } from '@occupancy/r49';
 import { renderSensor, sensorLabelText, sensorMarkerStyles } from '../src/sensorMarker.js';
 import { renderCalibrationPoint } from '../src/calibrationMarker.js';
+import { HIGHLIGHT_CLASS } from '../src/highlight.js';
 
 /** Render a lit SVGTemplateResult into a detached <svg> and return it. */
 function renderSvg(template: ReturnType<typeof svg>): SVGElement {
@@ -121,6 +122,14 @@ describe('renderSensor()', () => {
   it('carries its id, which is the handle every gesture refers to', () => {
     const el = renderSvg(renderSensor(sensor(), size(40), frame));
     expect(el.querySelector('[data-sensor-id]')!.getAttribute('data-sensor-id')).toBe('S1abcdefghi');
+  });
+
+  it('carries the highlight class when a reveal points at it', () => {
+    const lit = renderSvg(renderSensor(sensor(), size(40), frame, true));
+    const plain = renderSvg(renderSensor(sensor(), size(40), frame));
+
+    expect(lit.querySelector('g')!.classList.contains(HIGHLIGHT_CLASS)).toBe(true);
+    expect(plain.querySelector('g')!.classList.contains(HIGHLIGHT_CLASS)).toBe(false);
   });
 
   it('labels the sensor with its name, or its id when unnamed', () => {

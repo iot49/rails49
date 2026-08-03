@@ -9,6 +9,7 @@ import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from './c
 import type { CarSymbolSize, CarWarning, PendingCar } from './carMarker.js';
 import { coupledEnds, couplerPoints, overlayFit, sensorDiameterPx, SYMBOL_SIZE_SCREEN_PX } from './geometry.js';
 import type { FrameSize } from './geometry.js';
+import { highlightStyles } from './highlight.js';
 import { isKnownClass } from './vocabulary.js';
 import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
@@ -149,6 +150,27 @@ export interface ViewerMediaFrameDetail {
   readonly aspectMismatch: boolean;
 }
 
+/**
+ * Which drawn objects carry the reveal glow — what an undo or redo just changed
+ * (#37).
+ *
+ * **Already resolved**, and that is the split: the history says which objects an
+ * entry touched and `rr-editor-view` decides which of those still exist and
+ * where they are now, because only it knows which image is on screen. The
+ * viewer is handed the answer and draws it, exactly as it is handed the cars
+ * and draws those.
+ *
+ * Cars and sensors by `id`, since that is what the editor keys everything on.
+ * Calibration points by **index**, because they have no id — the editor resolves
+ * a pixel to an index at the moment it renders, so a list renumbered by the very
+ * undo being revealed cannot leave the glow on the wrong crosshair.
+ */
+export interface ViewerHighlight {
+  readonly cars: readonly string[];
+  readonly sensors: readonly string[];
+  readonly calibration: readonly number[];
+}
+
 /** A right-click, in image pixel coordinates. Same shape, coarser event. */
 export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'originalEvent'> {
   /**
@@ -208,6 +230,9 @@ export class RrViewer extends LitElement {
     calibrationMarkerStyles,
     sensorMarkerStyles,
     carMarkerStyles,
+    // Last, and shared by all three above: the glow is an annotation on
+    // whichever symbol a reveal points at, not a symbol of its own.
+    highlightStyles,
   ];
 
   @property({ type: String }) src: string | null = null;
@@ -268,6 +293,14 @@ export class RrViewer extends LitElement {
    * hit-test reads too — what is drawn is what is grabbable.
    */
   @property({ attribute: false }) dpt: number | null = null;
+  /**
+   * The objects a reveal is pointing at, or `null` when none is.
+   *
+   * Transient view state, like `pendingCar` and unlike everything else drawn
+   * here: nothing about a highlight is in the manifest, and the editor takes it
+   * away again on a timer. `null` in the live view, which has no history.
+   */
+  @property({ attribute: false }) highlight: ViewerHighlight | null = null;
   @property({ type: Object }) resolution: FrameSize = { width: 1920, height: 1080 };
 
   /**
@@ -623,7 +656,15 @@ export class RrViewer extends LitElement {
             <!-- Cars first: their width rectangles are the only area fills here,
                  so drawing them underneath keeps a crosshair or a sensor placed
                  on a car visible instead of tinted over. -->
-            ${this.cars.map(c => renderCar(c, carSize, coupledEnds(c, couplers), this.carWarning(c)))}
+            ${this.cars.map(c =>
+              renderCar(
+                c,
+                carSize,
+                coupledEnds(c, couplers),
+                this.carWarning(c),
+                this.highlight?.cars.includes(c.id) ?? false
+              )
+            )}
 
             <!-- The shared handles, over the cars they join: one per coupling,
                  where the cars themselves drew none. -->
@@ -637,10 +678,23 @@ export class RrViewer extends LitElement {
               // `resolution` is the group's user space, so it is also the frame
               // the label must stay inside — a point near an edge draws its
               // label inwards.
-              renderCalibrationPoint(p, i, this.symbolSize, this.resolution)
+              renderCalibrationPoint(
+                p,
+                i,
+                this.symbolSize,
+                this.resolution,
+                this.highlight?.calibration.includes(i) ?? false
+              )
             )}
 
-            ${this.sensors.map(s => renderSensor(s, this.sensorSize(), this.resolution))}
+            ${this.sensors.map(s =>
+              renderSensor(
+                s,
+                this.sensorSize(),
+                this.resolution,
+                this.highlight?.sensors.includes(s.id) ?? false
+              )
+            )}
           </g>
         </svg>
       </div>
