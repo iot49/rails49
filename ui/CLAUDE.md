@@ -276,12 +276,19 @@ component that happens to need it first. Rules it encodes, each wrong somewhere 
 * **A coupler is exact coincidence.** Nothing about a coupling is stored; a proximity test would
   fuse cars placed separately. `hitTest` and `couplerPoints` apply the one rule, so what draws as a
   coupling is exactly what grabs as one.
-* **`hitTest` is what a gesture can grab; `carCovering` is whether a pixel is already labelled.**
-  Two questions, deliberately not one — a car's body grabs nothing, and only the car tool's first
-  click asks the second one (#43). Both read the same `HitScene`, so the two can never disagree
-  about what is on screen. It measures in the span's own frame, so a diagonal car is tested
-  across its axis rather than across a bounding box half again too big, and the boundary counts as
-  inside.
+* **Three questions, deliberately not one**, all off the same `HitScene` so they can never disagree
+  about what is on screen. `hitTest` is what a gesture can **grab** — a car's body grabs nothing.
+  `carCovering` is whether a pixel is already **labelled**, a claim about the image, asked only by
+  the car tool's first click (#43). `carUnderPointer` is which car a gesture is **aimed at**, a
+  claim about the pointer, asked only by the menu (#45). The last two measure the same rectangle in
+  the span's own frame — a diagonal car across its axis, not across a bounding box half again too
+  big, boundary inside — and differ only in the fingertip floor, which the pointer's question has
+  and the image's must not: widening `carCovering` would refuse a chain start across a band of
+  demonstrable background, which in a yard photo is the gap between parallel tracks.
+* `hitTest`'s `kinds` parameter **narrows the search, not the answer**. Nearest-wins has already
+  discarded everything the winner beat, so filtering the *result* loses a sensor standing just
+  behind a car end. Passing a scene with `cars: []` would work and is wrong for the same reason the
+  three questions share one scene.
 * One `DEFAULT_GRAB_RADIUS_SCREEN_PX` for every tool — it describes the pointing device, not the
   object. `CLICK_SLOP_SCREEN_PX` is smaller (hand tremor, not aim), and `isClick` keeps a swipe on
   a phone from placing a point.
@@ -301,13 +308,16 @@ component that happens to need it first. Rules it encodes, each wrong somewhere 
 * `rr-context-menu` renders rows and reports which was chosen; it never learns what the object is.
   The editor hit-tests and names subject *and* rows together in one `menuFor` switch — an object it
   cannot name a verb for opens no menu at all.
-* A **coupler** is the one subject that is two objects — chaining makes couplings the normal case,
-  and the middle car of a train has no free end — so it gets one delete row per car meeting there,
-  each named by that car's direction (`geometry.ts` § `cardinalDirection`; coupled cars run
-  opposite ways, so rows can never read the same). **Reclassify follows the same rule.** Every row
-  acting on a car carries its id (`delete-car:<id>`, `reclassify:<id>:<class>`); a row that only
-  opens a submenu uses a separate prefix (`reclassify-group:…`) — an id identifies a row, and two
-  rows sharing one defeats that.
+* **A car's subject is its body, and the subject is one object** (#45). `menuFor` resolves it
+  **topmost drawn first**: `hitTest` for sensors and calibration points only, then `carUnderPointer`
+  for the area. Car ends are not asked about at all — a shared handle is two cars at one pixel, so a
+  hit there must fall through to the area or right-clicking a joint opens nothing — and a sensor
+  inside a car's rectangle, the normal case, stays reachable because it is drawn over the car. Two
+  cars covering a pixel is the zero-area seam of a coupling; the first in scene order wins.
+* Rows are therefore **verbs and name nothing**: `delete`, `reclassify:<class>`. A row that only
+  opens a submenu uses a separate prefix (`reclassify-group:<class>`) — an id identifies a row, and
+  two rows sharing one defeats that. `MenuSubject` is its own union, not a `HitTarget`: a
+  `HitTarget` means *what a gesture can grab*, and a body grabs nothing.
 * Delete is **one entry scoped to what it deletes**: `layout` for a point or sensor, that image's
   record for a car. A calibration-point subject carries the pixel it was opened on
   (`_pointIsStillAt`, the same staleness guard the calibration dialog uses) — an undo landing while

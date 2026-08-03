@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest';
 import type { CalibrationPoint, CarLabel, Sensor } from '@occupancy/r49';
 import { STANDARD_GAUGE, STANDARD_WIDTH } from '@occupancy/config';
 import {
-  cardinalDirection,
   coupledEnds,
   samePoint,
   carWidthPx,
   carCorners,
   carCovering,
+  carUnderPointer,
   clampToViewport,
   couplerPoints,
   dragHandles,
@@ -412,6 +412,144 @@ describe('hitTest', () => {
       });
     });
   });
+
+  describe('the kinds it looks for', () => {
+    // The context menu asks about the point-like objects only, and reads cars
+    // by area instead (#45).
+    const pointLike = ['sensor', 'calibration'] as const;
+
+    it('finds nothing of a kind it was not asked for', () => {
+      const scene: HitScene = {
+        ...emptyScene,
+        cars: [car('c1', { x: 100, y: 100 }, { x: 200, y: 100 })],
+      };
+      expect(hitTest(scene, { x: 100, y: 100 }, tolerance, pointLike)).to.equal(null);
+      expect(hitTest(scene, { x: 100, y: 100 }, tolerance)).to.deep.equal({
+        kind: 'car-endpoint',
+        ends: [{ id: 'c1', end: 'p0' }],
+      });
+    });
+
+    it('narrows the search, not the answer — the excluded kind stops winning', () => {
+      // The reason this is a parameter rather than a filter on the result: a
+      // sensor a few pixels behind a car end loses nearest-wins, so a caller
+      // that dropped the car end from the answer would find nothing where the
+      // user can plainly see a sensor.
+      const scene: HitScene = {
+        ...emptyScene,
+        cars: [car('c1', { x: 100, y: 100 }, { x: 200, y: 100 })],
+        sensors: [sensor('s1', 108, 100)],
+      };
+      expect(hitTest(scene, { x: 100, y: 100 }, tolerance)).to.deep.equal({
+        kind: 'car-endpoint',
+        ends: [{ id: 'c1', end: 'p0' }],
+      });
+      expect(hitTest(scene, { x: 100, y: 100 }, tolerance, pointLike)).to.deep.equal({
+        kind: 'sensor',
+        id: 's1',
+      });
+    });
+
+    it('derives no coupler when car ends are not looked for', () => {
+      const scene: HitScene = {
+        ...emptyScene,
+        cars: [
+          car('c1', { x: 100, y: 100 }, { x: 200, y: 100 }),
+          car('c2', { x: 200, y: 100 }, { x: 300, y: 100 }),
+        ],
+      };
+      expect(hitTest(scene, { x: 200, y: 100 }, tolerance, pointLike)).to.equal(null);
+    });
+  });
+});
+
+describe('carUnderPointer', () => {
+  const dpt = 20;
+  const half = carWidthPx(dpt) / 2;
+  /** The tolerance's reach in image pixels — 10, and less than `half` here. */
+  const reach = tolerance.screenPx * tolerance.imagePxPerScreenPx;
+
+  function carScene(cars: CarLabel[], sceneDpt: number | null = dpt): HitScene {
+    return { ...emptyScene, cars, dpt: sceneDpt };
+  }
+
+  it('finds nothing on empty image', () => {
+    expect(carUnderPointer(carScene([]), { x: 10, y: 10 }, tolerance)).to.equal(null);
+  });
+
+  it('finds the car whose body the pointer is inside', () => {
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    expect(carUnderPointer(carScene([a]), { x: 200, y: 50 }, tolerance)).to.equal(a);
+  });
+
+  it('is the drawn rectangle wherever that is wider than a fingertip', () => {
+    // The floor must not shrink a car to the grab radius: what is drawn is what
+    // the gesture names.
+    const a = car('a', { x: 100, y: 0 }, { x: 300, y: 0 });
+    expect(half).to.be.greaterThan(reach);
+    expect(carUnderPointer(carScene([a]), { x: 200, y: half }, tolerance)).to.equal(a);
+    expect(carUnderPointer(carScene([a]), { x: 200, y: half + 1 }, tolerance)).to.equal(null);
+  });
+
+  it('finds nothing beyond a car end, however close to its axis', () => {
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    expect(carUnderPointer(carScene([a]), { x: 301, y: 50 }, tolerance)).to.equal(null);
+  });
+
+  it('measures a diagonal car across its own axis', () => {
+    const a = car('a', { x: 0, y: 0 }, { x: 200, y: 200 });
+    const step = (half - 0.5) / Math.SQRT2;
+    expect(carUnderPointer(carScene([a]), { x: 100 + step, y: 100 - step }, tolerance)).to.equal(a);
+    const past = (half + 0.5) / Math.SQRT2;
+    expect(carUnderPointer(carScene([a]), { x: 100 + past, y: 100 - past }, tolerance)).to.equal(
+      null
+    );
+  });
+
+  it('falls back to a fat chord when no DPT resolves a width', () => {
+    // The regression this floor exists to close: `renderCar` still draws the
+    // chord and its handles with no DPT, because an authored car must stay
+    // visible after a calibration point is deleted — so a car with no rectangle
+    // would otherwise be one you can see and cannot delete.
+    const a = car('a', { x: 100, y: 0 }, { x: 300, y: 0 });
+    expect(carUnderPointer(carScene([a], null), { x: 200, y: reach }, tolerance)).to.equal(a);
+    expect(carUnderPointer(carScene([a], null), { x: 200, y: reach + 1 }, tolerance)).to.equal(null);
+  });
+
+  it('widens with the zoom, because a fingertip is a screen size', () => {
+    const a = car('a', { x: 100, y: 0 }, { x: 300, y: 0 });
+    const zoomedOut: HitTolerance = { screenPx: 5, imagePxPerScreenPx: 8 };
+    // 40 image px of reach, past the 20.9 the rectangle itself is.
+    expect(carUnderPointer(carScene([a]), { x: 200, y: 40 }, zoomedOut)).to.equal(a);
+    expect(carUnderPointer(carScene([a]), { x: 200, y: 40 }, tolerance)).to.equal(null);
+  });
+
+  it('takes the first car in scene order at the seam of a coupling', () => {
+    // Coupled rectangles abut rather than overlap, so the ambiguity is one
+    // zero-area line — nothing a user can aim at on purpose.
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    const b = car('b', { x: 300, y: 50 }, { x: 500, y: 50 });
+    expect(carUnderPointer(carScene([a, b]), { x: 300, y: 50 }, tolerance)).to.equal(a);
+    // Either side of the seam is unambiguous, which is the whole point.
+    expect(carUnderPointer(carScene([a, b]), { x: 290, y: 50 }, tolerance)).to.equal(a);
+    expect(carUnderPointer(carScene([a, b]), { x: 310, y: 50 }, tolerance)).to.equal(b);
+  });
+
+  it('takes the first car in scene order where two overlap', () => {
+    // Permitted by the format: an archive that already contains overlapping
+    // cars opens and edits unchanged.
+    const a = car('a', { x: 100, y: 50 }, { x: 300, y: 50 });
+    const b = car('b', { x: 200, y: 20 }, { x: 200, y: 80 });
+    expect(carUnderPointer(carScene([a, b]), { x: 200, y: 50 }, tolerance)).to.equal(a);
+  });
+
+  it('reaches a car with no length, which has no rectangle at all', () => {
+    // The editor refuses to author one, so it can only arrive from outside —
+    // and it is drawn, so it must be nameable.
+    const a = car('a', { x: 5, y: 6 }, { x: 5, y: 6 });
+    expect(carUnderPointer(carScene([a]), { x: 5 + half, y: 6 }, tolerance)).to.equal(a);
+    expect(carUnderPointer(carScene([a]), { x: 5 + half + 1, y: 6 }, tolerance)).to.equal(null);
+  });
 });
 
 describe('sensorDiameterPx', () => {
@@ -748,35 +886,6 @@ describe('isCoincident', () => {
 
   it('finds nothing in an empty list', () => {
     expect(isCoincident({ x: 100, y: 0 }, [])).toBe(false);
-  });
-});
-
-describe('cardinalDirection', () => {
-  const from = { x: 100, y: 100 };
-
-  it('names the dominant axis, with y growing downwards', () => {
-    expect(cardinalDirection(from, { x: 300, y: 120 })).toBe('right');
-    expect(cardinalDirection(from, { x: 0, y: 90 })).toBe('left');
-    expect(cardinalDirection(from, { x: 110, y: 0 })).toBe('up');
-    expect(cardinalDirection(from, { x: 90, y: 400 })).toBe('down');
-  });
-
-  it('gives the two cars of a coupling opposite words', () => {
-    // Which is the whole job: the menu names *which* coupled car a delete acts
-    // on, and two cars running opposite ways from one pixel must never read
-    // the same.
-    const a = cardinalDirection(from, { x: 220, y: 220 });
-    const b = cardinalDirection(from, { x: -20, y: -20 });
-    expect(a).not.toBe(b);
-  });
-
-  it('resolves an exact diagonal horizontally, so opposites still differ', () => {
-    expect(cardinalDirection(from, { x: 200, y: 200 })).toBe('right');
-    expect(cardinalDirection(from, { x: 0, y: 0 })).toBe('left');
-  });
-
-  it('has no answer for a point that has not moved', () => {
-    expect(cardinalDirection(from, { x: 100, y: 100 })).toBe(null);
   });
 });
 

@@ -14,7 +14,7 @@ import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
 import {
   carCovering,
-  cardinalDirection,
+  carUnderPointer,
   dragHandles,
   dragTo,
   hitTest,
@@ -23,7 +23,7 @@ import {
   CLICK_SLOP_SCREEN_PX,
   DEFAULT_GRAB_RADIUS_SCREEN_PX,
 } from './geometry.js';
-import type { DragHandle, HitScene, HitTarget, HitTolerance } from './geometry.js';
+import type { DragHandle, HitKind, HitScene, HitTarget, HitTolerance } from './geometry.js';
 import type { PendingCar } from './carMarker.js';
 import { classChoices, rootClass } from './vocabulary.js';
 import type { ClassChoice } from './vocabulary.js';
@@ -152,19 +152,38 @@ type EditorMode =
 /**
  * What the open context menu acts on.
  *
- * The hit is resolved when the menu opens, not when a row is chosen, because
- * the menu names verbs for *that* object and the user may have moved on by the
- * time they pick one. `px` is the same staleness guard the calibration dialog
- * carries: an undo landing while the menu is up can slide an index onto a
- * different point, and points have no `id` to tell them apart. A sensor needs
- * no such guard — it carries an `id`, so the hit names it exactly however the
- * list is reordered underneath — and `px` is carried for it only so every
- * subject has the same shape.
+ * Resolved when the menu opens, not when a row is chosen, because the menu
+ * names verbs for *that* object and the user may have moved on by the time they
+ * pick one. That is why the rows themselves name no object: the subject holds
+ * it, and a row is a verb.
+ *
+ * Its own union rather than a `HitTarget`, because a `HitTarget` means *what a
+ * gesture can grab* — a car's body grabs nothing, since the only edits a span
+ * supports are to its two ends — while a menu acts on the **car** (#45).
+ *
+ * A calibration point carries the pixel it was opened on, the same staleness
+ * guard the calibration dialog uses: an undo landing while the menu is up can
+ * slide an index onto a different point, and points have no `id` to tell them
+ * apart. Cars and sensors carry an `id` and need none — the subject names one
+ * object however the list is replaced underneath.
  */
-interface MenuSubject {
-  readonly hit: HitTarget;
-  readonly px: Point;
-}
+type MenuSubject =
+  | { readonly kind: 'car'; readonly id: string }
+  | { readonly kind: 'sensor'; readonly id: string }
+  | { readonly kind: 'calibration'; readonly index: number; readonly px: Point };
+
+/**
+ * The kinds the menu hit-tests for: the objects drawn **over** the cars.
+ *
+ * Topmost drawn wins, matching the render order (`rr-viewer` draws cars first,
+ * so a point or sensor on a car is not tinted over) — a sensor inside a car's
+ * rectangle is the normal case, and car-area-first would make it unreachable.
+ * Car ends are absent rather than merely outranked: a coupler's shared handle
+ * names two cars at one pixel, so a hit there must **fall through** to the area
+ * test, or right-clicking a joint — the most natural place to aim on a coupled
+ * train — would open nothing.
+ */
+const MENU_HIT_KINDS: readonly HitKind[] = ['sensor', 'calibration'];
 
 /**
  * Delete, the verb every object carries.
@@ -189,26 +208,12 @@ const SENSOR_ITEMS: readonly ContextMenuItem[] = [
 ];
 
 /**
- * Prefix of a row that deletes **one named car**, as the coupler's menu does.
+ * Prefix of a row that reclassifies the subject to one class:
+ * `reclassify:<class>`.
  *
- * The other rows act on the subject the menu was opened on, which is one
- * object. A coupling is two — the whole point of it — so its rows have to carry
- * which car they mean, and the id is where that goes: `id` is never shown, so a
- * machine-readable one costs the user nothing.
- */
-const DELETE_CAR_ROW_PREFIX = 'delete-car:';
-
-/** The car a `delete-car:` row names, or null for any other row. */
-function carIdOfDeleteRow(id: string): string | null {
-  return id.startsWith(DELETE_CAR_ROW_PREFIX) ? id.slice(DELETE_CAR_ROW_PREFIX.length) : null;
-}
-
-/**
- * Prefix of a row that reclassifies one named car: `reclassify:<id>:<class>`.
- *
- * The car is named in **every** reclassify row, not only a coupler's, because a
- * coupled car is reachable no other way — the middle car of a three-car train
- * has no free end at all — and one id format is one thing to parse.
+ * The class is in the id and the car is not, because the subject already holds
+ * the car — the menu is opened on one body, and a body is one object however
+ * many cars are coupled to it.
  */
 const RECLASSIFY_ROW_PREFIX = 'reclassify:';
 
@@ -222,15 +227,11 @@ const RECLASSIFY_ROW_PREFIX = 'reclassify:';
  */
 const RECLASSIFY_GROUP_ROW_PREFIX = 'reclassify-group:';
 
-/** The car and class a `reclassify:` row names, or null for any other row. */
-function reclassifyRow(id: string): { readonly carId: string; readonly class: string } | null {
+/** The class a `reclassify:` row names, or null for any other row. */
+function classOfReclassifyRow(id: string): string | null {
   // A group row is opened rather than chosen, and its prefix is what says so.
   if (!id.startsWith(RECLASSIFY_ROW_PREFIX)) return null;
-  const rest = id.slice(RECLASSIFY_ROW_PREFIX.length);
-  const separator = rest.indexOf(':');
-  if (separator <= 0) return null;
-  const cls = rest.slice(separator + 1);
-  return cls ? { carId: rest.slice(0, separator), class: cls } : null;
+  return id.slice(RECLASSIFY_ROW_PREFIX.length) || null;
 }
 
 /**
@@ -246,19 +247,16 @@ function reclassifyRow(id: string): { readonly carId: string; readonly class: st
  * and "a loco whose kind I cannot tell from the photograph" is a real answer
  * that must stay reachable.
  */
-function reclassifyItems(carId: string, choices: readonly ClassChoice[]): ContextMenuItem[] {
+function reclassifyItems(choices: readonly ClassChoice[]): ContextMenuItem[] {
   return choices.map(choice => {
-    const id = `${RECLASSIFY_ROW_PREFIX}${carId}:${choice.class}`;
+    const id = `${RECLASSIFY_ROW_PREFIX}${choice.class}`;
     if (choice.children.length === 0) return { id, label: choice.name };
     return {
       // The row that opens this subtype's submenu, distinct from the row inside
       // it that selects the subtype — see {@link RECLASSIFY_GROUP_ROW_PREFIX}.
-      id: `${RECLASSIFY_GROUP_ROW_PREFIX}${carId}:${choice.class}`,
+      id: `${RECLASSIFY_GROUP_ROW_PREFIX}${choice.class}`,
       label: choice.name,
-      items: [
-        { id, label: `${choice.name} (unspecified)` },
-        ...reclassifyItems(carId, choice.children),
-      ],
+      items: [{ id, label: `${choice.name} (unspecified)` }, ...reclassifyItems(choice.children)],
     };
   });
 }
@@ -274,92 +272,62 @@ function reclassifyItems(carId: string, choices: readonly ClassChoice[]): Contex
  * submenu that opens onto nothing is a worse answer than the absence of one,
  * which is the same rule that keeps a verbless object from opening a menu at
  * all.
+ *
+ * The rows name no car, because the subject is one (#45). They read the same
+ * for a free car and for the middle of a twelve-car consist, which is what
+ * naming the subject by its **body** rather than by a shared handle buys.
  */
-function carItems(carId: string, direction: string | null): ContextMenuItem[] {
-  // Which car a row means, when the menu was opened on a coupling and there is
-  // more than one — see {@link couplerDirection}.
-  const which = direction ? ` car to the ${direction}` : ' car';
+function carItems(): ContextMenuItem[] {
   const choices = classChoices();
 
-  const items: ContextMenuItem[] = [
-    { id: `${DELETE_CAR_ROW_PREFIX}${carId}`, label: `Delete${which}` },
-  ];
+  const items: ContextMenuItem[] = [{ id: 'delete', label: 'Delete car' }];
   if (choices.length > 0) {
     items.push({
-      // A group row: opened, never chosen. The car id keeps a coupling's two of
-      // these apart, since a coupler's menu carries a pair per car.
-      id: `${RECLASSIFY_GROUP_ROW_PREFIX}${carId}`,
-      label: `Reclassify${which}`,
-      items: reclassifyItems(carId, choices),
+      // A group row: opened, never chosen. Its class is the root's, so every
+      // group row in the tree is `reclassify-group:<class>` and each is unique.
+      id: `${RECLASSIFY_GROUP_ROW_PREFIX}${rootClass()}`,
+      label: 'Reclassify car',
+      items: reclassifyItems(choices),
     });
   }
   return items;
 }
 
 /**
- * How a coupler's menu names one of the cars that meet there.
- *
- * Cars carry no name and both of these end on the identical pixel, so the only
- * thing that tells them apart is **which way each one runs** from the coupling.
- * Two cars coupled end to end run in opposite directions, and opposite vectors
- * always land in opposite quarters (`geometry.ts` § `cardinalDirection`), so
- * the rows can never read the same. A car whose two ends coincide has no
- * direction and gets the plain verb.
- */
-function couplerDirection(car: CarLabel, end: 'p0' | 'p1'): string | null {
-  return cardinalDirection(car[end], end === 'p0' ? car.p1 : car.p0);
-}
-
-/**
  * What a right-click found: the object the menu will act on, and the rows it
  * offers for it — or null when there is nothing to offer.
  *
- * One switch resolves both, because a subject the menu cannot name a verb for
+ * One function resolves both, because a subject the menu cannot name a verb for
  * must not open a menu at all: a list of disabled rows is a worse answer than
  * the absence of one.
  *
- * A **coupler** offers one delete per car that meets there, named by the
- * direction that car runs (#33). It has to: chaining makes couplings the normal
- * case, and the middle car of a three-car train has *no* free end — deleting it
- * is reachable only through the joint. Ends of the same car are listed once,
- * since one row per car is what the verb acts on.
+ * **Topmost drawn wins**, so the subject is always predictable from the screen:
+ * the point-like objects answer first ({@link MENU_HIT_KINDS}), and a car is
+ * found by the **area** it is drawn as. That is why a car is reachable at all
+ * where it is coupled — the middle car of a train has no free end, and its
+ * joints are shared handles that name two cars at one pixel (#45).
  */
 function menuFor(
-  hit: HitTarget,
-  scene: HitScene
+  scene: HitScene,
+  at: Point,
+  tolerance: HitTolerance
 ): { readonly subject: MenuSubject; readonly items: readonly ContextMenuItem[] } | null {
-  switch (hit.kind) {
+  const hit = hitTest(scene, at, tolerance, MENU_HIT_KINDS);
+  switch (hit?.kind) {
     case 'calibration': {
       const point = scene.calibrationPoints[hit.index];
-      return point ? { subject: { hit, px: point.px }, items: CALIBRATION_ITEMS } : null;
+      if (!point) return null;
+      return {
+        subject: { kind: 'calibration', index: hit.index, px: point.px },
+        items: CALIBRATION_ITEMS,
+      };
     }
-    case 'sensor': {
-      const sensor = scene.sensors.find(s => s.id === hit.id);
-      return sensor
-        ? { subject: { hit, px: { x: sensor.x, y: sensor.y } }, items: SENSOR_ITEMS }
-        : null;
-    }
-    case 'car-endpoint': {
-      const [end] = hit.ends;
-      const car = scene.cars.find(c => c.id === end.id);
-      return car
-        ? { subject: { hit, px: car[end.end] }, items: carItems(car.id, null) }
-        : null;
-    }
-    case 'coupler': {
-      const items: ContextMenuItem[] = [];
-      const named = new Set<string>();
-      let at: Point | null = null;
-      for (const end of hit.ends) {
-        const car = scene.cars.find(c => c.id === end.id);
-        if (!car || named.has(car.id)) continue;
-        named.add(car.id);
-        at ??= car[end.end];
-        items.push(...carItems(car.id, couplerDirection(car, end.end)));
-      }
-      return at && items.length > 0 ? { subject: { hit, px: at }, items } : null;
-    }
+    case 'sensor':
+      return { subject: { kind: 'sensor', id: hit.id }, items: SENSOR_ITEMS };
   }
+
+  const car = carUnderPointer(scene, at, tolerance);
+  return car ? { subject: { kind: 'car', id: car.id }, items: carItems() } : null;
 }
 
 /**
@@ -446,7 +414,8 @@ const ALREADY_LABELED = 'That pixel is already inside a labeled car — a car is
  * outranks even that, since its next click is what completes the car. Dragging
  * moves whatever it grabbed, as one entry per gesture (#30), and right-click
  * opens the context menu on it (#29): delete for any of the three, naming for a
- * sensor, and one delete per car at a coupling.
+ * sensor, and reclassify for a car — which is named by its **body** rather than
+ * by a handle, so a coupled car needs no free end (#45).
  *
  * The car tool **chains** (#33): every click after the first is simultaneously
  * the end of the current car and the start of the next, a rubber band shows the
@@ -1577,15 +1546,11 @@ export class RREditorView extends LitElement {
     this._contextMenu.hide();
     if (!this.archive) return;
 
-    const scene = this._scene();
-    const hit = hitTest(
-      scene,
+    const menu = menuFor(
+      this._scene(),
       detail.point,
       this._tolerance(DEFAULT_GRAB_RADIUS_SCREEN_PX, detail)
     );
-    if (!hit) return;
-
-    const menu = menuFor(hit, scene);
     if (!menu) return;
 
     this._menuSubject = menu.subject;
@@ -1603,17 +1568,12 @@ export class RREditorView extends LitElement {
     this._menuSubject = null;
     if (!subject || !this.archive) return;
 
-    // Every row that acts on a car names it, because a coupler's subject is two
-    // of them and the middle car of a train is reachable through nothing else.
-    const carId = carIdOfDeleteRow(e.detail.id);
-    if (carId !== null) {
-      await this._deleteCar(carId);
-      return;
-    }
-
-    const reclassify = reclassifyRow(e.detail.id);
-    if (reclassify) {
-      await this._reclassifyCar(reclassify.carId, reclassify.class);
+    // A row is a verb; the subject is what it acts on. Only a car offers this
+    // one, so a row arriving against any other subject is dropped rather than
+    // guessed at.
+    const cls = classOfReclassifyRow(e.detail.id);
+    if (cls !== null) {
+      if (subject.kind === 'car') await this._reclassifyCar(subject.id, cls);
       return;
     }
 
@@ -1622,7 +1582,7 @@ export class RREditorView extends LitElement {
         await this._deleteSubject(subject);
         return;
       case 'name':
-        if (subject.hit.kind === 'sensor') await this._openSensorName(subject.hit.id);
+        if (subject.kind === 'sensor') await this._openSensorName(subject.id);
         return;
     }
   }
@@ -1649,9 +1609,9 @@ export class RREditorView extends LitElement {
    * author here, and therefore none to author wrongly.
    */
   private async _deleteSubject(subject: MenuSubject) {
-    switch (subject.hit.kind) {
+    switch (subject.kind) {
       case 'calibration': {
-        const { index } = subject.hit;
+        const { index } = subject;
         if (!this._pointIsStillAt(index, subject.px)) return;
 
         await this._record('delete calibration point', { kind: 'layout' }, () => {
@@ -1662,10 +1622,10 @@ export class RREditorView extends LitElement {
         return;
       }
       case 'sensor': {
-        // Keyed by `id`, so there is nothing to go stale: the hit names one
+        // Keyed by `id`, so there is nothing to go stale: the subject names one
         // sensor however the list is reordered or replaced underneath. It can
         // still be *gone*, which is why the filter is a filter and not a splice.
-        const { id } = subject.hit;
+        const { id } = subject;
         if (!this._sensor(id)) return;
 
         await this._record('delete sensor', { kind: 'layout' }, () => {
@@ -1675,9 +1635,10 @@ export class RREditorView extends LitElement {
         });
         return;
       }
-      default:
-        // A car is never deleted through here: every row that acts on one
-        // names it in the row id, so it goes through `_deleteCar` directly.
+      case 'car':
+        // Keyed by `id` for the same reason, and scoped to the image rather
+        // than to `layout`, because cars are per image.
+        await this._deleteCar(subject.id);
         return;
     }
   }

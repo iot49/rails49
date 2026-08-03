@@ -538,10 +538,12 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | `SYMBOL_SIZE_SCREEN_PX` | Size of a screen-constant symbol (markers, crosshairs, labels), in screen pixels |
 | `carWidthPx(dpt)` | Car width in image pixels: `dpt × STANDARD_WIDTH / STANDARD_GAUGE` — 2.09 track widths |
 | `carCorners(p0, p1, dpt)` | The four corners of the oriented rectangle, in polygon order from the `p0` side |
-| `carCovering(scene, at)` | The car whose rectangle covers a pixel, or `null` — the **area** question to `hitTest`'s handle question, off the same scene, asked only by the car tool's first click ([#43]). Boundary is inside; no DPT means no rectangle, so nothing covers |
-| `hitTest(scene, at, tolerance)` | The `HitTarget` under an image-pixel coordinate, or `null` |
+| `carCovering(scene, at)` | The car whose rectangle covers a pixel, or `null` — a claim about the **image**, off the same scene, asked only by the car tool's first click ([#43]). Boundary is inside; no DPT means no rectangle, so nothing covers |
+| `carUnderPointer(scene, at, tolerance)` | The car a **gesture** aimed at a pixel means, or `null` — the same rectangle **floored at a fingertip**, which is what the context menu opens on ([#45]). First in scene order where several cover |
+| `hitTest(scene, at, tolerance, kinds?)` | The `HitTarget` under an image-pixel coordinate, or `null`. `kinds` narrows what is looked *for*, defaulting to all of them |
 | `HitScene` | `{ cars, sensors, calibrationPoints, dpt }` — everything grabbable for one image of one layout, plus the scale the world-sized ones are drawn at |
 | `HitTarget` | `car-endpoint` / `coupler` (both carrying `ends`), `sensor` (`id`), `calibration` (`index`) |
+| `HitKind` | `car-endpoint` / `sensor` / `calibration` — a kind that can be *found*; a coupler is derived, never searched for |
 | `HitTolerance` | `{ screenPx, imagePxPerScreenPx }` |
 | `dragHandles(hit, scene)` | The points a grab moves — **a list**, one per object, and two or more for a coupler |
 | `DragHandle` | `{ ref, from }`: what it addresses, and where it sat at pointer-down |
@@ -552,8 +554,7 @@ untestable until `@web/test-runner` is stood up, while the same arithmetic here 
 | `isCoincident(at, points)` | Whether `at` is exactly one of them |
 | `coupledEnds(car, couplers)` | `CoupledEnds` for one car: which of its ends a shared handle covers |
 | `CoupledEnds` | `{ p0, p1 }` — passed to `renderCar` so it draws no handle there |
-| `cardinalDirection(from, to)` | `left` / `right` / `up` / `down`, or `null` for the same point. Names *which* car a coupler's menu row acts on |
-| `DEFAULT_GRAB_RADIUS_SCREEN_PX` | The grab radius every tool uses, in screen pixels — one number, because it describes the pointing device. A **floor**, not a cap: a sensor is grabbable across its whole drawn symbol |
+| `DEFAULT_GRAB_RADIUS_SCREEN_PX` | The grab radius every tool uses, in screen pixels — one number, because it describes the pointing device. A **floor**, not a cap: a sensor is grabbable across its whole drawn symbol, and so is a car |
 | `CLICK_SLOP_SCREEN_PX` | How far a pointer may travel between press and release and still be a click. Smaller than the grab radius: this is tremor, not aim |
 | `isClick(from, to, tolerance)` | Whether a finished gesture was a click rather than a drag |
 | `placeLabel(at, text, fontSizePx, offsetPx, frame)` | Where a symbol's label goes so it does not run off the frame — up and to the right, flipped inwards at the top or right edge |
@@ -575,20 +576,27 @@ photograph: an 8-megapixel image and a 720p one must feel the same.
 
 **Nearest wins**, whatever its kind; an exact tie goes to the denser geometry (car ends, sensors,
 calibration points, in that order). Only handles are hit — the body of a car is not grabbable,
-because the only edits a span supports are to its two ends. `carCovering` is the separate question
-"is this pixel already labelled", which only the car tool's first click asks; it measures in the
-span's own frame, so a diagonal car is tested across its axis and not across a bounding box.
+because the only edits a span supports are to its two ends.
+
+**Three questions, deliberately not one.** `hitTest` is *what can this gesture grab*.
+`carCovering` is *is this pixel already labelled* — a claim about the **image**, which only the car
+tool's first click asks. `carUnderPointer` is *which car is this gesture aimed at* — a claim about
+the **pointer**, which the context menu asks ([#45]). The last two are the same rectangle measured
+the same way (in the span's own frame, so a diagonal car is tested across its axis and not across a
+bounding box; the boundary counts as inside), and they differ in the fingertip **floor**, which only
+the pointer's question carries: widening the image's question would refuse a chain start across a
+band of demonstrable background, and in a yard photo that band is the gap between parallel tracks.
+
+**`kinds` narrows the search, not the answer.** Nearest-wins has already discarded everything the
+winner beat, so a caller that filtered a `car-endpoint` out of the *result* would find nothing where
+the user can see a sensor a few pixels further off. It is not a filter on the scene either — the
+excluded objects are still there for the next question to find.
 
 **A coupler is exact coincidence, not proximity.** Nothing about a coupling is stored; it is two or
 more car ends at the identical pixel, which chaining and the shared handle both guarantee by writing
 the same value. Fusing endpoints that merely look close would move geometry the user never joined.
 `hitTest` and `couplerPoints` apply that one rule to the pointer and to the renderer, so what draws
 as a coupling is exactly what grabs as one.
-
-**A car has no name, so a coupler's menu names it by direction.** `cardinalDirection` is that, and
-it is why the rule resolves an exact diagonal instead of calling it a tie: two cars coupled end to
-end run in opposite directions, opposite vectors land in opposite quarters, and the two rows can
-therefore never read the same.
 
 **A drag is a list of handles, not the thing under the cursor.** `dragHandles` is where that
 conversion happens, and it is why one history entry can cover several objects. Every handle carries
@@ -935,24 +943,34 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
   a `switch` over the `EditorMode` union — because right-click is state-dependent by design
   (`../SPEC.md` § Right-click is state-dependent): **idle** opens the menu and **placing-car** ends
   the chain.
-  * The **idle** branch hit-tests at `DEFAULT_GRAB_RADIUS_SCREEN_PX` and opens `rr-context-menu` at
-    the cursor: **delete** for a calibration point, **name and delete** for a sensor, **delete and
-    reclassify** for a car. Empty image opens nothing, and neither does an object with no verbs — a
-    list of disabled rows is a worse answer than the absence of one. A **coupler** offers that pair
-    per car that meets there, each row named by the direction that car runs ([#33]) — it has to,
-    because the middle car of a three-car train has no free end and the joint is the only way to
-    reach it.
+  * The **idle** branch opens `rr-context-menu` at the cursor: **delete** for a calibration point,
+    **name and delete** for a sensor, **delete and reclassify** for a car. Empty image opens nothing,
+    and neither does an object with no verbs — a list of disabled rows is a worse answer than the
+    absence of one.
+  * **A car is named by its body, not by a handle** ([#45]). The subject is resolved in two steps,
+    **topmost drawn first**: `hitTest` at `DEFAULT_GRAB_RADIUS_SCREEN_PX` for **sensors and
+    calibration points only**, then `carUnderPointer` for the area. Car ends are not asked about at
+    all — a coupler's shared handle is two cars at one pixel, so a hit there must fall through to the
+    area or right-clicking a joint would open nothing. That is why the rows carry no direction and no
+    car id any more: the gesture names one car, and the middle car of a train is reached by its own
+    rectangle rather than through a joint. Sensors and points win because they are drawn over the
+    cars, and a sensor inside a car's rectangle is the normal case. Where two cars cover the pixel —
+    the zero-area seam of a coupling, or an archive's overlapping cars — the **first in scene order**
+    wins.
+  * The menu's rectangle is **floored at a fingertip** while `carCovering`'s is not. A car drawn with
+    no rectangle at all (`getDPT` returning `null`, which an undo can cause) would otherwise be one
+    you can see and cannot delete.
   * **Reclassify is a submenu generated from `detector.vocabulary`** ([#35]), through
     `vocabulary.ts`. A new car is the taxonomy's root and refinement is an occasional act, not a
     mode, which is what a submenu says and a persistent picker would not. The **root is never
     rendered** — its children are — and it is nonetheless required in the stored class, so the rows
     carry the full dotted class (`stock.loco.steam`) in the row id. Selecting one is **one `image`
     entry**. A taxonomy that is only a root offers no reclassify row at all.
-  * **Every row that acts on a car names it**, coupled or not: `delete-car:<id>` and
-    `reclassify:<id>:<class>`, neither ever shown. One id format is one thing to parse, and the
-    middle car of a train is reachable through nothing but its joints. A row that only *opens* a
-    submenu carries `reclassify-group:…` instead — its own prefix, so it can neither be mistaken
-    for a verb nor collide with the row inside it that selects the same subtype.
+  * **A row is a verb; the subject holds the object.** `delete` and `reclassify:<class>`, neither
+    ever shown, and the same rows whatever the subject is — the menu was opened on one object and
+    resolved it then, because the user may have moved on by the time they pick. A row that only
+    *opens* a submenu carries `reclassify-group:<class>` instead — its own prefix, so it can neither
+    be mistaken for a verb nor collide with the row inside it that selects the same subtype.
   * The **placing-car** branch ends the chain and opens nothing. The chain's cars stay: each is its
     own committed entry, and only the anchor — which is view state — goes.
   * **The browser's own menu is suppressed here, not in `rr-viewer`**, and for every right-click the
@@ -974,9 +992,10 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
     coordinate intact — an entry is a snapshot, so there is no per-object restore to author. The
     subject is resolved when the menu opens and carries its **pixel** for the same reason an edit
     does: an undo landing while the menu is up can slide the index onto another point, and a subject
-    that moved is dropped rather than deleted from underneath the user. A **sensor** subject needs no
-    such guard: it carries an `id`, so the hit names it exactly however the list is replaced
-    underneath — the delete is a filter by id, not a splice by position.
+    that moved is dropped rather than deleted from underneath the user. **Sensor** and **car**
+    subjects need no such guard: each carries an `id`, so the subject names it exactly however the
+    list is replaced underneath — the delete is a filter by id, not a splice by position. A car's is
+    scoped to its **image** rather than to `layout`, because cars are per image.
 * **The active tool, and the gate** ([#31]). `rr-tool-palette` reports `rr-tool-select`; this
   component holds the tool and dispatches a click on it. A **placement in progress wins outright** —
   the second click of a car is what completes it. Otherwise a click on **empty image** runs the tool
@@ -1038,9 +1057,9 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
     *second* click lands wherever it is aimed, existing end included. Only the click that **starts**
     a chain is checked; a drag may still take an endpoint into another car, and an archive that
     already contains overlapping cars opens and edits unchanged.
-  * Endpoints **drag** and the menu **deletes**, through the same paths as everything else, keyed by
-    label `id`. Deleting one car of a train leaves no residue — a train is derived from coincident
-    endpoints, so nothing else names the car that went.
+  * Endpoints **drag** and the menu **deletes** the car whose body it was opened on, through the same
+    paths as everything else, keyed by label `id`. Deleting one car of a train leaves no residue — a
+    train is derived from coincident endpoints, so nothing else names the car that went.
 * **Chaining a train** ([#33]). The clicks do not stop at two: **every click after the first is
   simultaneously the end of the current car and the start of the next**, so a train is one run of
   clicks. The coincidence a train is derived from is exact because the same pixel is written as one

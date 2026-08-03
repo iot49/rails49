@@ -405,7 +405,15 @@ export const CLICK_SLOP_SCREEN_PX = 5;
  */
 export function isClick(from: Point, to: Point, tolerance: HitTolerance): boolean {
   const reach = tolerance.screenPx * tolerance.imagePxPerScreenPx;
-  return (to.x - from.x) ** 2 + (to.y - from.y) ** 2 <= reach * reach;
+  return distanceSq(from, to) <= reach * reach;
+}
+
+/**
+ * The squared distance between two pixels — squared because every comparison
+ * here is against a radius, and a square root would buy nothing but rounding.
+ */
+function distanceSq(a: Point, b: Point): number {
+  return (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
 }
 
 /**
@@ -422,6 +430,15 @@ const KIND_RANK: Record<'car-endpoint' | 'sensor' | 'calibration', number> = {
 
 /** What can be *found* directly. A coupler is derived, never a candidate. */
 type CandidateTarget = Extract<HitTarget, { kind: keyof typeof KIND_RANK }>;
+
+/**
+ * A kind of object {@link hitTest} looks for. A coupler is absent because it is
+ * derived from a car end that has already won, never searched for.
+ */
+export type HitKind = CandidateTarget['kind'];
+
+/** Every kind, which is what a caller that says nothing means. */
+const ALL_HIT_KINDS: readonly HitKind[] = ['car-endpoint', 'sensor', 'calibration'];
 
 interface Candidate {
   readonly target: CandidateTarget;
@@ -450,8 +467,20 @@ interface Candidate {
  * the shared handle both write the identical value to every end they join, so
  * anything that merely looks close is two objects the user placed separately,
  * and fusing them would move geometry they never joined.
+ *
+ * `kinds` narrows what is looked *for*, and a caller that wants fewer kinds must
+ * say so here rather than filter the answer: nearest-wins has already discarded
+ * everything the winner beat, so a sensor a few pixels behind a car end comes
+ * back as the car end, and a caller dropping that finds nothing where it can see
+ * a sensor. It is not a filter on the scene either — the objects excluded are
+ * still *there*, and a later question (`carUnderPointer`) still sees them.
  */
-export function hitTest(scene: HitScene, at: Point, tolerance: HitTolerance): HitTarget | null {
+export function hitTest(
+  scene: HitScene,
+  at: Point,
+  tolerance: HitTolerance,
+  kinds: readonly HitKind[] = ALL_HIT_KINDS
+): HitTarget | null {
   const pointerReach = tolerance.screenPx * tolerance.imagePxPerScreenPx;
   const sensorReach = Math.max(
     pointerReach,
@@ -460,20 +489,26 @@ export function hitTest(scene: HitScene, at: Point, tolerance: HitTolerance): Hi
 
   const candidates: Candidate[] = [];
   const push = (target: CandidateTarget, point: Point, reach: number) => {
-    const distanceSq = (point.x - at.x) ** 2 + (point.y - at.y) ** 2;
-    if (distanceSq <= reach * reach) candidates.push({ target, at: point, distanceSq });
+    const distance = distanceSq(point, at);
+    if (distance <= reach * reach) candidates.push({ target, at: point, distanceSq: distance });
   };
 
-  for (const label of scene.cars) {
-    push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p0' }] }, label.p0, pointerReach);
-    push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p1' }] }, label.p1, pointerReach);
+  if (kinds.includes('car-endpoint')) {
+    for (const label of scene.cars) {
+      push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p0' }] }, label.p0, pointerReach);
+      push({ kind: 'car-endpoint', ends: [{ id: label.id, end: 'p1' }] }, label.p1, pointerReach);
+    }
   }
-  for (const s of scene.sensors) {
-    push({ kind: 'sensor', id: s.id }, { x: s.x, y: s.y }, sensorReach);
+  if (kinds.includes('sensor')) {
+    for (const s of scene.sensors) {
+      push({ kind: 'sensor', id: s.id }, { x: s.x, y: s.y }, sensorReach);
+    }
   }
-  scene.calibrationPoints.forEach((p, index) => {
-    push({ kind: 'calibration', index }, p.px, pointerReach);
-  });
+  if (kinds.includes('calibration')) {
+    scene.calibrationPoints.forEach((p, index) => {
+      push({ kind: 'calibration', index }, p.px, pointerReach);
+    });
+  }
 
   let best: Candidate | null = null;
   for (const candidate of candidates) {
@@ -499,14 +534,17 @@ export function hitTest(scene: HitScene, at: Point, tolerance: HitTolerance): Hi
 /**
  * The car whose rectangle covers `at`, or `null` when none does.
  *
- * The **area** question to {@link hitTest}'s handle question, deliberately kept
- * apart from it and reading the same `HitScene` so both see one set of objects.
- * The hit-test answers "what can this gesture grab", and a car's body grabs
- * nothing — the only edits a span supports are to its two ends. This answers
+ * A claim about the **image**, deliberately kept apart from the other two
+ * questions and reading the same `HitScene` so all three see one set of objects.
+ * {@link hitTest} answers "what can this gesture grab", and a car's body grabs
+ * nothing — the only edits a span supports are to its two ends;
+ * {@link carUnderPointer} answers "which car is this gesture aimed at", which is
+ * about the pointer and is therefore floored at a fingertip. This one answers
  * "is this pixel already labelled", which only the car tool's **first** click
  * asks (#43), to refuse stacking a second box on a car that already carries
- * one. Nothing here rejects an *archive*: cars already overlapping open, render
- * and edit exactly as before.
+ * one — so it is **not** widened, or the refusal would cover a band of
+ * demonstrable background. Nothing here rejects an *archive*: cars already
+ * overlapping open, render and edit exactly as before.
  *
  * Measured in the span's own frame rather than against the corners
  * {@link carCorners} returns, so a diagonal car is tested across its own axis
@@ -531,25 +569,85 @@ export function carCovering(scene: HitScene, at: Point): CarLabel | null {
   if (scene.dpt === null) return null;
   const half = carWidthPx(scene.dpt) / 2;
   for (const car of scene.cars) {
-    const dx = car.p1.x - car.p0.x;
-    const dy = car.p1.y - car.p0.y;
-    const length = Math.hypot(dx, dy);
-    if (length === 0) {
-      if (samePoint(at, car.p0)) return car;
-      continue;
-    }
-    const ax = at.x - car.p0.x;
-    const ay = at.y - car.p0.y;
-    // Both distances scaled by the span's length rather than divided by it:
-    // a point exactly on the edge must read as exactly on the edge, and a
-    // division introduces the rounding that would put it just outside.
-    const along = ax * dx + ay * dy;
-    const across = ax * dy - ay * dx;
-    if (along >= 0 && along <= length * length && Math.abs(across) <= half * length) {
-      return car;
-    }
+    const inside = withinSpan(car, at, half);
+    // No axis, so no rectangle: it covers the one pixel it sits on.
+    if (inside === null ? samePoint(at, car.p0) : inside) return car;
   }
   return null;
+}
+
+/**
+ * The car a **gesture aimed at `at`** means, or `null` when it means none.
+ *
+ * The **third** question, alongside {@link hitTest}'s "what can this gesture
+ * grab" and {@link carCovering}'s "is this pixel already labelled" — not a
+ * variant of either. This one is about the **pointer**, and the answer is a car
+ * the user is pointing *at*; `carCovering` is about the **image**, and its
+ * answer is a claim that a pixel carries a label. Sharing one widened test would
+ * make the car tool refuse to start a chain across a fingertip's band of
+ * demonstrable background, which in a yard photo eats the gaps between parallel
+ * tracks.
+ *
+ * It exists because a car's **body** is what a right-click can name (#45). The
+ * shared coupler handle cannot: two cars end on the identical pixel, so a
+ * gesture there names both, which is why the menu used to name them by the way
+ * each ran. Coupled rectangles **abut** rather than overlap — `along` is bounded
+ * by the span's own ends — so an area test is unambiguous everywhere except a
+ * zero-area seam, and the direction naming dissolves with it.
+ *
+ * The rectangle is **floored at a fingertip**: half a car width, or the
+ * tolerance's reach where that is larger. Not a special case —
+ * {@link DEFAULT_GRAB_RADIUS_SCREEN_PX} is a floor rather than a cap, and
+ * `hitTest` already floors a sensor the same way. It is what keeps a car with
+ * **no DPT** reachable: there is no width to derive, `renderCar` draws the chord
+ * and handles anyway (an authored car must stay visible after a calibration
+ * point is deleted), and without the floor that would be a car you can see and
+ * cannot delete.
+ *
+ * Where several cars cover the pixel the **first in scene order** wins, as
+ * `carCovering` does: it is the seam of a coupling, or genuinely overlapping
+ * cars, and neither is something a user can aim at on purpose.
+ */
+export function carUnderPointer(
+  scene: HitScene,
+  at: Point,
+  tolerance: HitTolerance
+): CarLabel | null {
+  const reach = tolerance.screenPx * tolerance.imagePxPerScreenPx;
+  const half = Math.max(scene.dpt === null ? 0 : carWidthPx(scene.dpt) / 2, reach);
+  for (const car of scene.cars) {
+    const inside = withinSpan(car, at, half);
+    // No axis and so no rectangle: what is left is the same half-width as a
+    // radius, which is the one point the car is drawn as, reachable. The editor
+    // refuses to author such a car, so it can only arrive from outside.
+    if (inside === null ? distanceSq(at, car.p0) <= half * half : inside) return car;
+  }
+  return null;
+}
+
+/**
+ * Whether `at` is inside the rectangle `half` either side of a car's chord, or
+ * `null` when the span has no axis and there is no rectangle to be inside of.
+ *
+ * The **boundary is inside**, and the rectangle is capped at the two ends.
+ * Shared by the two area questions so they can differ in their half-width and in
+ * nothing else — the arithmetic that makes a diagonal car measure across its own
+ * axis rather than across a bounding box half again too big is written once.
+ */
+function withinSpan(car: CarLabel, at: Point, half: number): boolean | null {
+  const dx = car.p1.x - car.p0.x;
+  const dy = car.p1.y - car.p0.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return null;
+
+  const ax = at.x - car.p0.x;
+  const ay = at.y - car.p0.y;
+  // Both distances scaled by the span's length rather than divided by it:
+  // a point exactly on the edge must read as exactly on the edge, and a
+  // division introduces the rounding that would put it just outside.
+  const along = ax * dx + ay * dy;
+  const across = ax * dy - ay * dx;
+  return along >= 0 && along <= length * length && Math.abs(across) <= half * length;
 }
 
 /**
@@ -684,33 +782,6 @@ export interface CoupledEnds {
 /** {@link CoupledEnds} for one car, against the scene's {@link couplerPoints}. */
 export function coupledEnds(car: CarLabel, couplers: readonly Point[]): CoupledEnds {
   return { p0: isCoincident(car.p0, couplers), p1: isCoincident(car.p1, couplers) };
-}
-
-/** Which way one point lies from another, to the nearest quarter turn. */
-export type CardinalDirection = 'left' | 'right' | 'up' | 'down';
-
-/**
- * The direction of `to` seen from `from`, as a word — or `null` when the two
- * are the same point and there is no direction to name.
- *
- * It exists for the **coupler's context menu**: the rows there act on one of
- * two cars that meet at the identical pixel, and cars carry no name, so the
- * only thing that tells them apart is which way each one runs. Two cars
- * coupled end to end run in opposite directions from the coupling, and
- * opposite vectors always land in opposite quarters — so the two rows can never
- * read the same, which is the property the menu needs.
- *
- * **`y` grows downwards**, as it does everywhere in image pixels: a smaller `y`
- * is `up`. An exact diagonal resolves horizontally rather than being called a
- * tie, because a tie would have to be broken twice and could name both cars the
- * same way.
- */
-export function cardinalDirection(from: Point, to: Point): CardinalDirection | null {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  if (dx === 0 && dy === 0) return null;
-  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
-  return dy > 0 ? 'down' : 'up';
 }
 
 /** Every car end sitting exactly on `at`, in scene order. */

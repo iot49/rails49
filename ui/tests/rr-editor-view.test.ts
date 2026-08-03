@@ -1988,18 +1988,16 @@ describe('rr-editor-view', () => {
           expect(history.size).to.equal(entries + 1);
         });
 
-        it('names both coupled cars in the menu, by the way each one runs', async () => {
+        it('names one car — its own body — where two of them meet', async () => {
+          // The joint is a shared handle at one pixel, so a gesture there named
+          // two cars and the rows had to say which. The subject is now the body
+          // the pointer is inside, which names one (#45).
           const el = await mountWithTrain();
 
           await rightClickAt(el, { x: 400, y: 100 });
 
           expect(menuOf(el).open).to.be.true;
-          expect(menuItems(el)).to.deep.equal([
-            `delete-car:${cars()[0].id}`,
-            `reclassify-group:${cars()[0].id}`,
-            `delete-car:${cars()[1].id}`,
-            `reclassify-group:${cars()[1].id}`,
-          ]);
+          expect(menuItems(el)).to.deep.equal(['delete', `reclassify-group:${rootClass()}`]);
           // A row's own text, without whatever its submenu contains.
           const labels = [...menuOf(el).shadowRoot!.querySelector('sl-menu')!.children].map(item =>
             [...item.childNodes]
@@ -2008,12 +2006,21 @@ describe('rr-editor-view', () => {
               .join('')
               .trim()
           );
-          expect(labels).to.deep.equal([
-            'Delete car to the left',
-            'Reclassify car to the left',
-            'Delete car to the right',
-            'Reclassify car to the right',
-          ]);
+          expect(labels).to.deep.equal(['Delete car', 'Reclassify car']);
+        });
+
+        it('takes the first car in scene order at the seam of a coupling', async () => {
+          // Coupled rectangles abut rather than overlap, so the one ambiguous
+          // place is the zero-area line between them — which is where the
+          // shared handle sits, and the only thing scene order has to settle.
+          const el = await mountWithTrain();
+          const [first] = structuredClone(cars());
+
+          await rightClickAt(el, { x: 400, y: 100 });
+          await choose(el, 'delete');
+
+          expect(cars().some(car => car.id === first.id)).to.be.false;
+          expect(cars()).to.have.length(2);
         });
 
         it('deletes the middle car of a three-car train, leaving two and no residue', async () => {
@@ -2022,10 +2029,10 @@ describe('rr-editor-view', () => {
           const el = await mountWithTrain(history);
           const [first, middle, last] = structuredClone(cars());
 
-          // The middle car has no free end at all — the joint is the only way
-          // to reach it, which is why a coupler opens a menu.
-          await rightClickAt(el, { x: 700, y: 100 });
-          await choose(el, `delete-car:${middle.id}`);
+          // The middle car has no free end at all. Its **body** is what reaches
+          // it, which is what makes a joint unnecessary as a subject.
+          await rightClickAt(el, { x: 550, y: 100 });
+          await choose(el, 'delete');
 
           expect(cars()).to.deep.equal([first, last]);
           // Nothing else named the car that went: a train is derived, so the
@@ -2038,7 +2045,7 @@ describe('rr-editor-view', () => {
           expect(cars()).to.deep.equal([first, middle, last]);
         });
 
-        it('offers one row per car where three ends meet', async () => {
+        it('names one car where three ends meet, and reaches the others by body', async () => {
           const el = await mountWithTrain();
           // A fourth car joining the coupling at (400, 100) from below. It is
           // chained *into* the joint: a click on an existing end starts no car,
@@ -2049,8 +2056,16 @@ describe('rr-editor-view', () => {
 
           await rightClickAt(el, { x: 400, y: 100 });
 
-          // Three cars meet there, and each brings its own pair of verbs.
-          expect(menuItems(el).filter(id => id.startsWith('delete-car:'))).to.have.length(3);
+          // One subject, however many ends meet there — the menu names a car,
+          // not a coincidence.
+          expect(menuItems(el).filter(id => id === 'delete')).to.have.length(1);
+
+          // The fourth car runs down the frame where no other car is, so its
+          // own body reaches it.
+          await rightClickAt(el, { x: 400, y: 300 });
+          await choose(el, 'delete');
+          expect(cars()).to.have.length(3);
+          expect(cars().every(car => car.p0.y === 100 && car.p1.y === 100)).to.be.true;
         });
       });
     });
@@ -2196,6 +2211,54 @@ describe('rr-editor-view', () => {
       });
     });
 
+    describe('what the menu is opened on (#45)', () => {
+      /** One car across the frame, and whatever else the test puts on top of it. */
+      async function mountWithOneCar() {
+        const el = await mountWithCarTool();
+        await clickAt(el, { x: 100, y: 100 });
+        await clickAt(el, { x: 400, y: 100 });
+        await endChain(el);
+        return el;
+      }
+
+      it('gives a sensor drawn over a car the sensor\'s own menu', async () => {
+        // Topmost drawn wins, matching the render order: cars draw first, so a
+        // sensor on a car is not tinted over — and car-area-first would make
+        // the normal case, a sensor on the track a car stands on, unreachable.
+        const el = await mountWithOneCar();
+        archive.getManifest().layout.sensors.push({ id: 'S1abcdefghi', x: 250, y: 100 });
+
+        await rightClickAt(el, { x: 250, y: 100 });
+
+        expect(menuItems(el)).to.deep.equal(['name', 'delete']);
+      });
+
+      it('gives a calibration point drawn over a car the point\'s own menu', async () => {
+        // `calibrate()` puts a point at (100, 0), which the car's rectangle
+        // reaches down from (100, 100).
+        const el = await mountWithOneCar();
+
+        await rightClickAt(el, { x: 100, y: 10 });
+
+        expect(menuItems(el)).to.deep.equal(['delete']);
+      });
+
+      it('reaches a car whose DPT went away, which is drawn with no rectangle', async () => {
+        // `renderCar` still draws the chord and its handles with no DPT, because
+        // an authored car stays visible after a calibration point is deleted.
+        // Without the fingertip floor that is a car you can see and cannot
+        // delete.
+        const el = await mountWithOneCar();
+        archive.getManifest().layout.calibration.points = [];
+        await el.updateComplete;
+
+        await rightClickAt(el, { x: 250, y: 100 });
+        await choose(el, 'delete');
+
+        expect(cars()).to.deep.equal([]);
+      });
+    });
+
     describe('deleting', () => {
       /** Two separate cars: the chain is ended between them, so neither is coupled. */
       async function mountWithTwoCars(history?: EditHistory) {
@@ -2209,18 +2272,24 @@ describe('rr-editor-view', () => {
         return el;
       }
 
-      it('offers delete and reclassify on a car end', async () => {
+      it('offers delete and reclassify on a car\'s body', async () => {
+        const el = await mountWithTwoCars();
+
+        await rightClickAt(el, { x: 250, y: 140 });
+
+        expect(menuOf(el).open).to.be.true;
+        // The rows name no car: the subject is one, so a verb is a verb.
+        expect(menuItems(el)).to.deep.equal(['delete', `reclassify-group:${rootClass()}`]);
+      });
+
+      it('opens nothing past the end of a car, where no body is drawn', async () => {
+        // The rectangle is capped at the two ends and floored only *across* its
+        // axis, so the subject is exactly what the user can see.
         const el = await mountWithTwoCars();
 
         await rightClickAt(el, { x: 402, y: 101 });
 
-        expect(menuOf(el).open).to.be.true;
-        // Every row that acts on a car names it, coupled or not: one id format
-        // for a verb that has to reach the middle car of a train too.
-        expect(menuItems(el)).to.deep.equal([
-          `delete-car:${cars()[0].id}`,
-          `reclassify-group:${cars()[0].id}`,
-        ]);
+        expect(menuOf(el).open).to.be.false;
       });
 
       it('deletes that car and leaves the others untouched', async () => {
@@ -2229,8 +2298,8 @@ describe('rr-editor-view', () => {
         const el = await mountWithTwoCars(history);
         const before = structuredClone(cars());
 
-        await rightClickAt(el, { x: 100, y: 100 });
-        await choose(el, `delete-car:${before[0].id}`);
+        await rightClickAt(el, { x: 250, y: 100 });
+        await choose(el, 'delete');
 
         expect(cars()).to.deep.equal([before[1]]);
         expect(history.undoLabel).to.contain('car');
@@ -2242,8 +2311,8 @@ describe('rr-editor-view', () => {
         const el = await mountWithTwoCars(history);
         const before = structuredClone(cars());
 
-        await rightClickAt(el, { x: 100, y: 100 });
-        await choose(el, `delete-car:${before[0].id}`);
+        await rightClickAt(el, { x: 250, y: 100 });
+        await choose(el, 'delete');
 
         const entry = await history.undo();
         expect(entry!.target).to.deep.equal({ kind: 'image', filename: 'img1.jpg' });
@@ -2263,8 +2332,8 @@ describe('rr-editor-view', () => {
         archive.getManifest().images[0].labeled_complete = true;
         const before = structuredClone(cars());
 
-        await rightClickAt(el, { x: 100, y: 100 });
-        await choose(el, `delete-car:${before[0].id}`);
+        await rightClickAt(el, { x: 250, y: 100 });
+        await choose(el, 'delete');
 
         expect(archive.getManifest().images[0].labeled_complete).to.be.false;
 
@@ -2280,10 +2349,9 @@ describe('rr-editor-view', () => {
         history.attach(archive);
         const el = await mountWithTwoCars(history);
         const placed = history.size;
-        const before = structuredClone(cars());
 
-        await rightClickAt(el, { x: 100, y: 100 });
-        await choose(el, `delete-car:${before[0].id}`);
+        await rightClickAt(el, { x: 250, y: 100 });
+        await choose(el, 'delete');
 
         expect(archive.getManifest().images[0].labeled_complete).to.be.false;
         expect(history.size).to.equal(placed + 1);
@@ -2293,10 +2361,11 @@ describe('rr-editor-view', () => {
         const el = await mountWithTwoCars();
         const before = structuredClone(cars());
 
-        await rightClickAt(el, { x: 100, y: 100 });
-        // An undo landing while the menu is up.
+        await rightClickAt(el, { x: 250, y: 100 });
+        // An undo landing while the menu is up. The subject holds an `id`, so
+        // the car that went is the one that is dropped.
         archive.getManifest().images[0].labels = [before[1]];
-        await choose(el, `delete-car:${before[0].id}`);
+        await choose(el, 'delete');
 
         expect(cars()).to.deep.equal([before[1]]);
       });
@@ -2320,15 +2389,14 @@ describe('rr-editor-view', () => {
         // Generated from `detector.vocabulary`: adding a subtype there and
         // regenerating changes this menu with no code edit (#35).
         const el = await mountWithOneCar();
-        const id = cars()[0].id;
 
-        await rightClickAt(el, { x: 400, y: 100 });
+        await rightClickAt(el, { x: 250, y: 100 });
 
-        expect(submenuItems(el, `reclassify-group:${id}`)).to.deep.equal(
+        expect(submenuItems(el, `reclassify-group:${rootClass()}`)).to.deep.equal(
           choices.map(choice =>
             choice.children.length > 0
-              ? `reclassify-group:${id}:${choice.class}`
-              : `reclassify:${id}:${choice.class}`
+              ? `reclassify-group:${choice.class}`
+              : `reclassify:${choice.class}`
           )
         );
         // Every offered class is rooted, because an unrooted one matches no
@@ -2345,8 +2413,8 @@ describe('rr-editor-view', () => {
         const before = structuredClone(cars());
         const target = firstChoice.children[0] ?? firstChoice;
 
-        await rightClickAt(el, { x: 400, y: 100 });
-        await choose(el, `reclassify:${before[0].id}:${target.class}`);
+        await rightClickAt(el, { x: 250, y: 100 });
+        await choose(el, `reclassify:${target.class}`);
 
         expect(cars()[0].class).to.equal(target.class);
         // Nothing else about the label moves: reclassify is one field.
@@ -2363,8 +2431,8 @@ describe('rr-editor-view', () => {
         const el = await mountWithOneCar(history);
         const target = firstChoice.children[0] ?? firstChoice;
 
-        await rightClickAt(el, { x: 400, y: 100 });
-        await choose(el, `reclassify:${cars()[0].id}:${target.class}`);
+        await rightClickAt(el, { x: 250, y: 100 });
+        await choose(el, `reclassify:${target.class}`);
 
         await history.undo();
         expect(cars()[0].class).to.equal(rootClass());
@@ -2372,7 +2440,7 @@ describe('rr-editor-view', () => {
         expect(cars()[0].class).to.equal(target.class);
       });
 
-      it('reclassifies the named car of a coupling, which has no free end', async () => {
+      it('reclassifies a coupled car through its body, which has no free end', async () => {
         // Chaining makes couplings the normal case, so a verb that could not
         // reach a coupled car could not reach most cars.
         const el = await mountWithCarTool();
@@ -2380,11 +2448,11 @@ describe('rr-editor-view', () => {
         await clickAt(el, { x: 400, y: 100 });
         await clickAt(el, { x: 700, y: 100 });
         await endChain(el);
-        const [first, second] = structuredClone(cars());
+        const [first] = structuredClone(cars());
         const target = firstChoice.children[0] ?? firstChoice;
 
-        await rightClickAt(el, { x: 400, y: 100 });
-        await choose(el, `reclassify:${second.id}:${target.class}`);
+        await rightClickAt(el, { x: 550, y: 100 });
+        await choose(el, `reclassify:${target.class}`);
 
         expect(cars()[0].class).to.equal(first.class);
         expect(cars()[1].class).to.equal(target.class);
@@ -2392,13 +2460,12 @@ describe('rr-editor-view', () => {
 
       it('drops a reclassify whose car went away underneath the open menu', async () => {
         const el = await mountWithOneCar();
-        const before = structuredClone(cars());
         const target = firstChoice.children[0] ?? firstChoice;
 
-        await rightClickAt(el, { x: 400, y: 100 });
+        await rightClickAt(el, { x: 250, y: 100 });
         // An undo landing while the menu is up.
         archive.getManifest().images[0].labels = [];
-        await choose(el, `reclassify:${before[0].id}:${target.class}`);
+        await choose(el, `reclassify:${target.class}`);
 
         expect(cars()).to.deep.equal([]);
       });
@@ -2409,10 +2476,10 @@ describe('rr-editor-view', () => {
         const el = await mountWithOneCar();
         const before = structuredClone(cars());
 
-        await rightClickAt(el, { x: 400, y: 100 });
+        await rightClickAt(el, { x: 250, y: 100 });
         menuOf(el).dispatchEvent(
           new CustomEvent('rr-context-menu-select', {
-            detail: { id: `reclassify-group:${before[0].id}` },
+            detail: { id: `reclassify-group:${rootClass()}` },
             bubbles: true,
             composed: true,
           })
