@@ -33,7 +33,7 @@ const read = (file: string) => fs.readFileSync(path.join(repoRoot, file), 'utf8'
 const ORT_IMPORTERS = [
   'lib/classifier/src/browser.ts',
   'lib/detector/src/browser.ts',
-  'ui/src/rr-live-view.ts',
+  'ui/src/detectorSession.ts',
 ];
 
 /** Every `ort-wasm-simd-threaded*.wasm` an ORT dist file names, following glue modules. */
@@ -99,10 +99,24 @@ describe('ORT wasm assets', () => {
     // copy Rollup emits beside the chunk, which `dropUnfetchableOrtWasm`
     // deletes — so this assignment is what makes deleting it safe, and it has
     // to name `ort/` under the configured base. A CDN would fail COEP anyway.
-    const source = read('ui/src/rr-live-view.ts');
+    // In `detectorSession.ts` since #87, not the live view: two views open a
+    // session now, and one of them setting the path would leave the other
+    // fetching a hashed filename that isn't there, depending on mount order.
+    const source = read('ui/src/detectorSession.ts');
     expect(source).not.toMatch(/cdn\.jsdelivr\.net/);
     expect(source).toMatch(/ort\.env\.wasm\.wasmPaths\s*=\s*'\/ui\/ort\/'/);
     expect(ortCopyTargets.every(t => t.dest === 'ort')).toBe(true);
+  });
+
+  it('is configured in exactly one place, so mount order cannot decide it', () => {
+    // The whole reason `detectorSession.ts` exists (#87). A second assignment
+    // is not an error at runtime — it is the same value written twice until one
+    // of them drifts, and then the symptom is a 404 in whichever view happened
+    // to mount second.
+    const assigners = ['ui/src/rr-live-view.ts', 'ui/src/rr-diagnostics-view.ts']
+      .filter(f => fs.existsSync(path.join(repoRoot, f)))
+      .filter(f => /ort\.env\.wasm\.wasmPaths\s*=/.test(read(f)));
+    expect(assigners).toEqual([]);
   });
 
   it('is named identically by the deploy script, which cannot import it', () => {

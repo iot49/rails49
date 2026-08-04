@@ -91,6 +91,10 @@ describe('rr-live-view', () => {
     loadDetector.mockRejectedValue(new Error('404 on detector_int8.ort'));
 
     const el = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
+    // The load goes through `openDetector` since #87, so the rejection reaches
+    // the catch one microtask later than it used to and `updateComplete` alone
+    // can resolve before `_modelError` is set. Flush, then let Lit render.
+    await new Promise(resolve => setTimeout(resolve, 0));
     await el.updateComplete;
 
     const notice = el.shadowRoot!.textContent ?? '';
