@@ -105,6 +105,28 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@24.13.3)(jsdom@26.1.0)
 
+  tools/drift-bench:
+    dependencies:
+      '@occupancy/r49':
+        specifier: workspace:*
+        version: link:../../lib/r49
+      sharp:
+        specifier: ^0.33.4
+        version: 0.33.5
+      tsx:
+        specifier: ^4.10.5
+        version: 4.21.0
+    devDependencies:
+      '@types/node':
+        specifier: ^24.9.2
+        version: 24.13.3
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@24.13.3)(jsdom@26.1.0)
+
   tools/r49-validate:
     dependencies:
       '@occupancy/config':
