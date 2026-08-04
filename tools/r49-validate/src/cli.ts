@@ -2,7 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { validate, type ArchiveInput } from './validate.ts';
-import { guidanceTable, REFERENCE_WIDTH_PX } from './guidance.ts';
+import { checkGuidance, guidanceTable, REFERENCE_WIDTH_PX } from './guidance.ts';
 import { handleOf } from './corpus.ts';
 import type { ArchiveReport, Report } from './report.ts';
 
@@ -30,9 +30,12 @@ import type { ArchiveReport, Report } from './report.ts';
 const USAGE = `
 r49-validate <path>...            validate submitted .r49 files
 r49-validate guidance             print the capture-guidance table
+r49-validate guidance --check <path>
+                                  check a document's generated block against it
 
 Options:
   --author <handle>   the pull request author, for the directory-ownership rule
+  --check <path>      guidance only; verify instead of print. Exit 1 on drift.
   --width <px>        guidance only; reference frame width (default ${REFERENCE_WIDTH_PX})
 `.trim();
 
@@ -95,13 +98,23 @@ async function main(argv: readonly string[]): Promise<number> {
   if (argv[0] === 'guidance') {
     const { values } = parseArgs({
       args: [...argv.slice(1)],
-      options: { width: { type: 'string' } },
+      options: { width: { type: 'string' }, check: { type: 'string' } },
     });
     const width = values.width === undefined ? REFERENCE_WIDTH_PX : Number(values.width);
     if (!Number.isFinite(width) || width <= 0) {
       process.stderr.write(`--width must be a positive number, got ${values.width}\n`);
       return 2;
     }
+
+    // `--check` reports on stderr like every other human-facing rendering here,
+    // and writes nothing to stdout: there is no machine consumer, and stdout
+    // carrying the table would tempt a workflow into diffing it a second time.
+    if (values.check !== undefined) {
+      const { ok, message } = checkGuidance(await readFile(values.check, 'utf8'), width);
+      process.stderr.write(`${values.check}: ${message}\n`);
+      return ok ? 0 : 1;
+    }
+
     process.stdout.write(guidanceTable(width) + '\n');
     return 0;
   }

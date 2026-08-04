@@ -36,6 +36,23 @@ rails49/tools/r49-validate/node_modules/.bin/tsx \
 Both forms exist because the two subcommands have genuinely different needs, not
 as a convenience.
 
+`guidance --check` verifies instead of printing: it reads a document, pulls the
+block out from between its `BEGIN GENERATED` / `END GENERATED` markers, and
+compares it to what `guidance` would emit. It takes a **path**, so the corpus
+workflow runs it the second way:
+
+```bash
+rails49/tools/r49-validate/node_modules/.bin/tsx \
+  rails49/tools/r49-validate/src/cli.ts guidance --check CONTRIBUTING.md
+```
+
+Exit 1 on drift, 0 when it matches. The comparison and its failure message live
+in `guidance.ts` rather than in the workflow's YAML for the same reason
+`corpus.ts` holds the path rules: `pnpm test` covers this and YAML is covered by
+nothing — and the message is the deliverable, because the usual cause of a
+failure is `min_dpt` moving in *this* repository, which the contributor reading
+it has never touched.
+
 **stdout is machine, stderr is human — always both, no flag.** The workflow
 pipes stdout through `jq` to build its `::warning` annotations and its job
 summary; a person reads stderr. One code path serves both, so the rendering
