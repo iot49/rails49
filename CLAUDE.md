@@ -8,7 +8,7 @@ Computer vision suite for model railroaders: camera-based track occupancy detect
 
 **`SPEC.md` at the root is the requirements document for the whole project** — the `.r49` v4 format, the occupancy output contract, labeling UX, training-data derivation, and the reasoning behind each. It describes the **target**, and parts of it are still unbuilt. Where SPEC and the code disagree, that is the migration, not a bug to fix. This file describes what exists and how to build it; SPEC describes what it is for.
 
-**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. What remains furthest ahead of the code is **the detector**: the dataset export runs (`dataset/src/yolo_export.ts`, reading `detector.classes` and `detector.val_split`), but nothing trains or runs YOLO yet, and `detector.input` and `detector.confidence_threshold` are still values no runtime reads.
+**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. What remains furthest ahead of the code is **the detector**: the dataset export and the training/export path both run now (`dataset/src/yolo_export.ts`, then `detector/`), but nothing *loads* a detector — there is no `@occupancy/detector` package and the live view still runs the CNN. `detector.confidence_threshold` is still a value no runtime reads.
 
 ## Commands
 
@@ -26,7 +26,9 @@ Run from the repo root unless noted. pnpm workspace + `uv` for Python.
 | Build UI | `pnpm build` |
 | Regenerate `config.json` **and `lib/config`** | `pnpm config:generate` (or `bin/generate_config.py`) |
 | Deploy to Cloudflare Pages | `bin/deploy.sh` |
-| Python lint/format/types | `cd classifier/resnet && uv run ruff check . && uv run black --check . && uv run pyright` |
+| Python lint/format/types | `cd <classifier/resnet\|detector> && uv run ruff check . && uv run black --check . && uv run pyright` |
+| Derive the detector dataset | `pnpm --filter dataset run export:yolo` (reads `dataset/r49/`, writes `dataset/yolo/`) |
+| Fine-tune + export the detector | `cd detector && uv run python train.py && uv run python export_onnx.py` |
 | Install pre-push hook (runs `bin/test.sh`) | `bin/install-hooks.sh` |
 
 The UI dev server serves over HTTPS by default because `getUserMedia` requires a secure context — a phone on the LAN needs the HTTPS URL. It also sets COOP/COEP headers, required for ONNX Runtime's threaded WASM.
@@ -46,9 +48,14 @@ path is parked at its first arrow.
         ├── dataset/src/yolo_export.ts   ✓ RUNS  (labeled_complete gate, OBB spans)
         │       ▼
         │   dataset/yolo/                Ultralytics OBB layout, 80/20 by image
-        │       │  nothing trains from it yet — see issue #82
+        │       │  detector/train.py       (YOLO26n-OBB fine-tune from DOTA)
         │       ▼
-        │   (no detector model, no @occupancy/detector package)
+        │   detector/runs/.../best.pt
+        │       │  detector/export_onnx.py (ONNX → static INT8 → .ort)
+        │       ▼
+        │   detector/models/             detector_int8.ort  (NOT in git, NOT released)
+        │       │
+        │       └─▶ (no @occupancy/detector package yet — nothing loads it)
         │
         └── ✗ PARKED — no crop derivation runs today (see below)
                 ▼
@@ -118,7 +125,9 @@ Lit + Shoelace + Vite. Per-component contracts are documented at length in `ui/R
 
 ### Model files and releases
 
-The model files are gitignored; only `classifier/resnet/models/version.txt` is tracked. Publishing a retrained model means bumping `version.txt`, creating a matching GitHub Release, and uploading `model_int8.ort` + `config.json` as assets. **`bin/test.sh` does not download them and asserts no accuracy figure** — it runs identically on a clean clone with no model present.
+The model files are gitignored; only the two `models/version.txt` files are tracked. Publishing a retrained model means bumping `version.txt`, creating a matching GitHub Release, and uploading `model_int8.ort` + `config.json` as assets. **`bin/test.sh` does not download them and asserts no accuracy figure** — it runs identically on a clean clone with no model present.
+
+**The detector's `version.txt` says `unreleased`, and the tracer's model must not change that.** It is trained on 46 fixture images below `layout.min_dpt` against a six-image validation split; it exists to prove the pipeline runs, and nothing measures it. Publishing it would ship a model nothing has evaluated, and there is no gate that would catch you — see below.
 
 > **There is no automated model gate.** The marker-driven regression test and its 99.5% threshold were retired with the v4 conversion (issue #17), because v4 deletes the point markers they iterated and the number was a reproducibility check, never a generalization estimate. Nothing currently checks that a model rebuild matches the published one. A real held-out protocol waits on a fresh higher-DPT corpus — see `SPEC.md` § Accuracy. Do not plug the gap with a substitute gate.
 
@@ -128,7 +137,7 @@ Which model ships is named in two places, and they must agree: the static-copy t
 
 `bin/deploy.sh` strips nothing any more: it checks that `ort-wasm-simd-threaded.wasm` is present — the app cannot run without it, and it can no longer be fetched from a CDN — and aborts if anything in the deploy directory exceeds 25 MiB. `ui/vite.config.ts`'s `dropUnfetchableOrtWasm` deletes the second, hashed copy of that binary Rollup emits for the case where nothing sets `ort.env.wasm.wasmPaths`; the two places that do set it are pinned by `ui/tests/ortAssets.test.ts`.
 
-`bin/test.sh` also skips the Python checks when `uv sync` cannot resolve the environment (recent `onnxruntime` wheels have no macOS x86_64 build); every other Python failure is fatal.
+`bin/test.sh` loops over the two Python projects and skips each **independently** when `uv sync` cannot resolve it; every other Python failure is fatal. The per-project skip matters because they pin torch in opposite directions on purpose — `classifier/resnet` tracks current, `detector` pins 2.2.2 for macOS x86_64 — so on the 2017 laptop the resnet checks skip while the detector's run, and on Apple silicon it will be the other way round. A shared skip would silently drop the checks for whichever project does work.
 
 ### Deploy
 
@@ -158,6 +167,6 @@ The project is AGPL-3.0 because the detector is derived from Ultralytics YOLO, w
 
 | Layer | Technologies |
 | :--- | :--- |
-| **Deep Learning** | [Fastai](https://docs.fast.ai/), [PyTorch](https://pytorch.org/), [ONNX Runtime](https://onnxruntime.ai/) — `classifier/resnet/` |
+| **Deep Learning** | [Fastai](https://docs.fast.ai/), [PyTorch](https://pytorch.org/), [ONNX Runtime](https://onnxruntime.ai/) — `classifier/resnet/`; [Ultralytics](https://docs.ultralytics.com/) YOLO26n-OBB — `detector/` |
 | **Frontend** | [Lit](https://lit.dev/), [Shoelace](https://shoelace.style/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vitejs.dev/) |
 | **Tooling** | [pnpm](https://pnpm.io/), [uv](https://github.com/astral-sh/uv), [Vitest](https://vitest.dev/) |
