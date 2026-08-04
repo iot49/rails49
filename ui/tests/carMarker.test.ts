@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { render, svg } from 'lit';
 import type { CarLabel } from '@occupancy/r49';
-import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from '../src/carMarker.js';
+import type { Detection } from '@occupancy/detector';
+import {
+  renderCar,
+  renderCoupler,
+  renderDetection,
+  renderPendingCar,
+  carMarkerStyles,
+} from '../src/carMarker.js';
 import { carWidthPx } from '../src/geometry.js';
 import { HIGHLIGHT_CLASS } from '../src/highlight.js';
 
@@ -295,5 +302,80 @@ describe('renderPendingCar()', () => {
     );
     expect(el.querySelector('g')!.getAttribute('class')).toContain('pending');
     expect(carMarkerStyles.cssText).toContain('stroke-dasharray');
+  });
+});
+
+describe('renderDetection()', () => {
+  const detection = (over: Partial<Detection> = {}): Detection => ({
+    centre: { x: 200, y: 200 },
+    length: 200,
+    width: 42,
+    angle: 0,
+    class: 'stock',
+    confidence: 0.9,
+    ...over,
+  });
+
+  /** Big enough that a detection at (200, 200) is nowhere near an edge. */
+  const frame = { width: 1920, height: 1080 };
+
+  it("draws the model's own width, never the DPT-derived one", () => {
+    // The whole reason this takes a `Detection` and not a span. L0 is the pose
+    // exactly as emitted (SPEC § Occupancy Output): at DPT 90 a car is ~186 px
+    // wide, and drawing that around a box the model called 42 would hide the
+    // error the raw box shows. L1 substitutes the constant — in `occupancy()`,
+    // where a sensor is being tested, not here where a box is being drawn.
+    const el = renderSvg(renderDetection(detection(), size(90), frame));
+    const ys = polygonPoints(el).map(([, y]) => y);
+
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(42, 9);
+    expect(carWidthPx(90)).toBeGreaterThan(100);
+  });
+
+  it('spans its length along the angle it was given', () => {
+    const el = renderSvg(renderDetection(detection({ angle: Math.PI / 2 }), size(90), frame));
+    const xs = polygonPoints(el).map(([x]) => x);
+    const ys = polygonPoints(el).map(([, y]) => y);
+
+    // Turned a quarter turn: the long axis is now vertical.
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(200, 6);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(42, 6);
+  });
+
+  it('lands on the same rectangle an authored car of the same pose does', () => {
+    // Ground truth and prediction are drawn in one picture by the archive
+    // diagnostics (#87), and a perfect detection must sit exactly on its label
+    // — two corner formulas that disagreed by a normal's sign or a half-width
+    // would show as a permanent offset nothing could explain.
+    //
+    // The two are traversed in opposite orders, which is invisible on a convex
+    // quad and is not asserted here; what has to match is the *set* of corners.
+    const box = renderSvg(renderDetection(detection({ width: carWidthPx(90) }), size(90), frame));
+    const label = renderSvg(renderCar(car({ p0: { x: 100, y: 200 }, p1: { x: 300, y: 200 } }), size(90)));
+
+    const sorted = (el: SVGElement) =>
+      polygonPoints(el)
+        .map(([x, y]) => `${x.toFixed(6)},${y.toFixed(6)}`)
+        .sort();
+
+    expect(sorted(box)).toEqual(sorted(label));
+  });
+
+  it('labels the box with its class and confidence', () => {
+    const el = renderSvg(renderDetection(detection({ confidence: 0.873 }), size(90), frame));
+    expect(el.querySelector('text')!.textContent).toContain('stock');
+    expect(el.querySelector('text')!.textContent).toContain('87%');
+  });
+
+  it('draws no fill, unlike the authored label it may sit on top of', () => {
+    // The rectangle of a *label* is read against the car underneath it, which
+    // is what the wash is for. A detection is not being checked by eye, and a
+    // wash over every car in the frame would bury the photograph.
+    expect(carMarkerStyles.cssText).toMatch(/\.detection polygon\s*\{[^}]*fill:\s*none/);
+  });
+
+  it('has no id: a 300-slot buffer is re-decoded every frame', () => {
+    const el = renderSvg(renderDetection(detection(), size(90), frame));
+    expect(el.querySelector('.detection')!.getAttribute('data-label-id')).toBeNull();
   });
 });

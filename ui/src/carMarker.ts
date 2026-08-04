@@ -1,6 +1,8 @@
 import { svg, css } from 'lit';
 import type { SVGTemplateResult, CSSResult } from 'lit';
 import type { CarLabel, Point } from '@occupancy/r49';
+import { boxCorners } from '@occupancy/detector';
+import type { Detection } from '@occupancy/detector';
 import { carCorners, placeLabel } from './geometry.js';
 import { HIGHLIGHT_CLASS } from './highlight.js';
 import type { CoupledEnds, FrameSize } from './geometry.js';
@@ -9,11 +11,19 @@ import type { CoupledEnds, FrameSize } from './geometry.js';
  * Car rendering for SVG: the chord between the two clicked ends, the
  * translucent width rectangle derived from DPT, and a handle at each end.
  *
- * A module rather than a custom element, like `marker.ts`, `calibrationMarker.ts`
- * and `sensorMarker.ts` — custom elements break the SVG namespace when nested
+ * A module rather than a custom element, like `calibrationMarker.ts` and
+ * `sensorMarker.ts` — custom elements break the SVG namespace when nested
  * inside `<svg>`. Its exports **must be used together**: `carMarkerStyles` in
  * the host's `static styles`, `renderCar` once per label, `renderCoupler` once
- * per coupling and `renderPendingCar` for the chain in flight.
+ * per coupling, `renderPendingCar` for the chain in flight and
+ * `renderDetection` once per L0 box.
+ *
+ * **A detection lives here too, and that is deliberate** (#85). It is the same
+ * object seen from the other side — a car the model predicted rather than one a
+ * human authored — so it shares the ink, the label styling and the winding
+ * rule, and the two can be drawn in one picture and compared by eye. Giving it
+ * its own module would mean a second copy of the magenta literal, which is the
+ * same mistake the car width made before `carWidthPx` had one home.
  *
  * **The rectangle is the reason the car tool is gated on calibration.** A car
  * is two free clicks on the visible ends (`SPEC.md` § Authoring cars), and
@@ -32,7 +42,8 @@ import type { CoupledEnds, FrameSize } from './geometry.js';
 export const carMarkerStyles: CSSResult = css`
   .car,
   .coupler,
-  .car-pending {
+  .car-pending,
+  .detection {
     /* One literal for the whole symbol, for the same reason the crosshair and
        the diamond each have one: this is ink on an arbitrary photograph rather
        than chrome, and it has to stay legible over both a dark tunnel mouth and
@@ -100,7 +111,25 @@ export const carMarkerStyles: CSSResult = css`
     --car-ink: #ef4444;
   }
 
-  .car text {
+  /* What the model said, against what a human authored. Same ink, because it is
+     the same kind of object — a car — and a fifth colour would claim otherwise.
+     What differs is the assertion: an authored label is a filled rectangle,
+     because its whole job is to be read against the car underneath it; a
+     detection is an unfilled outline, because nothing is being checked by eye
+     and a wash over every car in the frame would bury the photograph the live
+     view exists to watch. The dashes say "predicted" at a glance where the two
+     are drawn together (the archive diagnostics of #87), and they are longer
+     than the chain-in-flight band's so the two are not one pattern. */
+  .detection polygon {
+    stroke: var(--car-ink);
+    stroke-width: 2;
+    stroke-dasharray: 14 7;
+    vector-effect: non-scaling-stroke;
+    fill: none;
+  }
+
+  .car text,
+  .detection text {
     fill: var(--car-ink);
     /* The photograph underneath is arbitrary, so the label carries its own
        contrast rather than relying on what it happens to sit on — the same
@@ -324,6 +353,60 @@ export function renderPendingCar(pending: PendingCar, size: CarSymbolSize): SVGT
       }
       <line x1="${anchor.x}" y1="${anchor.y}" x2="${to.x}" y2="${to.y}" />
       <circle cx="${anchor.x}" cy="${anchor.y}" r="${size.handlePx / 2}" />
+    </g>
+  `;
+}
+
+/**
+ * One L0 detection: the model's own oriented box, dashed, labelled with its
+ * class and confidence.
+ *
+ * **The corners come from `@occupancy/detector`'s `boxCorners`, not from
+ * `geometry.ts`'s `carCorners`.** They are two different claims and the
+ * difference is the width. An authored car has no stored width — it is derived
+ * from DPT, which is why `renderCar` takes the DPT and not a number — while a
+ * detection carries the width the model predicted, and L0 is defined as the
+ * pose *exactly as emitted* (`SPEC.md` § Occupancy Output). Substituting the
+ * derived width here would draw a box the model never produced and hide the
+ * error the raw one shows. L1's normalization is L1's, and it happens in
+ * `occupancy()` where the sensor is tested.
+ *
+ * Nothing about a detection is in the manifest, so — like the rubber band —
+ * this draws pure view state. There is no `id` to key on either: the 300-slot
+ * buffer is re-decoded every frame and a box has no identity across frames.
+ *
+ * @param detection The detection, in the frame `detect` was asked to report in.
+ * @param size The same sizes the cars around it are drawn at; only `labelPx`
+ *   is read, because a detection has no handles to grab and its rectangle is
+ *   the model's rather than DPT's.
+ * @param frame The image bounds, `rr-viewer`'s `resolution`, so the label flips
+ *   inwards at an edge.
+ */
+export function renderDetection(
+  detection: Detection,
+  size: CarSymbolSize,
+  frame: FrameSize
+): SVGTemplateResult {
+  const corners = boxCorners(detection);
+  // The class and the score together: the class because the vocabulary is
+  // append-only and will grow past `stock`, the score because every phantom
+  // arrives with one and reading it is how a threshold gets chosen (SPEC's
+  // confidence threshold is still unset — see the map's out-of-scope list).
+  const text = `${detection.class} ${Math.round(detection.confidence * 100)}%`;
+  const placement = placeLabel(detection.centre, text, size.labelPx, size.labelPx * 0.7, frame);
+
+  return svg`
+    <g class="detection">
+      <polygon points="${corners.map(c => `${c.x},${c.y}`).join(' ')}" />
+      <text
+        x="${placement.x}"
+        y="${placement.y}"
+        text-anchor="${placement.textAnchor}"
+        dominant-baseline="${placement.dominantBaseline}"
+        font-size="${size.labelPx}"
+      >
+        ${text}
+      </text>
     </g>
   `;
 }

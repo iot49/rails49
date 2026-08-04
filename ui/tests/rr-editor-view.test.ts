@@ -213,7 +213,12 @@ describe('rr-editor-view', () => {
     expect(viewer.interactive).to.be.undefined;
     expect(viewer.activeTool).to.be.undefined;
     expect(viewer.calibration).to.be.undefined;
-    expect(viewer.markers).to.deep.equal([]);
+    // Nor the live view's two: the editor shows what a human authored, never
+    // what a model predicted. `sensorStates` is `null` rather than empty —
+    // nothing is reading these sensors, which is not the same as reading them
+    // and finding nothing (#85).
+    expect(viewer.detections).to.deep.equal([]);
+    expect(viewer.sensorStates).to.be.null;
   });
 
   /** Lets the editor's async pointer and commit handlers settle. */

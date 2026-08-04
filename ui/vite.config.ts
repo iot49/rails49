@@ -5,6 +5,7 @@ import type { InlineConfig } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { ORT_WASM_BINARY, ortCopyTargets } from './ortAssets.js';
+import { DETECTOR_MODEL_DIR, detectorCopyTarget } from './modelAssets.js';
 
 interface VitestConfig extends UserConfig {
   test?: InlineConfig;
@@ -31,7 +32,7 @@ const dropUnfetchableOrtWasm = {
   },
 };
 
-const includeModels = fs.existsSync(path.resolve(__dirname, '../classifier/resnet/models'));
+const includeModels = fs.existsSync(path.resolve(__dirname, DETECTOR_MODEL_DIR));
 
 const config: VitestConfig = {
   base: '/ui/',
@@ -43,12 +44,11 @@ const config: VitestConfig = {
           dest: 'shoelace',
         },
         ...ortCopyTargets,
-        // Only the quantized model ships. The fp32 model.ort is 45 MB, over
-        // Cloudflare Pages' 25 MiB per-file limit; model_int8.ort is 11 MB.
-        ...(includeModels ? [{
-          src: '../classifier/resnet/models/{model_int8.ort,config.json}',
-          dest: 'models',
-        }] : []),
+        // The detector, and nothing else: the CNN is retained but no longer
+        // loaded (#7, #85), so shipping it would be 11 MB nothing fetches. The
+        // filename is `modelAssets.ts`'s, shared with the `loadDetector` call
+        // that must agree with it.
+        ...(includeModels ? [detectorCopyTarget] : []),
       ],
     }) as any,
     dropUnfetchableOrtWasm,

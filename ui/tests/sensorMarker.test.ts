@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, svg } from 'lit';
 import type { Sensor } from '@occupancy/r49';
+import type { SensorState, UnknownReason } from '@occupancy/detector';
 import { renderSensor, sensorLabelText, sensorMarkerStyles } from '../src/sensorMarker.js';
 import { renderCalibrationPoint } from '../src/calibrationMarker.js';
 import { HIGHLIGHT_CLASS } from '../src/highlight.js';
@@ -173,7 +174,87 @@ describe('renderSensor()', () => {
   });
 });
 
+describe('renderSensor() — L1 state (#85)', () => {
+  const detection = {
+    centre: { x: 100, y: 200 },
+    length: 200,
+    width: 42,
+    angle: 0,
+    class: 'stock',
+    confidence: 0.91,
+  };
+
+  it('states nothing when nothing is reading the sensor', () => {
+    // The editor. A sensor being placed is not a sensor being answered, and the
+    // symbol keeps its authored amber.
+    const el = renderSvg(renderSensor(sensor(), size(40), frame));
+    expect(el.querySelector('.sensor')!.getAttribute('data-state')).toBe('');
+    expect(el.querySelector('title')).toBeNull();
+  });
+
+  it('carries the state as an attribute the stylesheet recolours on', () => {
+    for (const state of ['occupied', 'clear', 'unknown'] as const) {
+      const value: SensorState =
+        state === 'occupied'
+          ? { state, detection }
+          : state === 'clear'
+            ? { state }
+            : { state, reason: 'no-model' };
+      const el = renderSvg(renderSensor(sensor(), size(40), frame, false, value));
+      expect(el.querySelector('.sensor')!.getAttribute('data-state')).toBe(state);
+    }
+  });
+
+  it('keeps the diamond whatever the state — shape is identity, colour is state', () => {
+    const occupied = renderSvg(
+      renderSensor(sensor(), size(40), frame, false, { state: 'occupied', detection })
+    );
+    const clear = renderSvg(renderSensor(sensor(), size(40), frame, false, { state: 'clear' }));
+
+    expect(occupied.querySelector('polygon')!.getAttribute('points')).toBe(
+      clear.querySelector('polygon')!.getAttribute('points')
+    );
+  });
+
+  it('names the covering detection\'s confidence when occupied', () => {
+    const el = renderSvg(
+      renderSensor(sensor(), size(40), frame, false, { state: 'occupied', detection })
+    );
+    expect(el.querySelector('title')!.textContent).toContain('91%');
+  });
+
+  it('gives clear no confidence at all', () => {
+    // SPEC § Confidence: `clear` is the absence of evidence and nothing scored
+    // it. A number here — 0% or 100% — would be the confident-looking miss the
+    // encoding exists to prevent.
+    const el = renderSvg(renderSensor(sensor(), size(40), frame, false, { state: 'clear' }));
+    expect(el.querySelector('title')!.textContent).toBe('clear');
+    expect(el.querySelector('title')!.textContent).not.toMatch(/\d/);
+  });
+
+  it('says why it could not answer, which the colour cannot', () => {
+    const reasons: Record<UnknownReason, RegExp> = {
+      'no-model': /no model/i,
+      'no-calibration': /calibration/i,
+      'outside-frame': /frame/i,
+    };
+    for (const [reason, pattern] of Object.entries(reasons) as [UnknownReason, RegExp][]) {
+      const el = renderSvg(renderSensor(sensor(), size(40), frame, false, { state: 'unknown', reason }));
+      expect(el.querySelector('title')!.textContent, reason).toMatch(pattern);
+    }
+  });
+});
+
 describe('sensorMarkerStyles', () => {
+  it('recolours the whole symbol per state, through the one ink literal', () => {
+    for (const state of ['occupied', 'clear', 'unknown']) {
+      expect(sensorMarkerStyles.cssText).toContain(`[data-state='${state}']`);
+    }
+    // The fill follows the ink rather than repeating a colour: a literal here
+    // would leave an occupied sensor outlined red and washed amber.
+    expect(sensorMarkerStyles.cssText).toContain('fill: var(--sensor-ink)');
+  });
+
   it('carries the sensor rules, so the host cannot render an unstyled one', () => {
     expect(sensorMarkerStyles.cssText).toContain('.sensor');
   });

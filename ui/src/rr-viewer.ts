@@ -1,12 +1,16 @@
 import { LitElement, html, css, svg } from 'lit';
 import type { SVGTemplateResult } from 'lit';
 import { customElement, property, state, query } from 'lit/decorators.js';
-import { renderMarker, markerDefs, markerStyles } from './marker.js';
-import type { MarkerData } from './marker.js';
 import { renderCalibrationPoint, calibrationMarkerStyles } from './calibrationMarker.js';
 import { renderSensor, sensorMarkerStyles } from './sensorMarker.js';
 import type { SensorSymbolSize } from './sensorMarker.js';
-import { renderCar, renderCoupler, renderPendingCar, carMarkerStyles } from './carMarker.js';
+import {
+  renderCar,
+  renderCoupler,
+  renderDetection,
+  renderPendingCar,
+  carMarkerStyles,
+} from './carMarker.js';
 import type { CarSymbolSize, CarWarning, PendingCar } from './carMarker.js';
 import {
   coupledEnds,
@@ -20,6 +24,7 @@ import type { FrameSize, Rect, Size } from './geometry.js';
 import { highlightStyles } from './highlight.js';
 import { isKnownClass } from './vocabulary.js';
 import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
+import type { Detection, SensorState } from '@occupancy/detector';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 export const viewerStyles = css`
@@ -258,8 +263,16 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
 
 /**
  * Display surface, shared by the editor (`src` → `<img>`) and the live view
- * (`stream` → `<video>`), with markers drawn over it in image pixel
+ * (`stream` → `<video>`), with annotations drawn over it in image pixel
  * coordinates.
+ *
+ * **What it draws splits by view, and the split is the two things the archive
+ * holds against the two the model says.** The editor passes authored objects —
+ * calibration points, sensors, cars; the live view passes what a frame
+ * produced — `detections` (L0) and `sensorStates` (L1) over the same sensor
+ * list. Nothing here computes either: `occupancy()` is a pure function in
+ * `@occupancy/detector` and the viewer is handed its answer, exactly as it is
+ * handed the cars.
  *
  * **It reports pointer gestures; it still authors nothing.** The v3 machinery
  * that added, moved and deleted point markers went with the v4 reduction (#19),
@@ -294,8 +307,9 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
  * arithmetic changed anywhere: annotations stay a constant **screen** size,
  * objects stay a constant **world** size, and a grab radius stays a fingertip.
  *
- * **Properties:** `src`, `stream`, `markers`, `calibrationPoints`, `sensors`,
- * `cars`, `pendingCar`, `highlight`, `zoom`, `zoomPreview`, `dpt`, `resolution`.
+ * **Properties:** `src`, `stream`, `calibrationPoints`, `sensors`,
+ * `sensorStates`, `detections`, `cars`, `pendingCar`, `highlight`, `zoom`,
+ * `zoomPreview`, `dpt`, `resolution`.
  *
  * @fires rr-pointer-down - Pointer pressed. Detail: {@link ViewerPointerDetail}
  * @fires rr-pointer-move - Pointer moved. Detail: {@link ViewerPointerDetail}
@@ -309,7 +323,6 @@ export interface ViewerContextMenuDetail extends Omit<ViewerPointerDetail, 'orig
 export class RrViewer extends LitElement {
   static styles = [
     viewerStyles,
-    markerStyles,
     calibrationMarkerStyles,
     sensorMarkerStyles,
     carMarkerStyles,
@@ -320,12 +333,11 @@ export class RrViewer extends LitElement {
 
   @property({ type: String }) src: string | null = null;
   @property({ attribute: false }) stream: MediaStream | null = null;
-  @property({ type: Array }) markers: MarkerData[] = [];
   /**
    * The layout's calibration points, drawn as labelled crosshairs.
    *
-   * Display only, like `markers`: the editor authors them, and the viewer never
-   * writes one. Empty in the live view, which has no reason to show them.
+   * Display only: the editor authors them, and the viewer never writes one.
+   * Empty in the live view, which has no reason to show them.
    */
   @property({ attribute: false }) calibrationPoints: readonly CalibrationPoint[] = [];
   /**
@@ -333,10 +345,41 @@ export class RrViewer extends LitElement {
    *
    * Display only, like `calibrationPoints`. Sensors are per **layout**, not per
    * image, so the same list is drawn over every frame — that is the point of
-   * placing one. Empty in the live view today; when it renders L1 state it will
-   * pass the same list.
+   * placing one. The live view passes the same list, with {@link sensorStates}
+   * beside it.
    */
   @property({ attribute: false }) sensors: readonly Sensor[] = [];
+  /**
+   * L1 for the sensors above, keyed by `id`, or `null` where nothing is reading
+   * them (#85).
+   *
+   * `null` and an empty map are **different**: `null` is the editor, where a
+   * sensor is being placed rather than answered and the symbol keeps its
+   * authored amber. An empty map would be a live view that answered no sensor,
+   * which `occupancy()` cannot produce — it is total, one entry per sensor
+   * always, including the whole-system `unknown` cases. So a sensor missing
+   * from a non-null map is a bug upstream, and it draws stateless rather than
+   * inventing a state to show.
+   *
+   * A map rather than a state on each `Sensor`, because a `Sensor` is manifest
+   * data and L1 is not: writing the answer onto the object drawn would put a
+   * per-frame reading inside the thing the editor saves.
+   */
+  @property({ attribute: false }) sensorStates: ReadonlyMap<string, SensorState> | null = null;
+  /**
+   * L0 for this frame: every car the detector found, in `resolution`
+   * coordinates.
+   *
+   * Display only and **not** manifest data — unlike `cars`, which are authored
+   * labels. Nothing here has an identity that survives a frame: the model emits
+   * a fixed 300-slot buffer that is re-decoded every time, so there is no id to
+   * key on and nothing to diff against the previous list.
+   *
+   * Empty in the editor, which shows what a human authored rather than what a
+   * model predicted. Drawn from `boxCorners` at the model's own width — see
+   * `carMarker.ts` § `renderDetection` for why that is not the DPT-derived one.
+   */
+  @property({ attribute: false }) detections: readonly Detection[] = [];
   /**
    * The current image's car labels, drawn as a chord inside a width rectangle.
    *
@@ -831,11 +874,7 @@ export class RrViewer extends LitElement {
           @pointercancel=${this.onPointerCancel}
           @contextmenu=${this.onContextMenu}
         >
-          ${markerDefs()}
-
           <g class="frame" transform="scale(${fit.sx}, ${fit.sy})">
-            ${this.markers.map(m => renderMarker(m, this.symbolSize))}
-
             <!-- Cars first: their width rectangles are the only area fills here,
                  so drawing them underneath keeps a crosshair or a sensor placed
                  on a car visible instead of tinted over. -->
@@ -857,6 +896,13 @@ export class RrViewer extends LitElement {
                  legible over the train it is being added to. -->
             ${this.pendingCar ? renderPendingCar(this.pendingCar, carSize) : ''}
 
+            <!-- L0, over the authored cars and under everything else: the two
+                 are drawn together only in the archive diagnostics, and there
+                 the prediction is what is being read *against* the label, so it
+                 goes on top of it. Sensors and crosshairs still win over both —
+                 a point must never be buried under an area. -->
+            ${this.detections.map(d => renderDetection(d, carSize, this.resolution))}
+
             ${this.calibrationPoints.map((p, i) =>
               // `resolution` is the group's user space, so it is also the frame
               // the label must stay inside — a point near an edge draws its
@@ -875,7 +921,8 @@ export class RrViewer extends LitElement {
                 s,
                 this.sensorSize(),
                 this.resolution,
-                this.highlight?.sensors.includes(s.id) ?? false
+                this.highlight?.sensors.includes(s.id) ?? false,
+                this.sensorStates?.get(s.id) ?? null
               )
             )}
 

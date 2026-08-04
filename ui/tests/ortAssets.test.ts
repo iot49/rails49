@@ -8,6 +8,7 @@ import {
   ORT_WASM_GLUE,
   ortCopyTargets,
 } from '../ortAssets.js';
+import { DETECTOR_MODEL_URL } from '../modelAssets.js';
 
 // The deployed site must be crossOriginIsolated for ORT to use more than one
 // WASM thread (#15), and COEP: require-corp is only safe once every subresource
@@ -21,8 +22,19 @@ const ortDist = path.dirname(require.resolve('onnxruntime-web/ort-wasm-simd-thre
 const repoRoot = path.resolve(__dirname, '../..');
 const read = (file: string) => fs.readFileSync(path.join(repoRoot, file), 'utf8');
 
-/** The two modules that import ORT. They must agree about all of this. */
-const ORT_IMPORTERS = ['lib/classifier/src/browser.ts', 'ui/src/rr-live-view.ts'];
+/**
+ * Every module that imports ORT. They must agree about all of this.
+ *
+ * The classifier is on the list although nothing loads it any more (#7, #85):
+ * it stays retrainable and revivable, and a revival that came back on the
+ * package root would pull the oversized jsep binary into a bundle that had
+ * stopped checking.
+ */
+const ORT_IMPORTERS = [
+  'lib/classifier/src/browser.ts',
+  'lib/detector/src/browser.ts',
+  'ui/src/rr-live-view.ts',
+];
 
 /** Every `ort-wasm-simd-threaded*.wasm` an ORT dist file names, following glue modules. */
 function referencedWasm(entry: string, seen = new Set<string>()): Set<string> {
@@ -101,18 +113,16 @@ describe('ORT wasm assets', () => {
     // The library has no correct default — `/ort/` is a 404 under this app's
     // `/ui/` base — and the emitted fallback is gone, so an unset wasmPaths
     // would 404 on a hashed filename. Fail where the cause is legible instead.
+    //
+    // Asserted against the detector rather than the classifier because the
+    // detector is what the live view loads: this is the shipped path, and the
+    // guard is only worth anything on the path that runs.
     const ort = await import('onnxruntime-web/wasm');
-    const { BrowserClassifier } = await import('@occupancy/classifier/browser');
-    // jsdom has no 2D context, and the constructor needs one to exist.
-    HTMLCanvasElement.prototype.getContext = (() => ({})) as never;
+    const { loadDetector } = await import('@occupancy/detector/browser');
     const previous = ort.env.wasm.wasmPaths;
     ort.env.wasm.wasmPaths = undefined;
     try {
-      const classifier = new BrowserClassifier({
-        labels: ['track'], dpt: 30, crop_size: 96,
-        mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225],
-      });
-      await expect(classifier.load('/ui/models/model_int8.ort')).rejects.toThrow(/wasmPaths/);
+      await expect(loadDetector(DETECTOR_MODEL_URL)).rejects.toThrow(/wasmPaths/);
     } finally {
       ort.env.wasm.wasmPaths = previous;
     }

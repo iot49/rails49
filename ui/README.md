@@ -27,7 +27,7 @@ All custom elements use the `rr-` prefix (**r**ail**r**oad).
 | Kind | Convention | Example |
 |---|---|---|
 | Lit custom element | `rr-<name>.ts` | `rr-viewer.ts` |
-| SVG template module | `<name>.ts` | `marker.ts` |
+| SVG template module | `<name>.ts` | `carMarker.ts` |
 | Utility / service | `<name>.ts` | `capture.ts` |
 | Test file | `<name>.test.ts` in `tests/` | `tests/marker.test.ts` |
 
@@ -45,18 +45,18 @@ rr-app                          ← shell: owns the archive and the view mode
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
 │   ├── rr-tool-palette         ← active tool, and the calibration gate on the labeling ones
 │   ├── rr-viewer               ← SHARED: media + SVG overlay; reports pointer gestures
-│   │   ├── marker.ts           ← module, not an element
-│   │   ├── calibrationMarker.ts ← module: the labelled crosshair
-│   │   ├── sensorMarker.ts     ← module: the labelled diamond
-│   │   └── carMarker.ts        ← module: the chord and its width rectangle
+│   │   ├── calibrationMarker.ts ← module, not an element: the labelled crosshair
+│   │   ├── sensorMarker.ts     ← module: the labelled diamond, recoloured by L1 state
+│   │   └── carMarker.ts        ← module: the authored chord + rectangle, and the L0 box
 │   ├── rr-thumbnail-bar        ← horizontal image selector strip
 │   ├── rr-calibration-dialog   ← asks for a point's x/y/z in mm (sl-dialog)
 │   ├── rr-sensor-dialog        ← asks for a sensor's optional name (sl-dialog)
 │   └── rr-context-menu         ← right-click verbs on one object (sl-menu)
-└── rr-live-view                ← live mode; owns the classifier
-    ├── rr-stats-bar            ← FPS / marker-count overlay
+└── rr-live-view                ← live mode; owns the detector and the L0→L1 loop
+    ├── rr-stats-bar            ← FPS / cars / occupied / inference overlay
     └── rr-viewer               ← SAME component, video source instead of img
-        └── marker.ts
+        ├── sensorMarker.ts     ← the diamond, coloured by occupied / clear / unknown
+        └── carMarker.ts        ← renderDetection: the dashed L0 box
 ```
 
 > **The editor authors calibration points, sensors and cars.** v3's point-marker
@@ -113,6 +113,8 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#48]: https://github.com/iot49/rails49/issues/48
 > [#49]: https://github.com/iot49/rails49/issues/49
 > [#52]: https://github.com/iot49/rails49/issues/52
+> [#7]: https://github.com/iot49/rails49/issues/7
+> [#85]: https://github.com/iot49/rails49/issues/85
 
 ## State and data flow
 
@@ -142,10 +144,11 @@ rr-app ─────────── rr-editor-view ────────
   it hands the viewer, `null` for fit. It records nothing, it survives an image change and a live
   chain, New and Open drop it, and a **reveal pans to keep what an undo changed on screen** —
   panning at the same zoom level where the changed objects fit, and fitting where they do not.
-* **`rr-live-view` owns:** the camera stream, the classifier, and the classification loop. It never
+* **`rr-live-view` owns:** the camera stream, the detector, and the detection loop. It never
   mutates the archive.
-* **Only the live view loads a classifier.** The editor's use of it was displaying a per-marker
-  prediction, and there are no markers to predict for.
+* **Only the live view loads a model, and it is the detector.** The CNN is retained and retrainable
+  but nothing loads it ([#7], [#85]): L1 is a pure function of L0, so the per-sensor answer is a
+  geometric consequence of the detector's boxes and there is nothing for a second model to say.
 
 Lit does not observe mutations *inside* `R49Archive`, so handlers that edit the manifest in place
 call `this.requestUpdate()` explicitly.
@@ -396,9 +399,10 @@ image pixel coordinates.
 |---|---|---|
 | `src` | `string \| null` | Image URL (editor mode) |
 | `stream` | `MediaStream \| null` | Video stream (live mode) |
-| `markers` | `MarkerData[]` | Markers to draw |
 | `calibrationPoints` | `readonly CalibrationPoint[]` | Crosshairs to draw; empty in the live view |
-| `sensors` | `readonly Sensor[]` | Diamonds to draw. Per **layout**, so the same list draws over every image; empty in the live view |
+| `sensors` | `readonly Sensor[]` | Diamonds to draw. Per **layout**, so the same list draws over every image; the live view passes the same list |
+| `sensorStates` | `ReadonlyMap<string, SensorState> \| null` | L1 per sensor, keyed by `id`. **`null` is the editor** — nothing is reading these sensors, which is not the same as reading them and finding nothing |
+| `detections` | `readonly Detection[]` | L0 for this frame: dashed oriented boxes at the model's **own** predicted width. Empty in the editor |
 | `cars` | `readonly CarLabel[]` | Car spans to draw: a chord inside its width rectangle. Per **image**, so switching images swaps the whole list; empty in the live view |
 | `pendingCar` | `PendingCar \| null` | The **rubber band** — `{ anchor, to }` for the chain in flight. The one thing here that is not in the manifest; empty in the live view |
 | `highlight` | `ViewerHighlight \| null` | The objects a reveal is pointing at — `{ cars, sensors, calibration }`, ids for the first two and **indices** for the third. Already resolved by `rr-editor-view`; the viewer draws it and decides nothing. `null` in the live view |
@@ -458,7 +462,7 @@ labeling surface has to own its gestures — but it is the one user-visible cons
 and the labeling device is a phone.
 
 **It still authors nothing** — `calibrationPoints` is drawn from the manifest and never written here,
-exactly like `markers`. `interactive`, `activeTool`, `calibration`, and the four events that
+and `detections`/`sensorStates` are computed by `@occupancy/detector` and handed down. `interactive`, `activeTool`, `calibration`, and the four events that
 mutated (`rr-marker-add`, `rr-marker-move`, `rr-marker-delete`, `rr-calibration-move`) were removed
 in the v4 reduction and do not come back — v4 has neither point markers nor a draggable `{p0, p1}`
 pair. The viewer reports where the pointer is; deciding what that means is the editor's job, and the
@@ -467,7 +471,7 @@ whether the native menu is suppressed depends on editor state: `rr-editor-view` 
 right-click it hears, and `rr-live-view` does not listen at all.
 
 **Methods:** `getVideoElement()`, `getImageElement()` — `rr-live-view` uses these to feed the
-classifier the live frame source.
+detector the live frame source.
 
 **Why one component for both modes.** `<img>`/`<video>` and the SVG both **cover the container**,
 and both fit their content into it by the same rule — `object-fit: contain` against
@@ -527,40 +531,6 @@ callback defers through `requestAnimationFrame`, and a frame that never arrives 
 background tab, an occluded window — used to leave every screen-constant symbol at its initial ratio,
 drawing crosshairs and labels at whatever size the *image* pixels happened to be. jsdom reports every
 rect as zero, so the suite cannot catch that; it was found by measuring a live page.
-
----
-
-### `marker.ts`
-
-Marker rendering for SVG. It is a module rather than a custom element because custom elements break
-the SVG namespace when nested inside `<svg>`. **All three exports must be used together** — the
-module boundary is the encapsulation.
-
-| Export | Type | Description |
-|---|---|---|
-| `renderMarker(marker, size)` | `(MarkerData, number) => SVGTemplateResult` | One marker: `<title>` tooltip, `<use>` of the type symbol, and a validation rect when `status` is set |
-| `markerDefs()` | `() => SVGTemplateResult` | The `<defs>` block; must appear once inside the host `<svg>` before any marker |
-| `markerStyles` | `CSSResult` | Validation-rect colors and stroke behavior; must go in the host's `static styles` |
-
-Symbols defined: `track`, `train`, `coupling`, `other`. (`drag-handle` went with calibration
-dragging.) Each is a 24×24 viewBox centered on (0,0), so `<use transform="translate(x,y)">` places it
-centered without manual offsets. An unrecognized `type` falls back to `other`.
-
-**`MarkerData`**
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | `string` | Unique marker id |
-| `x`, `y` | `number` | Image pixel coordinates |
-| `type` | `'track' \| 'train' \| 'coupling' \| 'other'` | Marker category |
-| `status?` | `'match' \| 'mismatch' \| 'pending' \| null` | Validation ring: green / red / orange. Omit or `null` for no ring |
-| `detectedLabels?` | `string[]` | What the classifier returned; shown as the `<title>` tooltip |
-
-> **`status` and `detectedLabels` currently have no producer.** The editor set them to show per-marker
-> classification results, and that went with the v4 reduction; `rr-live-view` passes `status: null`.
-> The rendering is kept rather than deleted because sensor state and L0 boxes will both want a
-> per-marker visual — but until something sets them, the validation ring and the tooltip do not
-> appear. Don't read the table above as describing live behaviour.
 
 ---
 
@@ -663,7 +633,7 @@ against the same edges: its geometry differs, this decision does not.
 
 ### `calibrationMarker.ts`
 
-The calibration point's own SVG, as a module for the same reason `marker.ts` is one. **Both exports
+The calibration point's own SVG, as a module for the same reason `carMarker.ts` is one. **Both exports
 must be used together** — styles in the host's `static styles`, the renderer once per point.
 
 | Export | Type | Description |
@@ -1179,14 +1149,15 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
     car and the assertion together. **Only** deletion clears it: adding a car increases coverage,
     dragging an end moves a label under live width-rectangle feedback, and reclassifying changes
     what a car is called rather than whether it is covered.
-* **It loads no classifier.** Marker CRUD and the per-marker classification display went with the v4
-  reduction. See the note at the top of this file.
+* **It loads no model.** Marker CRUD and the per-marker classification display went with the v4
+  reduction; the detector that replaced the classifier is the live view's alone. It passes the
+  viewer no `detections` and a `null` `sensorStates` — the editor shows what a human authored.
 
 ---
 
 ### `rr-live-view`
 
-Camera stream with a real-time classification overlay.
+Camera stream under the two layers of the occupancy output ([#85]).
 
 | Property | Type |
 |---|---|
@@ -1194,30 +1165,39 @@ Camera stream with a real-time classification overlay.
 
 * Opens the camera via `getCameraStream()` and runs a `requestAnimationFrame` loop, skipping frames
   until the video reports usable dimensions.
-* **Markers come from `manifest.layout.sensors`**, which are per layout, so placing one answers for
-  every frame. (v3 used image[0]'s point markers as a stand-in; sensors are what it approximated.)
-  Coordinates are scaled from the manifest resolution to the live frame's natural size.
-* ⚠️ **This is the demo path, not the occupancy contract.** `../SPEC.md` § Testing and Demo sanctions
-  running the classifier over a camera stream for testing and demo. It is *not* L1: § Occupancy
-  Output specifies per-sensor state as a **pure function of L0**, the detector's oriented boxes, and
-  says outright that "L1 never calls a second model". Nothing here emits `occupied`/`clear`/
-  `unknown`, and nothing here should start to.
-* Each marker's icon is the highest-priority returned label, ordered train > coupling > track.
-* Shows a banner and classifies nothing when `getDPT()` is null, since crop scaling needs it.
-* Releases the classifier and stops all camera tracks on disconnect.
+* **This is the occupancy contract, not a demo.** The detector runs **once per frame** — not once per
+  sensor — and every sensor is derived from its output by pure geometry, which is `../SPEC.md`
+  § Occupancy Output: L1 is a function of L0 and never calls a second model, so it cannot contradict
+  the boxes drawn beside it and costs the same for three sensors or three hundred. What stood here
+  before (the CNN at each sensor point, emitting marker glyphs) was § Testing and Demo, and it is
+  gone.
+* `detect` is asked to answer in **`camera.resolution`**, the frame sensors and labels are authored
+  in. The capture's own pixel count, the model grid and the letterbox bars stay inside
+  `@occupancy/detector`; nothing here scales a coordinate.
+* **The loop runs whether or not a model loaded.** `occupancy()` is total, and with `detections:
+  null` it answers every sensor `unknown` / `no-model` — a state SPEC names and the user needs to
+  see. Suppressing the loop would leave the previous frame's answers on screen instead.
+* Two banners, and each says what it costs: **no model** (every sensor `unknown`, with the command
+  that builds one) and **no calibration** (every sensor `unknown`, but *cars are still detected* —
+  L0 needs no DPT). The calibration one is resolved when the archive arrives rather than in the
+  loop, so a session where no frame ever runs still shows it.
+* Disposes the detector session and stops all camera tracks on disconnect.
 
 ---
 
 ### `rr-stats-bar`
 
-Overlay showing live classification stats. Displays FPS, marker count, and time per marker.
+Overlay showing live detection stats: the two layers, and what one inference cost.
 
 | Property | Type | Description |
 |---|---|---|
 | `fps` | `number` | Frames per second |
-| `count` | `number` | Markers classified per frame |
-| `sampleTime` | `number` | Milliseconds per marker |
-| `latency` | `number` | Whole-frame time; set by `rr-live-view` but **not currently rendered** |
+| `cars` | `number` | **L0**: detections above the confidence threshold in this frame |
+| `occupied` | `number` | **L1**: how many sensors read `occupied` |
+| `inference` | `number` | Milliseconds in `detect` — preprocessing, session, decode. Not the whole frame: L1 is pure geometry, and folding it in would attribute the render to the model |
+
+Both counts are shown because the pair is the readout: cars with no occupied sensor is either an
+empty siding or a sensor in the wrong place, and one number cannot say which.
 
 ---
 
