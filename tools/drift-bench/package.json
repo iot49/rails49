@@ -1,0 +1,21 @@
+{
+  "name": "@occupancy/drift-bench",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "bench": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@occupancy/r49": "workspace:*",
+    "sharp": "^0.33.4",
+    "tsx": "^4.10.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.2",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
