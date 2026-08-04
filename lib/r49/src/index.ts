@@ -55,7 +55,15 @@ export {
 // consumer because two of them must agree: the editor warns on a
 // non-conforming class, and the corpus validator blocks on it. Not parse-time
 // validation — `class` stays a plain string at the format layer.
-export { isKnownClass, vocabularySubtypes, type VocabularyNode } from './vocabulary.ts';
+// Two tables, read by the same segment-prefix rule: the authoring taxonomy
+// (`isKnownClass`, `vocabularySubtypes`) and the YOLO class list
+// (`detectorClassIndex`). A class can be known and still have no index.
+export {
+  detectorClassIndex,
+  isKnownClass,
+  vocabularySubtypes,
+  type VocabularyNode,
+} from './vocabulary.ts';
 
 // Withheld: the zod schemas (ManifestDataSchema, PointSchema, LayoutSchema,
 // …). Exporting them would make zod part of this package's contract, so it

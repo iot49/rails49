@@ -8,7 +8,7 @@ Computer vision suite for model railroaders: camera-based track occupancy detect
 
 **`SPEC.md` at the root is the requirements document for the whole project** — the `.r49` v4 format, the occupancy output contract, labeling UX, training-data derivation, and the reasoning behind each. It describes the **target**, and parts of it are still unbuilt. Where SPEC and the code disagree, that is the migration, not a bug to fix. This file describes what exists and how to build it; SPEC describes what it is for.
 
-**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. What remains furthest ahead of the code is **the detector** (nothing trains, exports, or runs YOLO yet; `detector.*` in `config.yaml` is values only).
+**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. What remains furthest ahead of the code is **the detector**: the dataset export runs (`dataset/src/yolo_export.ts`, reading `detector.classes` and `detector.val_split`), but nothing trains or runs YOLO yet, and `detector.input` and `detector.confidence_threshold` are still values no runtime reads.
 
 ## Commands
 
@@ -37,16 +37,27 @@ The UI dev server serves over HTTPS by default because `getUserMedia` requires a
 
 The whole system is one data path; each directory is a stage in it.
 
+Two branches share one corpus: the **detector** path runs, the **classifier**
+path is parked at its first arrow.
+
 ```
 .r49 archives (iot49/r49)         v4: layout photos, calibration, labels
-        │  ✗ PARKED — no derivation runs today (see below)
-        ▼
-dataset/data/                     144×144 crops, deterministic 80/20 split, data.csv
-        │  classifier/resnet/TRAIN.ipynb   (Fastai ResNet-18 → ONNX → ORT)
-        ▼
-classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
         │
-        └─▶ ui/       BrowserClassifier, onnxruntime-web   ← fetched at runtime
+        ├── dataset/src/yolo_export.ts   ✓ RUNS  (labeled_complete gate, OBB spans)
+        │       ▼
+        │   dataset/yolo/                Ultralytics OBB layout, 80/20 by image
+        │       │  nothing trains from it yet — see issue #82
+        │       ▼
+        │   (no detector model, no @occupancy/detector package)
+        │
+        └── ✗ PARKED — no crop derivation runs today (see below)
+                ▼
+            dataset/data/                144×144 crops, 80/20 split, data.csv
+                │  classifier/resnet/TRAIN.ipynb   (Fastai ResNet-18 → ONNX → ORT)
+                ▼
+            classifier/resnet/models/    model_int8.ort + config.json  (NOT in git)
+                │
+                └─▶ ui/    BrowserClassifier, onnxruntime-web   ← fetched at runtime
 ```
 
 ### The archives live in another repository
@@ -62,7 +73,9 @@ The six archives this repo used to carry moved to that repo's `fixtures/` tree �
 
 The conversion's regression guard is **retired** (#67) — its job ended with the conversion, and its zero-labels assertions blocked the relabeling the six exist for. What stands in its place is a different kind of test: `lib/r49/tests/fixtures/format-v4.r49`, a tiny **frozen** archive written once and never regenerated, which catches the writer-and-parser-drifting-together failure a symmetric round-trip test structurally cannot see. Do not regenerate it — if it fails to load, that is a v4 break needing a version bump.
 
-**The first arrow does not currently run.** `dataset/src/data_prep.ts` and `dataset/src/online_diagnostics.ts` are **parked stubs** that print their reason and exit non-zero — they derived crops and scored a confusion matrix from v3 point markers, which v4 does not store. Deriving from car spans alone gives every crop the same tag, so the vocabulary collapses to one degenerate class with no negatives. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18). The documented route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. **Do not revive them by inventing a substitute vocabulary or synthesising negatives.**
+**The classifier's first arrow does not run; the detector's does.** `dataset/src/yolo_export.ts` derives the Ultralytics OBB dataset straight from the archives — `labeled_complete` is its one hard gate, and everything else that could drop a car (an unmapped class, an uncalibrated archive, a zero-length span) is fatal instead. See `dataset/README.md` and `SPEC.md` § YOLO annotations. Nothing trains from its output yet.
+
+`dataset/src/data_prep.ts` and `dataset/src/online_diagnostics.ts` are **parked stubs** that print their reason and exit non-zero — they derived crops and scored a confusion matrix from v3 point markers, which v4 does not store. Deriving from car spans alone gives every crop the same tag, so the vocabulary collapses to one degenerate class with no negatives. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18). The documented route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. **Do not revive them by inventing a substitute vocabulary or synthesising negatives.**
 
 ### `config.yaml` is authored; everything else is generated
 

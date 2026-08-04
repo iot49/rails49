@@ -4,11 +4,14 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "export:yolo": "tsx src/yolo_export.ts",
     "prep": "tsx src/data_prep.ts",
     "online-diagnostics": "tsx src/online_diagnostics.ts"
   },
   "dependencies": {
     "@occupancy/classifier": "workspace:*",
+    "@occupancy/config": "workspace:*",
     "@occupancy/r49": "workspace:*",
     "js-yaml": "^4.1.1",
     "onnxruntime-node": "1.20.0",
@@ -17,6 +20,8 @@
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^24.9.2"
+    "@types/node": "^24.9.2",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
   }
 }

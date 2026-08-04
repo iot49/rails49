@@ -20,6 +20,9 @@ importers:
       '@occupancy/classifier':
         specifier: workspace:*
         version: link:../lib/classifier
+      '@occupancy/config':
+        specifier: workspace:*
+        version: link:../lib/config
       '@occupancy/r49':
         specifier: workspace:*
         version: link:../lib/r49
@@ -42,6 +45,12 @@ importers:
       '@types/node':
         specifier: ^24.9.2
         version: 24.13.3
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@24.13.3)(jsdom@26.1.0)
 
   lib/classifier:
     dependencies:

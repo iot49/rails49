@@ -1,9 +1,54 @@
 # Occupancy Dataset Preparation
 
-This directory held the tools for extracting training data from `.r49` railroad
-layout archives. **Both are currently parked and neither runs.**
+Tools for deriving training data from `.r49` railroad layout archives. One
+runs — the **detector** export. The two **classifier** scripts are parked and
+exit non-zero; the reasons are below and they are not defects to fix.
 
 ## Scripts
+
+### `pnpm run export:yolo` — the detector dataset
+
+Derives the Ultralytics OBB layout directly from a directory of archives, with
+no intermediate database:
+
+```bash
+pnpm --filter dataset run export:yolo -- --in ../../r49/fixtures --out yolo
+```
+
+`--in` defaults to `r49` and is scanned recursively; `--out` defaults to `yolo`
+and is **replaced wholesale** on every run (it refuses to delete a directory
+that holds no `data.yaml`, so a mistyped `--out` cannot eat your home
+directory). Both are gitignored. Point `--in` at a checkout of
+[`iot49/r49`](https://github.com/iot49/r49); the labels live there, not here.
+
+```
+yolo/
+  data.yaml                                 path/train/val + the class names
+  images/{train,val}/<archive>__<image>.jpeg
+  labels/{train,val}/<archive>__<image>.txt  class + 8 normalized corners
+```
+
+The rules it applies are `SPEC.md` § YOLO annotations:
+
+* **`labeled_complete` is the one hard gate.** An image a human has not vouched
+  for is skipped whole — one unlabeled car in an exported frame teaches the
+  detector that cars are background, and that loss is shared across the image
+  so it cannot be scoped away per class. A complete image with *no* cars is
+  legitimate and exports an empty label file: it is an all-background sample.
+* **Everything else that could drop a car is fatal**, never a silent skip: a
+  class no entry of `detector.classes` prefixes, an uncalibrated archive (no
+  DPT means no derivable width), a zero-length span, a missing image.
+* **Width is derived, not stored** — `DPT × standard_width / standard_gauge`.
+  The scale ratio cancels, so a car is 2.09 track-widths wide in every scale.
+* **The split is by image and by hash**, so re-exporting reshuffles nothing and
+  two cars in one frame cannot land on opposite sides. Ratio:
+  `detector.val_split`.
+* Corners are **clamped** into `[0, 1]`; Ultralytics rejects a label file
+  carrying one outside, and a clamped box beats no box. The run reports how
+  many moved.
+
+`src/obb.ts` holds the arithmetic with no filesystem in it, and is where the
+tests point.
 
 ### `pnpm run prep` — ⚠️ PARKED (exits non-zero)
 
@@ -47,7 +92,12 @@ request under CC BY 4.0. The six this directory used to hold are in that repo's
 `layout.min_dpt`, so no number derived from them predicts model accuracy. How
 training code reaches the corpus is not decided; see issue #51.
 
-*   `data/`: The generated training database (gitignored; nothing generates it
+*   `yolo/`: The generated detector dataset (gitignored; `export:yolo` writes
+    it). `data.yaml` names an absolute path, so it is machine-specific by
+    construction — regenerate rather than copy it.
+*   `r49/`: The default `--in`, if you keep a corpus checkout here (gitignored).
+*   `data/`: The generated CNN crop database (gitignored; nothing generates it
     today).
+*   `src/yolo_export.ts`, `src/obb.ts`: the detector export and its arithmetic.
 *   `src/data_prep.ts`, `src/online_diagnostics.ts`: parked stubs carrying the
     reasoning above.
