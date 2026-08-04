@@ -629,8 +629,9 @@ export class RREditorView extends LitElement {
       flex-direction: column;
       /* The toolbar's own width, stated here as well so the palette below it
          wraps inside the same strip instead of widening the column to fit its
-         gate note on one line. */
-      width: 100px;
+         gate note on one line. Both are 78px since #53 — a density change that
+         touches only rr-toolbar leaves the column exactly as wide as it was. */
+      width: 78px;
       flex-shrink: 0;
       /* The same dark green the toolbar and the palette sit on, so the column
          reads as one strip however much of it the two elements fill. */

@@ -54,10 +54,18 @@ export class RRToolbar extends LitElement {
     :host {
       display: flex;
       flex-direction: column;
-      gap: 1.5em;
-      padding: 1.5em 0.5em;
+      /* Spacing, not buttons, is what made this column tall (#53). Measured
+         across four densities on the real editor: cutting the gaps and padding
+         while leaving the icons alone saved 140px of column height, where a
+         uniform 30% shrink saved 103px and took the buttons to 41px — under
+         the 44px touch target this app needs, since the labeling device is a
+         phone. So the gaps collapse and the icons barely move.
+         The width is stated again on rr-editor-view's .sidebar rule; both have
+         to change together or the column stays as wide as it was. */
+      gap: 0.5em;
+      padding: 0.6em 0.3em;
       background-color: #064e3b; /* Explicit dark green */
-      width: 100px;
+      width: 78px;
       user-select: none;
       box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
       align-items: center;
@@ -71,16 +79,16 @@ export class RRToolbar extends LitElement {
     .tool-group {
       display: flex;
       flex-direction: column;
-      gap: 1.25em;
-      padding: 0.8em 0;
+      gap: 0.45em;
+      padding: 0.35em 0;
       background-color: #059669; /* Explicit medium green */
-      border-radius: 12px;
-      width: calc(100% - 16px);
+      border-radius: 8px;
+      width: calc(100% - 8px);
       align-items: center;
     }
 
     sl-icon-button {
-      font-size: 2.25em;
+      font-size: 2.1em;
       color: white;
       cursor: pointer;
       transition: transform 0.1s;
