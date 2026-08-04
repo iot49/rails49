@@ -79,6 +79,9 @@ importers:
       '@occupancy/config':
         specifier: workspace:*
         version: link:../config
+      '@occupancy/uid':
+        specifier: workspace:*
+        version: link:../uid
       jszip:
         specifier: ^3.10.1
         version: 3.10.1

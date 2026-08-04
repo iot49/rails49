@@ -149,23 +149,37 @@ export const MANIFEST_VERSION = 4;
 
 const ScaleSchema = z.enum(SCALES);
 
-const PointSchema = z.object({
-  x: z.number(),
-  y: z.number(),
-});
+// Every object below is `.strict()`: an unknown key is a parse error, not
+// something to strip. zod's default is to drop unrecognized keys silently,
+// which means a manifest written by a newer build round-trips through an older
+// one *shorter* than it arrived — the same failure class as a defaulted
+// `scale` or a defaulted `provenance`, and invisible until something
+// downstream misses a field nobody knows was deleted. Strictness is per
+// object, so it has to be spelled on each one; a new object schema without it
+// reopens the hole quietly.
+const PointSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+  })
+  .strict();
 
-const WorldPointSchema = z.object({
-  x: z.number(),
-  y: z.number(),
-  z: z.number(),
-});
+const WorldPointSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+  })
+  .strict();
 
-const CalibrationPointSchema = z.object({
-  /** Where the feature is in the image. */
-  px: PointSchema,
-  /** Where it is on the layout, in mm from an arbitrary but fixed origin. */
-  world: WorldPointSchema,
-});
+const CalibrationPointSchema = z
+  .object({
+    /** Where the feature is in the image. */
+    px: PointSchema,
+    /** Where it is on the layout, in mm from an arbitrary but fixed origin. */
+    world: WorldPointSchema,
+  })
+  .strict();
 
 // Calibration is always present with `points` defaulting to []. "Uncalibrated"
 // is a real state the editor handles, and an empty list expresses it without
@@ -174,15 +188,18 @@ const CalibrationSchema = z
   .object({
     points: z.array(CalibrationPointSchema).default([]),
   })
+  .strict()
   .default({});
 
-const SensorSchema = z.object({
-  id: z.string().min(1),
-  x: z.number(),
-  y: z.number(),
-  /** Free text, not unique, and never auto-generated — absent when unset. */
-  name: z.string().optional(),
-});
+const SensorSchema = z
+  .object({
+    id: z.string().min(1),
+    x: z.number(),
+    y: z.number(),
+    /** Free text, not unique, and never auto-generated — absent when unset. */
+    name: z.string().optional(),
+  })
+  .strict();
 
 // `provenance` is a discriminated union with no default. `proposed_by` is
 // required on `proposed`/`corrected` and forbidden on `human`, enforced by the
@@ -203,22 +220,28 @@ const carLabelBase = {
 };
 
 const CarLabelSchema = z.discriminatedUnion('provenance', [
-  z.object({
-    ...carLabelBase,
-    provenance: z.literal('human'),
-    // Present-and-set fails; absent passes.
-    proposed_by: z.never().optional(),
-  }),
-  z.object({
-    ...carLabelBase,
-    provenance: z.literal('proposed'),
-    proposed_by: z.string().min(1),
-  }),
-  z.object({
-    ...carLabelBase,
-    provenance: z.literal('corrected'),
-    proposed_by: z.string().min(1),
-  }),
+  z
+    .object({
+      ...carLabelBase,
+      provenance: z.literal('human'),
+      // Present-and-set fails; absent passes.
+      proposed_by: z.never().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...carLabelBase,
+      provenance: z.literal('proposed'),
+      proposed_by: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...carLabelBase,
+      provenance: z.literal('corrected'),
+      proposed_by: z.string().min(1),
+    })
+    .strict(),
 ]);
 
 /**
@@ -235,50 +258,73 @@ function uniqueIds<T extends { id: string }>(kind: string) {
 const sensorIds = uniqueIds<z.infer<typeof SensorSchema>>('sensor');
 const labelIds = uniqueIds<z.infer<typeof CarLabelSchema>>('label');
 
-const ImageSchema = z.object({
-  filename: z.string(),
-  /**
-   * A human asserts that no car in this image is unlabeled. Defaults to
-   * `false` unconditionally — that is a claim no default and no conversion can
-   * make on a human's behalf. An image marked complete with zero labels is
-   * legitimate: it is an all-background sample.
-   */
-  labeled_complete: z.boolean().default(false),
-  labels: z.array(CarLabelSchema).refine(labelIds.check, labelIds.message).default([]),
-});
+const ImageSchema = z
+  .object({
+    filename: z.string(),
+    /**
+     * A human asserts that no car in this image is unlabeled. Defaults to
+     * `false` unconditionally — that is a claim no default and no conversion can
+     * make on a human's behalf. An image marked complete with zero labels is
+     * legitimate: it is an all-background sample.
+     */
+    labeled_complete: z.boolean().default(false),
+    labels: z.array(CarLabelSchema).refine(labelIds.check, labelIds.message).default([]),
+  })
+  .strict();
 
-const LayoutSchema = z.object({
-  name: z.string().optional(),
-  description: z.string().optional(),
-  contact: z.string().optional(),
-  /**
-   * Required, with **no default**. v3 defaulted this to `'N'`, which is not
-   * safe here: `DPT = s · gauge_mm(scale)`, so a silently-assumed scale
-   * reports a DPT wrong by the ratio between the two scales — up to 8.8×
-   * between Z and G. SPEC § The v4 manifest names only two defaults,
-   * `points: []` and `labeled_complete: false`, and this is not one of them.
-   */
-  scale: ScaleSchema,
-  calibration: CalibrationSchema,
-  /** Per **layout**, not per image: placing one answers for every frame. */
-  sensors: z.array(SensorSchema).refine(sensorIds.check, sensorIds.message).default([]),
-});
+const LayoutSchema = z
+  .object({
+    name: z.string().optional(),
+    description: z.string().optional(),
+    contact: z.string().optional(),
+    /**
+     * Required, with **no default**. v3 defaulted this to `'N'`, which is not
+     * safe here: `DPT = s · gauge_mm(scale)`, so a silently-assumed scale
+     * reports a DPT wrong by the ratio between the two scales — up to 8.8×
+     * between Z and G. SPEC § The v4 manifest names only two defaults,
+     * `points: []` and `labeled_complete: false`, and this is not one of them.
+     */
+    scale: ScaleSchema,
+    calibration: CalibrationSchema,
+    /** Per **layout**, not per image: placing one answers for every frame. */
+    sensors: z.array(SensorSchema).refine(sensorIds.check, sensorIds.message).default([]),
+  })
+  .strict();
 
-const CameraSchema = z.object({
-  /** Retained because L0 detections are reported in this frame. */
-  resolution: z.object({
-    width: z.number().int(),
-    height: z.number().int(),
-  }),
-  model: z.string().optional(),
-});
+const CameraSchema = z
+  .object({
+    /** Retained because L0 detections are reported in this frame. */
+    resolution: z
+      .object({
+        width: z.number().int(),
+        height: z.number().int(),
+      })
+      .strict(),
+    model: z.string().optional(),
+  })
+  .strict();
 
-export const ManifestDataSchema = z.object({
-  version: z.literal(MANIFEST_VERSION),
-  layout: LayoutSchema,
-  camera: CameraSchema,
-  images: z.array(ImageSchema).default([]),
-});
+export const ManifestDataSchema = z
+  .object({
+    version: z.literal(MANIFEST_VERSION),
+    /**
+     * Identity of the archive itself, stable across every save.
+     *
+     * **Optional at the format layer, required by the corpus repo** — an
+     * archive without one is still valid v4, which is what lets a hand-built
+     * manifest and every file written before this field existed keep loading.
+     * `R49Archive` mints one on write when it is absent and never overwrites
+     * one that exists, so a file only lacks an `id` until the first save.
+     *
+     * It is identity, not an address: the path a file sits at, and its name,
+     * may both change without making it a different archive.
+     */
+    id: z.string().min(1).optional(),
+    layout: LayoutSchema,
+    camera: CameraSchema,
+    images: z.array(ImageSchema).default([]),
+  })
+  .strict();
 
 /**
  * Rejects a non-v4 manifest with a message that names the version, before the

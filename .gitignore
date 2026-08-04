@@ -32,3 +32,7 @@ dataset/data/
 .claude/settings.local.json
 .claude/worktrees/
 .claude/.cc-writes/
+
+# pnpm falls back to a store inside the repo when it cannot write the global
+# one (a sandboxed install will do this). Never a source artifact.
+.pnpm-store/

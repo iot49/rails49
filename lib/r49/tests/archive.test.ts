@@ -423,4 +423,132 @@ describe('R49Archive', () => {
       expect(await archive.getImage('a.jpg')).toBeNull();
     });
   });
+
+  // The archive-level id is identity: optional at the format layer, required
+  // by the corpus repo, and — once minted — never changed by anything this
+  // package does. The two properties below are the whole contract, and both
+  // are about *writes*, because a write is the only thing that could break it.
+  describe('archive id', () => {
+    it('mints one on write when the manifest has none', async () => {
+      const archive = new R49Archive();
+      archive.setManifest(manifest());
+      expect(archive.getManifest().id).toBeUndefined();
+
+      const loaded = await R49Archive.load(await archive.export());
+      expect(loaded.getManifest().id).toEqual(expect.any(String));
+      expect(loaded.getManifest().id).not.toHaveLength(0);
+    });
+
+    it('never overwrites an existing id, however many times it is written', async () => {
+      const archive = new R49Archive();
+      archive.setManifest(manifest({ id: 'aBcDeFgHiJk' }));
+
+      // Three writes, because the download fallback writes a freshly-named
+      // file on every save: if minting were unconditional this is where a
+      // single archive would acquire a new identity per save.
+      await archive.export();
+      await archive.export();
+      const loaded = await R49Archive.load(await archive.export());
+
+      expect(loaded.getManifest().id).toBe('aBcDeFgHiJk');
+    });
+
+    it('carries a minted id through a reload and a second export unchanged', async () => {
+      const first = new R49Archive();
+      first.setManifest(manifest());
+      const reloaded = await R49Archive.load(await first.export());
+      const minted = reloaded.getManifest().id;
+
+      const again = await R49Archive.load(await reloaded.export());
+      expect(again.getManifest().id).toBe(minted);
+    });
+
+    it('rejects an empty id rather than treating it as absent', () => {
+      expect(rejection(manifest({ id: '' }))).toMatch(/id/);
+    });
+  });
+
+  // Strictness is per object in zod, so it has to be asserted per object:
+  // a schema that gained a nested object without `.strict()` would pass every
+  // test above while silently deleting whatever a newer build wrote into it.
+  describe('unknown keys are rejected, not stripped', () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['the manifest root', manifest({ vendor_extra: 1 })],
+      ['layout', manifest({ layout: { scale: 'HO', calibration: { points: [] }, sensors: [], hue: 1 } })],
+      ['calibration', manifest({ layout: { scale: 'HO', calibration: { points: [], fitted: true }, sensors: [] } })],
+      [
+        'a calibration point',
+        manifest({
+          layout: {
+            scale: 'HO',
+            calibration: { points: [{ ...cal([0, 0], [0, 0]), label: 'origin' }] },
+            sensors: [],
+          },
+        }),
+      ],
+      [
+        'a point',
+        manifest({
+          layout: {
+            scale: 'HO',
+            calibration: { points: [{ px: { x: 0, y: 0, z: 0 }, world: { x: 0, y: 0, z: 0 } }] },
+            sensors: [],
+          },
+        }),
+      ],
+      [
+        'a world point',
+        manifest({
+          layout: {
+            scale: 'HO',
+            calibration: { points: [{ px: { x: 0, y: 0 }, world: { x: 0, y: 0, z: 0, w: 0 } }] },
+            sensors: [],
+          },
+        }),
+      ],
+      [
+        'a sensor',
+        manifest({
+          layout: {
+            scale: 'HO',
+            calibration: { points: [] },
+            sensors: [{ id: 's1', x: 1, y: 2, colour: 'red' }],
+          },
+        }),
+      ],
+      ['camera', manifest({ camera: { resolution: { width: 1920, height: 1080 }, fps: 30 } })],
+      ['camera resolution', manifest({ camera: { resolution: { width: 1920, height: 1080, depth: 8 } } })],
+      ['an image', manifest({ images: [{ filename: 'a.jpg', labels: [], captured_at: 'now' }] })],
+      ['a car label', manifest({ images: [{ filename: 'a.jpg', labels: [car({ colour: 'red' })] }] })],
+    ];
+
+    for (const [where, data] of cases) {
+      it(`rejects an unknown key in ${where}`, () => {
+        expect(rejection(data)).toMatch(/[Uu]nrecognized key/);
+      });
+    }
+
+    it('keeps accepting every optional key the format does define', async () => {
+      const loaded = await roundTrip(
+        manifest({
+          id: 'aBcDeFgHiJk',
+          layout: {
+            name: 'Yard',
+            description: 'west end',
+            contact: 'me@example.com',
+            scale: 'HO',
+            calibration: { points: [] },
+            sensors: [{ id: 's1', x: 1, y: 2, name: 'siding 3' }],
+          },
+          camera: { resolution: { width: 1920, height: 1080 }, model: 'Pi HQ' },
+        })
+      );
+
+      const m = loaded.getManifest();
+      expect(m.id).toBe('aBcDeFgHiJk');
+      expect(m.layout.description).toBe('west end');
+      expect(m.layout.sensors[0].name).toBe('siding 3');
+      expect(m.camera.model).toBe('Pi HQ');
+    });
+  });
 });
