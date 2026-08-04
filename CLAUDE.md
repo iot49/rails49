@@ -8,7 +8,7 @@ Computer vision suite for model railroaders: camera-based track occupancy detect
 
 **`SPEC.md` at the root is the requirements document for the whole project** — the `.r49` v4 format, the occupancy output contract, labeling UX, training-data derivation, and the reasoning behind each. It describes the **target**, and parts of it are still unbuilt. Where SPEC and the code disagree, that is the migration, not a bug to fix. This file describes what exists and how to build it; SPEC describes what it is for.
 
-**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. What remains furthest ahead of the code is **the detector**: the dataset export and the training/export path both run now (`dataset/src/yolo_export.ts`, then `detector/`), and `@occupancy/detector` can now load a model, decode L0 and answer L1 — but nothing in the app *calls* it. The live view still runs the CNN (#85 swaps it) and there are no archive diagnostics yet (#87).
+**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. The detector path is now wired end to end: the dataset export and the training/export path run (`dataset/src/yolo_export.ts`, then `detector/`), and **`rr-live-view` loads the detector, draws L0 boxes and reports L1 per sensor** (#85) — the CNN is retained and retrainable but nothing loads it. What is still missing is archive diagnostics in the UI (#87).
 
 ## Commands
 
@@ -56,7 +56,9 @@ path is parked at its first arrow.
         │   detector/models/             detector_int8.ort  (NOT in git, NOT released)
         │       │
         │       └─▶ lib/detector/         loadDetector → L0 → occupancy() → L1
-        │                                 ✓ built, ✗ ui/ does not call it yet
+        │               │
+        │               └─▶ ui/           rr-live-view: dashed L0 boxes, sensors
+        │                                 coloured occupied/clear/unknown  ✓ #85
         │
         └── ✗ PARKED — no crop derivation runs today (see below)
                 ▼
@@ -65,7 +67,7 @@ path is parked at its first arrow.
                 ▼
             classifier/resnet/models/    model_int8.ort + config.json  (NOT in git)
                 │
-                └─▶ ui/    BrowserClassifier, onnxruntime-web   ← fetched at runtime
+                └─▶ ✗ nothing loads it — retained and retrainable (#7, #85)
 ```
 
 ### The archives live in another repository
@@ -109,7 +111,7 @@ The conversion's regression guard is **retired** (#67) — its job ended with th
 * `@occupancy/r49` — `.r49` archive parser/serializer (zip of `manifest.json` + images), zod-validated **v4-only** manifest schema, scale geometry (`getDPT`, and `getDPTResidual` — the same least-squares fit's disagreement, in image pixels, which is what makes a mis-typed world coordinate visible instead of silently absorbed into the scale). Loading a v3 archive fails on the version number alone: there is no compatibility shim, because a point marker carries neither extent nor orientation and so cannot be migrated. Its gauge, scale ratios and scale enum come from `@occupancy/config`.
 * `@occupancy/config` — **generated** from `config.yaml`, committed. Layout and detector constants.
 * `@occupancy/uid` — Snowflake-style id generator
-* `@occupancy/classifier` — ONNX Runtime classifier; **three entry points**, and the split is load-bearing: `.` exports only `ClassifierConfig`, `./browser` exports `BrowserClassifier`, `./node` exports `NodeClassifier`. This is what keeps `onnxruntime-node` and `sharp` out of the browser bundle. Shared preprocessing math lives in the unexported `BaseClassifier`.
+* `@occupancy/classifier` — ONNX Runtime classifier; **three entry points**, and the split is load-bearing: `.` exports only `ClassifierConfig`, `./browser` exports `BrowserClassifier`, `./node` exports `NodeClassifier`. This is what keeps `onnxruntime-node` and `sharp` out of the browser bundle. Shared preprocessing math lives in the unexported `BaseClassifier`. **Nothing loads it any more** (#7, #85) — `ui` does not even depend on it — but it stays retrainable and revivable.
 * `@occupancy/detector` — the detector runtime and, despite the name, **the car-box package**. `.` is pure: `Detection`, the total `occupancy()` (L1), and the span→box geometry — `carWidthPx` and `spanToPolygon` live here rather than in `dataset` so the width constant that biases boxes toward `occupied` has one home, and so the browser can reach it (`dataset/src/obb.ts` imports `node:crypto` at module top). `./browser` carries the ORT session behind `loadDetector`, a factory so that an unloaded detector is unrepresentable. The letterbox and the `[1, 300, 7]` decode sit in pure modules, tested against synthetic tensors — **no test needs a model file**.
 
 **Read `lib/CLAUDE.md` before touching anything under `lib/`.** Each package's `src/index.ts` is its interface (explicit exports only, no implementation, no `export *`), TSDoc goes on the declaration rather than the re-export line, and the root `tsconfig.json` deliberately has no `paths` block so `package.json` `"exports"` is the one boundary that binds identically at typecheck and at bundle time.
@@ -123,7 +125,7 @@ Lit + Shoelace + Vite. Per-component contracts are documented at length in `ui/R
 * `marker.ts` is a module, not a custom element, because custom elements break the SVG namespace inside `<svg>`. Its three exports (`renderMarker`, `markerDefs`, `markerStyles`) must be used together.
 * The app is entirely client-side: layouts are opened and saved as `.r49` files through the file picker, and inference runs in the browser via ONNX Runtime's WASM backend. There is no backend — don't reintroduce one without discussion.
 * **The ORT runtime ships from origin, and every stage of the build depends on that** (#15). `rails49.org/_headers` cross-origin-isolates `/ui/` so ORT gets more than one WASM thread; `require-corp` then forbids the cross-origin CDN the runtime used to come from. It fits under Cloudflare's 25 MiB limit only because the app imports `onnxruntime-web/wasm` rather than the package root, which would pull the 25.02 MiB jsep (WebGPU/WebNN) binary the `executionProviders: ['wasm']` sessions never use. `ui/ortAssets.ts` names the binary, its Emscripten glue and the copy targets; `bin/deploy.sh` repeats the filename because a shell script cannot import it, and `ui/tests/ortAssets.test.ts` is what keeps the two from drifting.
-* Vite copies `classifier/resnet/models/*.{ort,json}` into the bundle **only if that directory exists**, so builds succeed without a local model.
+* Vite copies `detector/models/detector_int8.ort` into the bundle **only if that directory exists**, so builds succeed without a local model — the live view then shows a no-model banner and reports every sensor `unknown`. The filename comes from `ui/modelAssets.ts`, never a literal.
 
 ### Model files and releases
 
@@ -133,9 +135,9 @@ The model files are gitignored; only the two `models/version.txt` files are trac
 
 > **There is no automated model gate.** The marker-driven regression test and its 99.5% threshold were retired with the v4 conversion (issue #17), because v4 deletes the point markers they iterated and the number was a reproducibility check, never a generalization estimate. Nothing currently checks that a model rebuild matches the published one. A real held-out protocol waits on a fresh higher-DPT corpus — see `SPEC.md` § Accuracy. Do not plug the gap with a substitute gate.
 
-**`model_int8.ort` (11 MB) is the model that ships, not `model.ort` (45 MB)** — Cloudflare Pages rejects files over 25 MiB.
+**The model that ships is `detector/models/detector_int8.ort` (3.4 MiB)**, and it is the only one — Cloudflare Pages rejects files over 25 MiB, and the CNN's `model_int8.ort` is no longer copied because nothing loads it.
 
-Which model ships is named in two places, and they must agree: the static-copy target in `ui/vite.config.ts` and the `_classifier.load()` call in `rr-live-view.ts`. The editor no longer loads a classifier (#19).
+Which model ships is named **once**, in `ui/modelAssets.ts`: `ui/vite.config.ts` and `rr-live-view.ts` both import it, and `ui/tests/modelAssets.test.ts` fails if either writes the filename itself. They used to be two literals, and the gap between a build-time copy target and a run-time fetch is invisible to both the typechecker and the build. The editor loads no model at all (#19).
 
 `bin/deploy.sh` strips nothing any more: it checks that `ort-wasm-simd-threaded.wasm` is present — the app cannot run without it, and it can no longer be fetched from a CDN — and aborts if anything in the deploy directory exceeds 25 MiB. `ui/vite.config.ts`'s `dropUnfetchableOrtWasm` deletes the second, hashed copy of that binary Rollup emits for the case where nothing sets `ort.env.wasm.wasmPaths`; the two places that do set it are pinned by `ui/tests/ortAssets.test.ts`.
 

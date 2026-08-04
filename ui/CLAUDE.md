@@ -4,7 +4,7 @@ Guidance for Claude Code (claude.ai/code) when working in `ui/`.
 
 A static, fully client-side webapp: [Lit](https://lit.dev/) elements, [Shoelace](https://shoelace.style/)
 components, Vite, TypeScript. It edits `.r49` layout archives through the file picker and runs the
-classifier in the browser via ONNX Runtime WASM. **There is no backend — do not introduce one
+detector in the browser via ONNX Runtime WASM. **There is no backend — do not introduce one
 without discussion.**
 
 ## The three documents, and which one is true
@@ -370,31 +370,49 @@ carries the exact exports and glyphs. Two rules that don't show in the README ta
 ### Absolute `/ui/` paths
 
 `base: '/ui/'` in `vite.config.ts`, and runtime asset paths are hardcoded to match:
-`setBasePath('/ui/shoelace')` in `rr-app.ts`, `/ui/ort/`, `/ui/models/model_int8.ort`. Changing
-`base` means changing all of them.
+`setBasePath('/ui/shoelace')` in `rr-app.ts`, `/ui/ort/`, and `modelAssets.ts`'s
+`DETECTOR_MODEL_URL`. Changing `base` means changing all of them.
 
-### Classifier loading lives only in the live view
+### Model loading lives only in the live view, and the model is the detector (#85)
 
-`rr-live-view.ts` is the sole place that constructs a `BrowserClassifier`. It points
+`rr-live-view.ts` is the sole place that calls `loadDetector`. It points
 `ort.env.wasm.wasmPaths` at `/ui/ort/` — the same path everywhere, deployed or not (#15) — then
-`load('/ui/models/model_int8.ort')`, whose filename must agree with `ui/vite.config.ts` (see the
-root `CLAUDE.md`).
+loads `DETECTOR_MODEL_URL`.
+
+**Which model ships is named once, in `ui/modelAssets.ts`.** It used to be two literals in two files
+that run in different worlds — a build-time copy target in `vite.config.ts` and a run-time fetch
+here — and the gap between them is invisible to the typechecker *and* to the build: a rename touched
+one and 404'd the moment the camera came up. Both now import the constant, and
+`tests/modelAssets.test.ts` fails if either file names the filename itself.
+
+**The CNN is retained but not loaded, and the bundle no longer carries it.** `@occupancy/classifier`
+stays in `lib/` and stays retrainable (SPEC § Option 2), but `ui` does not depend on it and Vite
+copies no `model_int8.ort`. L1 is a pure function of L0 (`SPEC.md` § Occupancy Output), so the
+per-sensor answer is a geometric consequence of the detector's boxes and there is nothing left for a
+second model to say — one model, one ORT session, one vocabulary, settled in #7. Reintroducing a
+classifier load here would be reintroducing a second answer.
+
+**The loop runs even when the model does not load.** `occupancy()` is total: with `detections: null`
+it reports every sensor `unknown` / `no-model`, which is a state SPEC names. A guard that skipped
+the loop would leave the previous frame's answers on screen instead — the one outcome worse than
+saying nothing.
 
 **The ORT runtime is same-origin, and that is what pays for threading.** `rails49.org/_headers`
 cross-origin-isolates `/ui/`, without which ORT silently runs one WASM thread; `require-corp` then
 rejects any cross-origin subresource, so the jsDelivr branch that used to serve the runtime is gone
 and cannot come back on its own. It existed because the default `onnxruntime-web` entry asks for the
 jsep (WebGPU/WebNN) binary, which is 25.02 MiB — 0.02 over Cloudflare's per-file limit. The app
-requests `executionProviders: ['wasm']` and needs none of jsep, so both this file and
-`lib/classifier/src/browser.ts` import **`onnxruntime-web/wasm`**, whose 12.42 MiB binary fits.
-Those two specifiers must stay identical: two specifiers are two module instances, and the
-`ort.env.wasm` set here would not be the one the classifier's session reads. `ui/ortAssets.ts` holds
+requests `executionProviders: ['wasm']` and needs none of jsep, so this file,
+`lib/detector/src/browser.ts` and `lib/classifier/src/browser.ts` all import
+**`onnxruntime-web/wasm`**, whose 12.42 MiB binary fits. Those specifiers must stay identical: two
+specifiers are two module instances, and the
+`ort.env.wasm` set here would not be the one the detector's session reads. `ui/ortAssets.ts` holds
 the reasoning and the copy targets; `tests/ortAssets.test.ts` holds the chain to them.
 
 **Only two ORT files are copied** — the binary and `ort-wasm-simd-threaded.mjs`, its Emscripten
 glue, which ORT resolves against `wasmPaths` exactly like the binary. Everything else in ORT's
 `dist/` reaches the browser through Rollup; globbing the directory put 44 MB of webgl, webgpu and
-node builds in the bundle that nothing could fetch. `@occupancy/classifier` sets **no** default
+node builds in the bundle that nothing could fetch. `@occupancy/detector` sets **no** default
 `wasmPaths` and throws if none is set: a library cannot know the app's base path, the old `/ort/`
 guess was a 404 under `/ui/`, and `vite.config.ts`'s `dropUnfetchableOrtWasm` removes the copy ORT
 would otherwise fall back to — so an unset path fails on a hashed filename with no clue attached.
@@ -403,8 +421,34 @@ would otherwise fall back to — so an unset path fails on a hashed filename wit
 **Do not reintroduce it there** — the duplication was a standing hazard, and nothing in the reduced
 editor needs inference.
 
-Vite copies the model into the bundle only if `classifier/resnet/models/` exists, so builds and
-typechecks must keep working with no local model present.
+Vite copies the model into the bundle only if `detector/models/` exists, so builds and typechecks
+must keep working with no local model present — that directory is gitignored and absent on a fresh
+clone. Without it the live view starts, shows the no-model banner and reports every sensor
+`unknown`.
+
+### What the two views draw, and why the viewer holds both
+
+`rr-viewer` takes the editor's authored objects (`calibrationPoints`, `sensors`, `cars`) and the
+live view's per-frame answers (`detections` for L0, `sensorStates` for L1) — and computes neither.
+Three rules the code depends on:
+
+* **`sensorStates: null` is not an empty map.** `null` is the editor, where a sensor is being placed
+  rather than answered, and the diamond keeps its authored amber. An empty map would be a live view
+  that answered no sensor, which `occupancy()` cannot produce — it is total.
+* **Shape carries identity, colour carries state.** A diamond is a sensor whatever it reads, so
+  `data-state` moves only the `--sensor-ink` literal and the whole symbol recolours together (the
+  same one-override mechanism `.car.unknown-class` uses). Red is `occupied` and green is `clear`,
+  mirroring prototype signalling and SPEC's deliberate bias where a failure shows occupied.
+* **A detection draws at the model's own width, an authored car at the DPT-derived one.** L0 is the
+  pose exactly as emitted; substituting the constant would draw a box the model never produced and
+  hide the error the raw one shows. L1 *does* substitute it — inside `occupancy()`, where a sensor
+  is tested. That is why `renderDetection` takes a `Detection` and `renderCar` takes a DPT, and why
+  both live in `carMarker.ts`: a detection is the same object seen from the other side, and giving
+  it its own module would mean a second copy of the ink.
+
+`ui/src/geometry.ts`'s `carWidthPx` is **re-exported from `@occupancy/detector`, not implemented**.
+It was a second copy of the same arithmetic until the live view started drawing detections beside
+labels; two copies would let a sensor read `occupied` while sitting visibly outside its rectangle.
 
 ### Shoelace
 

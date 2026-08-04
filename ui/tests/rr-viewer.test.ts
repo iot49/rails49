@@ -8,6 +8,7 @@ import type {
   ViewerPointerEventName,
 } from '../src/rr-viewer.js';
 import { HIGHLIGHT_CLASS } from '../src/highlight.js';
+import type { Detection, SensorState } from '@occupancy/detector';
 
 // Mock ResizeObserver
 class MockResizeObserver {
@@ -255,15 +256,81 @@ describe('rr-viewer', () => {
     });
   });
 
-  it('renders one <use> per marker', async () => {
-    const markers = [
-      { id: '1', x: 100, y: 100, type: 'track' as const },
-      { id: '2', x: 200, y: 200, type: 'train' as const },
-    ];
-    const el = await fixture<RrViewer>(html`
-      <rr-viewer .markers=${markers} .resolution=${resolution}></rr-viewer>
-    `);
-    expect(el.shadowRoot!.querySelectorAll('use').length).to.equal(2);
+  describe('detections (L0)', () => {
+    const detection = (over: Partial<Detection> = {}): Detection => ({
+      centre: { x: 480, y: 270 },
+      length: 200,
+      width: 42,
+      angle: 0,
+      class: 'stock',
+      confidence: 0.9,
+      ...over,
+    });
+
+    it('draws one box per detection', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer
+          .detections=${[detection(), detection({ centre: { x: 200, y: 100 } })]}
+          .resolution=${resolution}
+        ></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelectorAll('.detection polygon').length).to.equal(2);
+    });
+
+    it('draws none by default — the editor passes no detections', async () => {
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelector('.detection')).to.not.exist;
+    });
+
+    it('draws them over the authored cars, and under the sensors', async () => {
+      // Order in the overlay is the claim: the archive diagnostics read a
+      // prediction *against* a label, so the box goes on top of the rectangle
+      // — but a sensor is a point and must never end up under an area.
+      const car = {
+        id: 'C1abcdefghi',
+        class: 'stock',
+        provenance: 'human' as const,
+        p0: { x: 100, y: 100 },
+        p1: { x: 300, y: 100 },
+      };
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer
+          .cars=${[car]}
+          .detections=${[detection()]}
+          .sensors=${[{ id: 'S1abcdefghi', x: 480, y: 270 }]}
+          .dpt=${30}
+          .resolution=${resolution}
+        ></rr-viewer>
+      `);
+
+      const groups = [...el.shadowRoot!.querySelectorAll('g.frame > g')];
+      const at = (cls: string) => groups.findIndex(g => g.classList.contains(cls));
+      expect(at('car')).to.be.lessThan(at('detection'));
+      expect(at('detection')).to.be.lessThan(at('sensor'));
+    });
+  });
+
+  describe('sensor states (L1)', () => {
+    const sensors = [{ id: 'S1abcdefghi', x: 100, y: 100 }];
+
+    it('passes each sensor its own state', async () => {
+      const states = new Map<string, SensorState>([['S1abcdefghi', { state: 'clear' }]]);
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .sensors=${sensors} .sensorStates=${states} .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelector('.sensor')!.getAttribute('data-state')).to.equal('clear');
+    });
+
+    it('draws a stateless sensor when nothing is reading it', async () => {
+      // `null` is the editor. It is not the same as a live view that answered
+      // no sensor, which `occupancy()` cannot produce — it is total.
+      const el = await fixture<RrViewer>(html`
+        <rr-viewer .sensors=${sensors} .resolution=${resolution}></rr-viewer>
+      `);
+      expect(el.shadowRoot!.querySelector('.sensor')!.getAttribute('data-state')).to.equal('');
+    });
   });
 
   describe('calibration points', () => {
@@ -695,9 +762,8 @@ describe('rr-viewer', () => {
     });
 
     it('renders no calibration line or drag handles', async () => {
-      const markers = [{ id: 'm1', x: 50, y: 50, type: 'track' as const }];
       const el = await fixture<RrViewer>(html`
-        <rr-viewer .markers=${markers} .resolution=${resolution}></rr-viewer>
+        <rr-viewer .resolution=${resolution}></rr-viewer>
       `);
       expect(el.shadowRoot!.querySelector('.calibration-line')).to.not.exist;
       expect(el.shadowRoot!.querySelector('use[href="#drag-handle"]')).to.not.exist;

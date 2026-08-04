@@ -13,15 +13,29 @@ describe('rr-stats-bar', () => {
     const el = await fixture<RRStatsBar>(html`
       <rr-stats-bar
         .fps=${60}
-        .count=${10}
-        .sampleTime=${1.2}
+        .cars=${10}
+        .occupied=${3}
+        .inference=${1.2}
       ></rr-stats-bar>
     `);
-    
+
     const text = el.shadowRoot!.textContent || '';
     expect(text).to.contain('60.0');
     expect(text).to.contain('10');
-    expect(text).to.contain('Time per Marker');
+    expect(text).to.contain('Inference');
     expect(text).to.contain('1.2ms');
+  });
+
+  it('shows L0 and L1 as separate numbers', async () => {
+    // Cars found and sensors occupied are different counts and the pair is the
+    // readout: cars with no occupied sensor is either an empty siding or a
+    // sensor in the wrong place, and one number cannot say which.
+    const el = await fixture<RRStatsBar>(html`
+      <rr-stats-bar .cars=${4} .occupied=${0}></rr-stats-bar>
+    `);
+
+    const rows = [...el.shadowRoot!.querySelectorAll('.stat')].map(r => r.textContent ?? '');
+    expect(rows.find(r => r.includes('Cars'))).to.contain('4');
+    expect(rows.find(r => r.includes('Occupied'))).to.contain('0');
   });
 });

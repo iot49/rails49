@@ -1,6 +1,7 @@
 import { svg, css } from 'lit';
 import type { SVGTemplateResult, CSSResult } from 'lit';
 import type { Sensor } from '@occupancy/r49';
+import type { SensorState, UnknownReason } from '@occupancy/detector';
 import { placeLabel } from './geometry.js';
 import type { FrameSize } from './geometry.js';
 import { HIGHLIGHT_CLASS } from './highlight.js';
@@ -38,14 +39,45 @@ export const sensorMarkerStyles: CSSResult = css`
     --sensor-ink: #f59e0b;
   }
 
+  /* L1, as colour on the symbol the sensor already is (#85). **Shape carries
+     identity and colour carries state** — a diamond is a sensor whatever it
+     reads, so a state that changed the glyph would make a sensor stop looking
+     like one at exactly the moment it is being watched. Only the ink literal
+     moves, so the diamond, its core and its label recolour together, the same
+     one-override mechanism .car.unknown-class uses.
+
+     Red for occupied and green for clear rather than the reverse: this mirrors
+     prototype signalling and the deliberate bias of SPEC.md § The vocabulary,
+     where a failure shows occupied. Grey for unknown because it is the
+     absence of an answer — "I was unable to look" — and a third saturated
+     colour would read as a third measurement. An **unstated** state keeps the
+     authored amber: that is the editor, where a sensor is a thing being placed
+     rather than a thing being read. */
+  .sensor[data-state='occupied'] {
+    --sensor-ink: #ef4444;
+  }
+
+  .sensor[data-state='clear'] {
+    --sensor-ink: #22c55e;
+  }
+
+  .sensor[data-state='unknown'] {
+    --sensor-ink: #94a3b8;
+  }
+
   .sensor polygon {
     stroke: var(--sensor-ink);
     stroke-width: 1.5;
     vector-effect: non-scaling-stroke;
     /* Translucent rather than hollow: the fill is what makes the diamond read
        as one closed symbol at thumbnail size, and it still shows the track
-       underneath, which is what the sensor is placed against. */
-    fill: rgba(245, 158, 11, 0.18);
+       underneath, which is what the sensor is placed against.
+
+       The ink and an opacity rather than one rgba() literal, so the fill
+       follows the state override above — a literal would leave an occupied
+       sensor outlined in red and washed in amber. */
+    fill: var(--sensor-ink);
+    fill-opacity: 0.18;
   }
 
   .sensor circle {
@@ -115,6 +147,39 @@ export interface SensorSymbolSize {
 }
 
 /**
+ * Why the system could not answer, in words.
+ *
+ * A total `Record` rather than a `switch` with a default: `UnknownReason` is
+ * documented to grow when camera-drift detection lands (issue #12), and a
+ * default would render the new reason as whatever the fallback string says
+ * while typechecking cleanly. This way adding one is a compile error here.
+ */
+const UNKNOWN_REASONS: Record<UnknownReason, string> = {
+  'no-model': 'no model loaded',
+  'no-calibration': 'no calibration — DPT does not resolve',
+  'outside-frame': 'outside the frame',
+};
+
+/**
+ * The state as a tooltip: the word, and for `unknown` what stopped it.
+ *
+ * `occupied` names its evidence — a covering detection's confidence — and
+ * `clear` deliberately names none. That asymmetry is `SPEC.md` § Confidence
+ * verbatim: `clear` is the *absence* of evidence and nothing scored it, so a
+ * number here would be the confident-looking miss the spec exists to prevent.
+ */
+function stateTooltip(state: SensorState): string {
+  switch (state.state) {
+    case 'occupied':
+      return `occupied — ${Math.round(state.detection.confidence * 100)}% confidence`;
+    case 'clear':
+      return 'clear';
+    case 'unknown':
+      return `unknown — ${UNKNOWN_REASONS[state.reason]}`;
+  }
+}
+
+/**
  * A sensor as a ringed diamond labelled with its name or id.
  *
  * @param sensor The sensor, in image pixels.
@@ -125,12 +190,18 @@ export interface SensorSymbolSize {
  *   is drawn on its pixel wherever that pixel is.
  * @param highlighted Whether a reveal is pointing at this sensor (#37) — the
  *   shared glow from `highlight.ts`, on the group so the label is lit with it.
+ * @param state This sensor's L1 state, or `null` where nothing is reading it —
+ *   the editor, which authors sensors rather than answering them. Passed as the
+ *   whole {@link SensorState} rather than the bare tag so `unknown` can say
+ *   *why* in its tooltip: "outside the frame" and "no model loaded" want
+ *   different things done about them, and the colour cannot tell them apart.
  */
 export function renderSensor(
   sensor: Sensor,
   size: SensorSymbolSize,
   frame: FrameSize,
-  highlighted = false
+  highlighted = false,
+  state: SensorState | null = null
 ): SVGTemplateResult {
   const { x, y } = sensor;
   const arm = size.diameterPx / 2;
@@ -145,7 +216,12 @@ export function renderSensor(
   const placement = placeLabel({ x, y }, label, size.labelPx, size.labelPx * 0.7, frame);
 
   return svg`
-    <g class="sensor ${highlighted ? HIGHLIGHT_CLASS : ''}" data-sensor-id="${sensor.id}">
+    <g
+      class="sensor ${highlighted ? HIGHLIGHT_CLASS : ''}"
+      data-sensor-id="${sensor.id}"
+      data-state="${state ? state.state : ''}"
+    >
+      ${state ? svg`<title>${stateTooltip(state)}</title>` : ''}
       <polygon points="${x},${y - arm} ${x + arm},${y} ${x},${y + arm} ${x - arm},${y}" />
       <circle cx="${x}" cy="${y}" r="${core}" />
       <text

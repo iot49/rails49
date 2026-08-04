@@ -191,12 +191,12 @@ importers:
       '@lit/reactive-element':
         specifier: ^2.1.2
         version: 2.1.2
-      '@occupancy/classifier':
-        specifier: workspace:*
-        version: link:../lib/classifier
       '@occupancy/config':
         specifier: workspace:*
         version: link:../lib/config
+      '@occupancy/detector':
+        specifier: workspace:*
+        version: link:../lib/detector
       '@occupancy/r49':
         specifier: workspace:*
         version: link:../lib/r49

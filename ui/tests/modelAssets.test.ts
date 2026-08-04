@@ -1,0 +1,62 @@
+import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  DETECTOR_MODEL_DIR,
+  DETECTOR_MODEL_FILE,
+  DETECTOR_MODEL_URL,
+  detectorCopyTarget,
+} from '../modelAssets.js';
+
+// Which model ships used to be two string literals in two files that run in
+// different worlds — a build-time copy target and a run-time fetch — and the
+// gap between them is invisible to both the typechecker and the build. These
+// tests are what makes `modelAssets.ts` the single place, by refusing to let
+// either side name the file itself.
+
+const repoRoot = path.resolve(__dirname, '../..');
+const read = (file: string) => fs.readFileSync(path.join(repoRoot, file), 'utf8');
+
+describe('the shipped model', () => {
+  it('is copied from where the export writes it', () => {
+    expect(detectorCopyTarget).toEqual({
+      src: `${DETECTOR_MODEL_DIR}/${DETECTOR_MODEL_FILE}`,
+      dest: 'models',
+    });
+    // Relative to `ui/`, because that is what vite-plugin-static-copy resolves
+    // against — an absolute path here would copy on this machine and nowhere
+    // else.
+    expect(DETECTOR_MODEL_DIR.startsWith('../')).toBe(true);
+  });
+
+  it('is fetched from the directory it is copied into, under the app base', () => {
+    expect(DETECTOR_MODEL_URL).toBe(`/ui/${detectorCopyTarget.dest}/${DETECTOR_MODEL_FILE}`);
+  });
+
+  it('is the quantized artifact, not the fp32 one', () => {
+    // `detector.onnx` is 9.6 MiB and `.onnx` is not what onnxruntime-web loads
+    // here; the INT8 `.ort` is 3.4 MiB. The ceiling is Cloudflare's 25 MiB, and
+    // the ONNX/ORT distinction is what the format check is really for.
+    expect(DETECTOR_MODEL_FILE).toMatch(/_int8\.ort$/);
+  });
+
+  it('is named by neither the config nor the view — both import it', () => {
+    // The whole point. A literal in either file would typecheck, build, deploy,
+    // and 404 the moment the camera came up.
+    for (const file of ['ui/vite.config.ts', 'ui/src/rr-live-view.ts']) {
+      const source = read(file);
+      expect(source, file).toMatch(/from '\.\.?\/modelAssets\.js'/);
+      expect(source, file).not.toContain(DETECTOR_MODEL_FILE);
+    }
+  });
+
+  it('is the only model the bundle carries', () => {
+    // The CNN is retained and retrainable but no longer loaded (#7, #85), so
+    // shipping it would be 11 MB nothing fetches — and a live view that could
+    // still reach it would be a second answer to a question SPEC gives one
+    // answer to.
+    const config = read('ui/vite.config.ts');
+    expect(config).not.toContain('classifier/resnet/models');
+    expect(read('ui/src/rr-live-view.ts')).not.toContain('@occupancy/classifier');
+  });
+});

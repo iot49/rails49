@@ -1,4 +1,4 @@
-import { STANDARD_GAUGE, STANDARD_WIDTH } from '@occupancy/config';
+import { carWidthPx } from '@occupancy/detector';
 import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
 
 /**
@@ -73,27 +73,30 @@ export function sensorDiameterPx(dpt: number | null, imagePxPerScreenPx: number)
 /**
  * Car width in image pixels, derived from DPT rather than stored per label.
  *
- * `DPT * STANDARD_WIDTH / STANDARD_GAUGE` — the scale ratio cancels, so a car
- * is the same 2.09 track-widths wide in every scale and **no scale lookup
- * belongs anywhere in the editor**. Both constants come from
- * `@occupancy/config`, whose authored home is `config.yaml`; reimplementing the
- * gauge arithmetic here is exactly the duplication `lib/classifier` used to
- * carry.
+ * **Re-exported from `@occupancy/detector`, not implemented here** (#85). It
+ * was a second copy of `DPT * STANDARD_WIDTH / STANDARD_GAUGE` until the live
+ * view started drawing detections beside labels, at which point the two copies
+ * became one picture: L1 replaces a predicted width with this constant before
+ * testing a sensor, so a rectangle drawn from a different one would put a
+ * sensor visibly outside a box that reads `occupied`. Issue #83 moved it out of
+ * `dataset` for exactly this reason and missed the editor's copy.
+ *
+ * Kept as a name in this module rather than imported at each call site because
+ * "no scale lookup belongs anywhere in the editor" is a rule about this file:
+ * `geometry.ts` is where the editor's arithmetic lives, and a caller reaching
+ * past it for gauge constants is the thing to notice.
  *
  * The same world-size argument as {@link trackWidthPx}, one multiply along: a
  * car is drawn 2.09 track widths across, so a sensor and the car covering it
- * are directly comparable on the photograph.
- *
- * `STANDARD_WIDTH` is the widest real prototype rather than a typical one, so
- * the rectangle errs wide — the direction occupancy output deliberately errs in.
+ * are directly comparable on the photograph. `STANDARD_WIDTH` is the widest
+ * real prototype rather than a typical one, so the rectangle errs wide — the
+ * direction occupancy output deliberately errs in.
  *
  * Callers hold a DPT that may be `null` (an uncalibrated archive) and must
  * resolve that before calling: an uncalibrated layout has no car width, which
  * is why calibration gates car labeling.
  */
-export function carWidthPx(dpt: number): number {
-  return (dpt * STANDARD_WIDTH) / STANDARD_GAUGE;
-}
+export { carWidthPx };
 
 /** The four corners of a car's rectangle, in polygon order starting at `p0`. */
 export type CarCorners = readonly [Point, Point, Point, Point];
