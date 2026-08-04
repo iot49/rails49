@@ -1,0 +1,207 @@
+import { describe, expect, it } from 'vitest';
+import type { Sensor } from '@occupancy/r49';
+import { occupancy } from '../src/occupancy.ts';
+import type { Detection } from '../src/types.ts';
+
+/**
+ * L1. The contract SPEC § Occupancy Output writes once, pinned in the one place
+ * that implements it — which is the reason the function is total: were it not,
+ * the live view and the diagnostics view would each build unknown-maps of their
+ * own and these assertions would only cover one of them.
+ */
+
+const FRAME = { width: 1920, height: 1080 };
+
+/** DPT 20: a car is ~41.8 px wide, so a centreline sensor sits ~21 px inside. */
+const DPT = 20;
+
+function detection(fields: Partial<Detection>): Detection {
+  return {
+    centre: { x: 960, y: 540 },
+    length: 300,
+    width: 42,
+    angle: 0,
+    class: 'stock',
+    confidence: 0.9,
+    ...fields,
+  };
+}
+
+function sensor(id: string, x: number, y: number): Sensor {
+  return { id, x, y };
+}
+
+describe('the vocabulary', () => {
+  const sensors = [sensor('a', 960, 540), sensor('b', 100, 100)];
+
+  it('answers every sensor, always', () => {
+    const states = occupancy({ detections: [detection({})], sensors, dpt: DPT, frame: FRAME });
+    expect([...states.keys()]).toEqual(['a', 'b']);
+  });
+
+  it('reports occupied when a box covers the point, and says which box', () => {
+    const car = detection({});
+    const states = occupancy({ detections: [car], sensors, dpt: DPT, frame: FRAME });
+
+    expect(states.get('a')).toEqual({ state: 'occupied', detection: car });
+  });
+
+  it('reports clear when nothing covers it, with no confidence attached', () => {
+    // `clear` is the absence of evidence and nothing scored it — 0.0 would read
+    // as "definitely not occupied" and 1.0 as "definitely clear", and both claim
+    // a measurement that was never made.
+    const states = occupancy({ detections: [detection({})], sensors, dpt: DPT, frame: FRAME });
+    expect(states.get('b')).toEqual({ state: 'clear' });
+  });
+
+  it('reports clear for a frame with no detections at all', () => {
+    const states = occupancy({ detections: [], sensors, dpt: DPT, frame: FRAME });
+    expect(states.get('a')).toEqual({ state: 'clear' });
+  });
+});
+
+describe('unknown', () => {
+  const sensors = [sensor('a', 960, 540)];
+
+  it('is not a confidence outcome — a low-confidence box still occupies', () => {
+    // Every case where the model did look and saw something resolves to
+    // occupied. The threshold was applied during decoding; there is no unsure
+    // band below it.
+    const faint = detection({ confidence: 0.26 });
+    const states = occupancy({ detections: [faint], sensors, dpt: DPT, frame: FRAME });
+    expect(states.get('a')).toEqual({ state: 'occupied', detection: faint });
+  });
+
+  it('says no-model when no detector is loaded', () => {
+    // Distinct from an empty detection list: "I was unable to look", not "I
+    // looked and saw nothing".
+    const states = occupancy({ detections: null, sensors, dpt: DPT, frame: FRAME });
+    expect(states.get('a')).toEqual({ state: 'unknown', reason: 'no-model' });
+  });
+
+  it('says no-calibration when DPT is unresolved', () => {
+    // Without DPT there is no width constant, so there is no box to test.
+    const states = occupancy({ detections: [detection({})], sensors, dpt: null, frame: FRAME });
+    expect(states.get('a')).toEqual({ state: 'unknown', reason: 'no-calibration' });
+  });
+
+  it('says outside-frame for a sensor the camera cannot see', () => {
+    const offscreen = [sensor('left', -1, 540), sensor('below', 960, 1081)];
+    const states = occupancy({
+      detections: [detection({})],
+      sensors: offscreen,
+      dpt: DPT,
+      frame: FRAME,
+    });
+
+    expect(states.get('left')).toEqual({ state: 'unknown', reason: 'outside-frame' });
+    expect(states.get('below')).toEqual({ state: 'unknown', reason: 'outside-frame' });
+  });
+
+  it('prefers the whole-system cause over the per-sensor one', () => {
+    // A sensor off the edge of a layout with no model is unanswerable twice
+    // over; no-model is the one that tells a human what to fix.
+    const states = occupancy({
+      detections: null,
+      sensors: [sensor('left', -1, 540)],
+      dpt: null,
+      frame: FRAME,
+    });
+    expect(states.get('left')).toEqual({ state: 'unknown', reason: 'no-model' });
+  });
+});
+
+describe('width normalization', () => {
+  const sensors = [sensor('a', 960, 555)];
+
+  it('widens an under-predicted box rather than trusting it', () => {
+    // 15 px off the centreline. The DPT-derived half-width is ~20.9 px, so the
+    // sensor is covered — but a model that predicted 25 px total width would
+    // put its own boundary at 12.5 px and call this clear. Width is a fit to a
+    // constant, so its deviation is pure error, and this is the safe direction.
+    const underPredicted = detection({ width: 25 });
+    const states = occupancy({
+      detections: [underPredicted],
+      sensors,
+      dpt: DPT,
+      frame: FRAME,
+    });
+
+    expect(states.get('a')).toEqual({ state: 'occupied', detection: underPredicted });
+  });
+
+  it('hands back the raw detection, not the normalized box', () => {
+    // L0 stays raw: normalization belongs to L1's geometry, not to what the
+    // detector reported.
+    const states = occupancy({
+      detections: [detection({ width: 25 })],
+      sensors,
+      dpt: DPT,
+      frame: FRAME,
+    });
+
+    const state = states.get('a');
+    expect(state?.state).toBe('occupied');
+    expect(state?.state === 'occupied' && state.detection.width).toBe(25);
+  });
+
+  it('narrows an over-predicted box too — the constant replaces, not widens', () => {
+    // Substitution, not a maximum. A box the model called 200 px wide is a bad
+    // box, and honouring it would make one detection occupy sensors on the next
+    // track over.
+    const overPredicted = detection({ width: 200 });
+    const states = occupancy({
+      detections: [overPredicted],
+      sensors: [sensor('far', 960, 620)],
+      dpt: DPT,
+      frame: FRAME,
+    });
+
+    expect(states.get('far')).toEqual({ state: 'clear' });
+  });
+});
+
+describe('overlapping boxes', () => {
+  it('reports the highest-confidence one, per SPEC', () => {
+    const faint = detection({ confidence: 0.3 });
+    const strong = detection({ confidence: 0.8 });
+    const states = occupancy({
+      detections: [faint, strong],
+      sensors: [sensor('a', 960, 540)],
+      dpt: DPT,
+      frame: FRAME,
+    });
+
+    expect(states.get('a')).toEqual({ state: 'occupied', detection: strong });
+  });
+});
+
+describe('couplers', () => {
+  it('leave no gap between abutting cars', () => {
+    // Two cars sharing an endpoint at x = 1110. Strict containment with no
+    // epsilon: the shared point itself is in neither box, but every point
+    // either side of it is in one, so a sensor between coupled cars reads
+    // occupied and couplings need never be labeled or detected.
+    const left = detection({ centre: { x: 960, y: 540 }, length: 300 });
+    const right = detection({ centre: { x: 1260, y: 540 }, length: 300 });
+    const sensors = [sensor('just-left', 1109.9, 540), sensor('just-right', 1110.1, 540)];
+
+    const states = occupancy({ detections: [left, right], sensors, dpt: DPT, frame: FRAME });
+    expect(states.get('just-left')).toEqual({ state: 'occupied', detection: left });
+    expect(states.get('just-right')).toEqual({ state: 'occupied', detection: right });
+  });
+
+  it('leaves a real gap between uncoupled cars reading clear', () => {
+    // The epsilon SPEC refuses would manufacture a phantom here.
+    const left = detection({ centre: { x: 800, y: 540 }, length: 300 });
+    const right = detection({ centre: { x: 1200, y: 540 }, length: 300 });
+    const states = occupancy({
+      detections: [left, right],
+      sensors: [sensor('gap', 1000, 540)],
+      dpt: DPT,
+      frame: FRAME,
+    });
+
+    expect(states.get('gap')).toEqual({ state: 'clear' });
+  });
+});

@@ -8,7 +8,7 @@ Computer vision suite for model railroaders: camera-based track occupancy detect
 
 **`SPEC.md` at the root is the requirements document for the whole project** — the `.r49` v4 format, the occupancy output contract, labeling UX, training-data derivation, and the reasoning behind each. It describes the **target**, and parts of it are still unbuilt. Where SPEC and the code disagree, that is the migration, not a bug to fix. This file describes what exists and how to build it; SPEC describes what it is for.
 
-**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. What remains furthest ahead of the code is **the detector**: the dataset export and the training/export path both run now (`dataset/src/yolo_export.ts`, then `detector/`), but nothing *loads* a detector — there is no `@occupancy/detector` package and the live view still runs the CNN. `detector.confidence_threshold` is still a value no runtime reads.
+**SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. What remains furthest ahead of the code is **the detector**: the dataset export and the training/export path both run now (`dataset/src/yolo_export.ts`, then `detector/`), and `@occupancy/detector` can now load a model, decode L0 and answer L1 — but nothing in the app *calls* it. The live view still runs the CNN (#85 swaps it) and there are no archive diagnostics yet (#87).
 
 ## Commands
 
@@ -55,7 +55,8 @@ path is parked at its first arrow.
         │       ▼
         │   detector/models/             detector_int8.ort  (NOT in git, NOT released)
         │       │
-        │       └─▶ (no @occupancy/detector package yet — nothing loads it)
+        │       └─▶ lib/detector/         loadDetector → L0 → occupancy() → L1
+        │                                 ✓ built, ✗ ui/ does not call it yet
         │
         └── ✗ PARKED — no crop derivation runs today (see below)
                 ▼
@@ -109,6 +110,7 @@ The conversion's regression guard is **retired** (#67) — its job ended with th
 * `@occupancy/config` — **generated** from `config.yaml`, committed. Layout and detector constants.
 * `@occupancy/uid` — Snowflake-style id generator
 * `@occupancy/classifier` — ONNX Runtime classifier; **three entry points**, and the split is load-bearing: `.` exports only `ClassifierConfig`, `./browser` exports `BrowserClassifier`, `./node` exports `NodeClassifier`. This is what keeps `onnxruntime-node` and `sharp` out of the browser bundle. Shared preprocessing math lives in the unexported `BaseClassifier`.
+* `@occupancy/detector` — the detector runtime and, despite the name, **the car-box package**. `.` is pure: `Detection`, the total `occupancy()` (L1), and the span→box geometry — `carWidthPx` and `spanToPolygon` live here rather than in `dataset` so the width constant that biases boxes toward `occupied` has one home, and so the browser can reach it (`dataset/src/obb.ts` imports `node:crypto` at module top). `./browser` carries the ORT session behind `loadDetector`, a factory so that an unloaded detector is unrepresentable. The letterbox and the `[1, 300, 7]` decode sit in pure modules, tested against synthetic tensors — **no test needs a model file**.
 
 **Read `lib/CLAUDE.md` before touching anything under `lib/`.** Each package's `src/index.ts` is its interface (explicit exports only, no implementation, no `export *`), TSDoc goes on the declaration rather than the re-export line, and the root `tsconfig.json` deliberately has no `paths` block so `package.json` `"exports"` is the one boundary that binds identically at typecheck and at bundle time.
 

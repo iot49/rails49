@@ -23,6 +23,9 @@ importers:
       '@occupancy/config':
         specifier: workspace:*
         version: link:../lib/config
+      '@occupancy/detector':
+        specifier: workspace:*
+        version: link:../lib/detector
       '@occupancy/r49':
         specifier: workspace:*
         version: link:../lib/r49
@@ -82,6 +85,28 @@ importers:
       typescript:
         specifier: ^5.4.5
         version: 5.9.3
+
+  lib/detector:
+    dependencies:
+      '@occupancy/config':
+        specifier: workspace:*
+        version: link:../config
+      '@occupancy/r49':
+        specifier: workspace:*
+        version: link:../r49
+      onnxruntime-common:
+        specifier: ^1.26.0
+        version: 1.26.0
+      onnxruntime-web:
+        specifier: ^1.26.0
+        version: 1.26.0
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@24.13.3)(jsdom@26.1.0)
 
   lib/r49:
     dependencies:

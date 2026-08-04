@@ -3,15 +3,9 @@ import path from 'node:path';
 import process from 'node:process';
 import sharp from 'sharp';
 import { DETECTOR_CLASSES, DETECTOR_VAL_SPLIT } from '@occupancy/config';
+import { carWidthPx, spanToPolygon } from '@occupancy/detector';
 import { R49Archive, detectorClassIndex, getDPT } from '@occupancy/r49';
-import {
-  carWidthPx,
-  labelLine,
-  outputStem,
-  spanToPolygon,
-  splitFor,
-  type Split,
-} from './obb.ts';
+import { labelLine, outputStem, splitFor, type Split } from './obb.ts';
 
 /**
  * Derives the Ultralytics OBB dataset layout from a directory of `.r49`
