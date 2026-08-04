@@ -7,7 +7,7 @@ layout archives. **Both are currently parked and neither runs.**
 
 ### `pnpm run prep` — ⚠️ PARKED (exits non-zero)
 
-It scanned `r49/` for archives and cut one 144×144 crop per point marker, tagged
+It scanned a local `r49/` directory for archives and cut one 144×144 crop per point marker, tagged
 by the marker's type, split deterministically 80/20 by a hash of archive, image
 and marker id.
 
@@ -39,9 +39,14 @@ model trained on. A replacement belongs to the held-out accuracy protocol that
 does not yet exist (`SPEC.md` § Accuracy).
 
 ## Directory Structure
-*   `r49/`: The six `.r49` archives. These are **UI fixtures, not training
-    data** — they sit at DPT 18–19, below the `layout.min_dpt` threshold of 20,
-    so no number derived from them predicts model accuracy.
+
+There are no `.r49` archives here any more (#63). The corpus is
+[`iot49/r49`](https://github.com/iot49/r49), which takes submissions by pull
+request under CC BY 4.0. The six this directory used to hold are in that repo's
+`fixtures/` tree — **fixtures, not training data**, sitting below
+`layout.min_dpt`, so no number derived from them predicts model accuracy. How
+training code reaches the corpus is not decided; see issue #51.
+
 *   `data/`: The generated training database (gitignored; nothing generates it
     today).
 *   `src/data_prep.ts`, `src/online_diagnostics.ts`: parked stubs carrying the
