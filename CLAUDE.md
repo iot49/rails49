@@ -38,7 +38,7 @@ The UI dev server serves over HTTPS by default because `getUserMedia` requires a
 The whole system is one data path; each directory is a stage in it.
 
 ```
-.r49 archives (dataset/r49/)      v4: layout photos, calibration, zero labels
+.r49 archives (iot49/r49)         v4: layout photos, calibration, labels
         │  ✗ PARKED — no derivation runs today (see below)
         ▼
 dataset/data/                     144×144 crops, deterministic 80/20 split, data.csv
@@ -49,11 +49,16 @@ classifier/resnet/models/         model_int8.ort + config.json  (NOT in git)
         └─▶ ui/       BrowserClassifier, onnxruntime-web   ← fetched at runtime
 ```
 
-### The six archives
+### The archives live in another repository
 
-`dataset/r49/` holds six v4 archives — 46 images, real calibration, **zero labels**, ready for hand-relabeling. They were converted from v3 once, in place, by a throwaway script that was deleted with the conversion (#22); the originals stay recoverable from git history. All 1195 v3 point markers were **dropped, not promoted** — a point carries neither extent nor orientation, so any promotion would be fabricated geometry entering the corpus. The conversion's regression guard has been **retired** (#67): its job ended with the conversion, and its zero-labels assertions blocked the very relabeling the six exist for. What replaced it is a different thing — `lib/r49/tests/fixtures/format-v4.r49`, a tiny **frozen** archive written once and never regenerated, which catches the writer-and-parser-drifting-together failure a symmetric round-trip test structurally cannot see. Do not regenerate it: if it fails to load, that is a v4 break needing a version bump.
+**There are no `.r49` files in this repo any more** (#63). The corpus is
+[`iot49/r49`](https://github.com/iot49/r49): submissions arrive there by pull request under CC BY 4.0, and its CI checks them out of a `rails49` checkout at `main` and runs `tools/r49-validate` from it. See issue #54 for the whole design.
 
-> They are **UI fixtures, not training data.** They sit at DPT 18–19, below `layout.min_dpt` of 20, so no number derived from them predicts model accuracy. Training will use fresh, higher-DPT images captured later.
+The six archives this repo used to carry moved to that repo's `fixtures/` tree — 46 images, real calibration, **zero labels**, DPT 18.0–19.1. They were converted from v3 once, in place, by a throwaway script deleted with the conversion (#22); all 1195 v3 point markers were **dropped, not promoted**, because a point carries neither extent nor orientation and any promotion would be fabricated geometry entering the corpus. Both the originals and the converted copies stay recoverable from this repo's git history — the deletion reclaims no weight, since every version is already in `.git`.
+
+> They are **fixtures, not training data**, which is why they sit outside `archives/` over there. Below `layout.min_dpt`, zero labels: no number derived from them predicts model accuracy. Training will use the corpus's real submissions.
+
+The conversion's regression guard is **retired** (#67) — its job ended with the conversion, and its zero-labels assertions blocked the relabeling the six exist for. What stands in its place is a different kind of test: `lib/r49/tests/fixtures/format-v4.r49`, a tiny **frozen** archive written once and never regenerated, which catches the writer-and-parser-drifting-together failure a symmetric round-trip test structurally cannot see. Do not regenerate it — if it fails to load, that is a v4 break needing a version bump.
 
 **The first arrow does not currently run.** `dataset/src/data_prep.ts` and `dataset/src/online_diagnostics.ts` are **parked stubs** that print their reason and exit non-zero — they derived crops and scored a confusion matrix from v3 point markers, which v4 does not store. Deriving from car spans alone gives every crop the same tag, so the vocabulary collapses to one degenerate class with no negatives. See `SPEC.md` § v4 cannot produce a trainable CNN dataset (issues #8, #18). The documented route back is sampling background crops as verified negatives — an experiment, dormant while the ResNet is. **Do not revive them by inventing a substitute vocabulary or synthesising negatives.**
 

@@ -461,7 +461,7 @@ Encoding rules, each with its reason:
 
 ### Migration is a one-time conversion, not a feature
 
-**No v3 code exists in v4.** `ManifestDataSchema` is `version: 4` only, and loading anything else fails on the version number alone. The six archives in `dataset/r49/` are converted **once** by a throwaway script, which then goes away.
+**No v3 code exists in v4.** `ManifestDataSchema` is `version: 4` only, and loading anything else fails on the version number alone. The six archives this repo used to carry were converted **once** by a throwaway script, which then went away; they now live in [`iot49/r49`](https://github.com/iot49/r49)'s `fixtures/` tree (#63).
 
 This is safe because all six are tracked binaries: the originals stay recoverable from git history indefinitely, so converting in place is not a one-way door. The conversion keeps images, `camera`, `layout.scale`/`name`/`description`/`contact`, and calibration (v3's `{p0, p1, size_mm}` becomes two points at `world (0,0,0)` and `(0, size_mm, 0)`). It drops all 1195 point markers and sets `labeled_complete: false` on all 46 images, leaving six valid v4 archives with zero labels, ready for hand-relabeling.
 

@@ -5,7 +5,9 @@ Research note on `SPEC.md` § Classifier, option 1 ("Image change"), and its cit
 
 *Researched 2026-07-29. Sources: EX-SensorCAM source at `DCC-EX/EX-SensorCAM@b07c3f3` (v3.21,
 2026-05-23), the DCC-EX official manual, and a re-implementation of SensorCAM's decision metric run
-against this repo's own `dataset/r49/lighting.r49`.*
+against `lighting.r49` — then at `dataset/r49/` in this repo, now at `fixtures/lighting.r49` in
+[iot49/r49](https://github.com/iot49/r49) (#63). Marker counts below are the v3 ones this research
+ran against; v4 dropped them.*
 
 ---
 
@@ -378,7 +380,7 @@ persistent state that must be invalidated on camera motion the app cannot curren
 
 ### The illumination problem is already taken seriously here
 
-`dataset/r49/lighting.r49` — 6 images, 78 `train` and 68 `track` markers, one deliberate light-source
+`lighting.r49` — 6 images, 78 `train` and 68 `track` markers, one deliberate light-source
 change — exists for exactly this reason **[MEAS]**. The project's chosen answer is to *train through*
 illumination variance rather than *normalise it away*. That is the strategy the CDnet results in §5
 endorse.
@@ -482,4 +484,5 @@ Input images are box-downsampled to 320 px wide and pushed through RGB888→RGB5
 - CDnet / changedetection.net — <http://changedetection.net/>
 
 **This repo:** `SPEC.md` (§ Classifier, § Accuracy, § Calibration, § Image Alignment),
-`ui/CLAUDE.md`, `CLAUDE.md`, `dataset/r49/*.r49` (46 images across 6 archives, all 1920×1080, HO).
+`ui/CLAUDE.md`, `CLAUDE.md`, and the six archives (46 images, all 1920×1080, HO) — read from
+`dataset/r49/` at the time, now [iot49/r49](https://github.com/iot49/r49)`/fixtures/`.
