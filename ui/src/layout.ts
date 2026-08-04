@@ -22,20 +22,28 @@ import { css } from 'lit';
  * The window height at or below which the editor's sidebar reflows into a
  * horizontal strip (#42).
  *
- * Measured, in the state that decides it: the sidebar is **721px** with an
+ * Measured, in the state that decides it: the sidebar is **571px** with an
  * archive open and **not yet calibrated** — five toolbar buttons, three palette
  * buttons, and the gate reason under them — and the header takes 60px above it,
- * so the column needs a 781px window. That state is the one to clear rather
- * than the calibrated 635px the ticket measured: an archive is uncalibrated
- * before it is calibrated, so the taller arrangement is the one a user meets
- * first, and a breakpoint set for the shorter one would clip exactly the note
- * explaining why the tools are off.
+ * so the column needs a 631px window. That state is the one to clear rather
+ * than the calibrated arrangement: an archive is uncalibrated before it is
+ * calibrated, so the taller arrangement is the one a user meets first, and a
+ * breakpoint set for the shorter one would clip exactly the note explaining why
+ * the tools are off.
  *
- * Set above the measurement, not at it. 781 is where the column fills the
- * window with nothing to spare, and the measurement moves with the font; the
- * margin keeps the reflow ahead of the clipping rather than level with it.
+ * **Re-measured for #53**, which cut the column's spacing: it was 721px needing
+ * 781px, and this constant was 800. The derivation is what moves — a density
+ * change invalidates the measurement, so the number has to be taken again
+ * rather than left standing over a column that no longer has that shape.
+ *
+ * Set above the measurement, not at it. 631 is where the column fills the
+ * window with nothing to spare, and the measurement moves with the font and the
+ * engine: the same baseline state read 721px when #42 measured it and 708px
+ * when #53 did, in a different browser. The ~19px margin is sized to swallow
+ * that spread, and keeps the reflow ahead of the clipping rather than level
+ * with it.
  */
-export const COMPACT_MAX_HEIGHT_PX = 800;
+export const COMPACT_MAX_HEIGHT_PX = 650;
 
 /**
  * The half of the reflow `rr-toolbar` and `rr-tool-palette` state identically:

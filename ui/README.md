@@ -908,9 +908,9 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
   chain is a wall undo cannot cross** and only this component knows one is live ([#33]). See
   *Chaining* below.
 
-* **Layout.** A fixed 100px sidebar beside a flexible main column — and at or below
+* **Layout.** A fixed 78px sidebar beside a flexible main column — and at or below
   `COMPACT_MAX_HEIGHT_PX` a wrapping strip along the top above it, because the sidebar's two
-  elements need 721px stacked and a short window does not have it ([#42]). The strip **reflows
+  elements need 571px stacked and a short window does not have it ([#42], re-measured in [#53]). The strip **reflows
   rather than scrolls**: the column was already scrollable, but a flat green strip advertises
   nothing and the platform's overlay scrollbar stays hidden until a scroll has begun, so the tool
   palette — which decides what a click means — read as simply absent. The scroll is kept underneath
@@ -1214,7 +1214,7 @@ share. Not a stylesheet of general layout helpers — one agreement between thre
 
 | Export | Description |
 |---|---|
-| `COMPACT_MAX_HEIGHT_PX` | Window height at or below which the editor's sidebar reflows into a horizontal strip. `800` |
+| `COMPACT_MAX_HEIGHT_PX` | Window height at or below which the editor's sidebar reflows into a horizontal strip. `650` |
 | `compactStripStyles` | `CSSResult`. The turn itself — the rules `rr-toolbar` and `rr-tool-palette` state identically. **Append after the component's own rules**; it overrides them at equal specificity, so order is what makes it win |
 
 Three components reflow together at this height — `rr-editor-view` turns its sidebar column into a
@@ -1226,12 +1226,17 @@ The value is interpolated into each component's `static styles`. A media query c
 property, so this is the one place a shared constant cannot reach across on its own; the agreement
 is asserted instead, in `tests/layout.test.ts`.
 
-The breakpoint is set above the measurement rather than at it. Stacked, the sidebar is 721px in the
+The breakpoint is set above the measurement rather than at it. Stacked, the sidebar is 571px in the
 state that decides it — an archive open and **not yet calibrated**, so five toolbar buttons, three
-palette buttons and the gate reason under them — and the header takes 60px above, making 781px the
-window where the column exactly fills the space with nothing to spare ([#42]). That state rather
-than the calibrated 635px the ticket measured: an archive is uncalibrated before it is calibrated,
-so the taller arrangement is the one a user meets first.
+palette buttons and the gate reason under them — and the header takes 60px above, making 631px the
+window where the column exactly fills the space with nothing to spare ([#42], [#53]). That state
+rather than the calibrated arrangement: an archive is uncalibrated before it is calibrated, so the
+taller arrangement is the one a user meets first.
+
+**The measurement moves when the column's density does.** [#53] cut the spacing and the sidebar went
+from 721px to 571px, so the constant came down from `800` with it — a density change invalidates
+the derivation, and a breakpoint left standing over a column that no longer has that shape reflows
+a window the column would have fitted.
 
 `compactStripStyles` exists because the breakpoint agreeing is not the whole hazard — two copies of
 the rules *inside* the query could drift while all three components still switch at the same

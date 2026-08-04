@@ -102,28 +102,31 @@ export class RRToolPalette extends LitElement {
     :host {
       display: flex;
       flex-direction: column;
-      gap: 0.5em;
-      padding-bottom: 0.75em;
+      gap: 0.3em;
       align-items: center;
       user-select: none;
       width: 100%;
       box-sizing: border-box;
-      padding: 0 0.5em;
+      /* Matches rr-toolbar's density (#53). The bottom padding is stated in
+         this shorthand rather than on its own line above it, where a
+         padding-bottom was being overridden by this very declaration and so
+         had never applied. */
+      padding: 0 0.3em 0.45em;
     }
 
     .tool-group {
       display: flex;
       flex-direction: column;
-      gap: 0.9em;
-      padding: 0.6em 0;
+      gap: 0.4em;
+      padding: 0.3em 0;
       background-color: #059669; /* Explicit medium green, as rr-toolbar's */
-      border-radius: 12px;
-      width: calc(100% - 16px);
+      border-radius: 8px;
+      width: calc(100% - 8px);
       align-items: center;
     }
 
     sl-icon-button {
-      font-size: 2em;
+      font-size: 1.85em;
       color: white;
       cursor: pointer;
       transition: transform 0.1s;
