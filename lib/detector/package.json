@@ -1,0 +1,23 @@
+{
+  "name": "@occupancy/detector",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./browser": "./src/browser.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@occupancy/config": "workspace:*",
+    "@occupancy/r49": "workspace:*",
+    "onnxruntime-common": "^1.26.0",
+    "onnxruntime-web": "^1.26.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}

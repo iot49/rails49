@@ -6,6 +6,8 @@ published. `ui/` and `dataset/` are the only consumers.
 * `r49` : `.r49` archive parser and serializer, manifest schema, scale geometry
 * `uid` : Snowflake-style unique id generator
 * `classifier` : ONNX Runtime image classifier (browser and node targets)
+* `detector` : car boxes — the YOLO OBB session (browser), the L0 decode, the
+  L1 occupancy geometry, and the span→box construction the exporter uses
 * `config` : **generated** from `config.yaml` — layout and detector constants
 
 ## `config` is generated, and committed
@@ -68,6 +70,15 @@ Three rules:
   type; `./browser` and `./node` carry the classifiers. The split is what keeps
   `onnxruntime-node` and `sharp` out of the browser bundle, so it is load-
   bearing, not stylistic.
+
+* **`detector` has two, and the second one is the same idea.** `.` is pure —
+  types and geometry, importable from node, which is how `dataset` gets
+  `spanToPolygon` — and `./browser` carries the ORT session. There is no
+  `./geometry`: pure geometry has no dependency to keep out of anything, so a
+  third entry point would be ceremony. `loadDetector` is a factory rather than
+  a constructor plus `await load()` on purpose — an unloaded session cannot be
+  represented, so `detect` has no null branch and "model not loaded" stays the
+  view's `unknown` rather than an empty detection list.
 
 ## Adding an export
 

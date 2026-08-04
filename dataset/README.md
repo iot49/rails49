@@ -48,7 +48,9 @@ The rules it applies are `SPEC.md` § YOLO annotations:
   many moved.
 
 `src/obb.ts` holds the arithmetic with no filesystem in it, and is where the
-tests point.
+tests point. The car box itself is not there: `carWidthPx` and `spanToPolygon`
+are `@occupancy/detector`'s, so that the width constant has one home and the UI
+can draw ground truth beside detections without importing `node:crypto`.
 
 ### `pnpm run prep` — ⚠️ PARKED (exits non-zero)
 
@@ -98,6 +100,7 @@ training code reaches the corpus is not decided; see issue #51.
 *   `r49/`: The default `--in`, if you keep a corpus checkout here (gitignored).
 *   `data/`: The generated CNN crop database (gitignored; nothing generates it
     today).
-*   `src/yolo_export.ts`, `src/obb.ts`: the detector export and its arithmetic.
+*   `src/yolo_export.ts`, `src/obb.ts`: the detector export and its arithmetic
+    (the car box is `@occupancy/detector`'s).
 *   `src/data_prep.ts`, `src/online_diagnostics.ts`: parked stubs carrying the
     reasoning above.
