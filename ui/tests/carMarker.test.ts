@@ -190,6 +190,23 @@ describe('renderCar() with a class the vocabulary does not name', () => {
     expect(el.querySelector('g')!.classList.contains('unknown-class')).toBe(false);
   });
 
+  it('refuses an ink override, because the warning is not an opinion (#87)', () => {
+    // A class the vocabulary does not name is a fact about the archive. The
+    // diagnostics view recolours ground truth, and if that override won here a
+    // non-conforming car would lose the one signal telling the labeler to fix
+    // it — replaced by a verdict about a model that was never asked.
+    const el = renderSvg(
+      renderCar(car(), size(90), undefined, { text: 'stock.loko', frame }, false, '#4caf50')
+    );
+    expect(el.querySelector('g')!.getAttribute('style')).toBe('');
+    expect(el.querySelector('g')!.classList.contains('unknown-class')).toBe(true);
+  });
+
+  it('takes an ink when the class is fine, so ground truth can be drawn neutral (#87)', () => {
+    const el = renderSvg(renderCar(car(), size(90), undefined, null, false, '#e8eaed'));
+    expect(el.querySelector('g')!.getAttribute('style')).toBe('--car-ink:#e8eaed');
+  });
+
   it('warns a coupled car too, where the handles are gone', () => {
     const el = renderSvg(
       renderCar(car(), size(90), { p0: true, p1: true }, { text: 'stock.loko', frame })
@@ -367,11 +384,27 @@ describe('renderDetection()', () => {
     expect(el.querySelector('text')!.textContent).toContain('87%');
   });
 
-  it('draws no fill, unlike the authored label it may sit on top of', () => {
+  it('draws no fill by default, unlike the authored label it may sit on top of', () => {
     // The rectangle of a *label* is read against the car underneath it, which
-    // is what the wash is for. A detection is not being checked by eye, and a
-    // wash over every car in the frame would bury the photograph.
-    expect(carMarkerStyles.cssText).toMatch(/\.detection polygon\s*\{[^}]*fill:\s*none/);
+    // is what the wash is for. A detection is not being checked by eye in the
+    // live view, and a wash over every car in the frame would bury the
+    // photograph. The rule is a custom property whose *fallback* is `none`, so
+    // only a caller that passes an ink opts in (#87) — the default is what this
+    // pins, and an override that reached the live view would fail here.
+    expect(carMarkerStyles.cssText).toMatch(
+      /\.detection polygon\s*\{[^}]*fill:\s*var\(--detection-fill,\s*none\)/
+    );
+    const plain = renderSvg(renderDetection(detection(), size(90), frame));
+    expect(plain.querySelector('.detection')!.getAttribute('style')).toBe('');
+  });
+
+  it('an ink recolours the box and its wash together (#87)', () => {
+    // Both custom properties or neither: moving only one leaves a coloured
+    // fill inside a pink outline, or an outline with no wash to read it by.
+    const el = renderSvg(renderDetection(detection(), size(90), frame, '#ffb300'));
+    const style = el.querySelector('.detection')!.getAttribute('style')!;
+    expect(style).toContain('--car-ink:#ffb300');
+    expect(style).toContain('--detection-fill:color-mix');
   });
 
   it('has no id: a 300-slot buffer is re-decoded every frame', () => {

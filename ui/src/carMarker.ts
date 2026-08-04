@@ -39,6 +39,20 @@ import type { CoupledEnds, FrameSize } from './geometry.js';
  * photograph of a layout, where green foliage and amber ballast are not.
  */
 
+/**
+ * The two custom properties a detection's ink override sets, or `''` for none.
+ *
+ * Both or neither: an override that moved only `--car-ink` would leave the
+ * wash off, and one that moved only the wash would put a coloured fill inside
+ * a pink outline. They are written here rather than at the call site so the
+ * pairing cannot come apart — the same reason every module in this directory
+ * exports its renderer and its styles together.
+ */
+function detectionInk(ink: string | null): string {
+  if (!ink) return '';
+  return `--car-ink:${ink};--detection-fill:color-mix(in srgb, ${ink} 22%, transparent)`;
+}
+
 export const carMarkerStyles: CSSResult = css`
   .car,
   .coupler,
@@ -48,7 +62,13 @@ export const carMarkerStyles: CSSResult = css`
        the diamond each have one: this is ink on an arbitrary photograph rather
        than chrome, and it has to stay legible over both a dark tunnel mouth and
        a bright backdrop. The coupler and the band in flight are the same ink
-       because they are the same object at a different moment. */
+       because they are the same object at a different moment.
+
+       It is a **default**, not a constant: the diagnostics view overrides it
+       per object with the verdict's colour (#87). One custom property, set on
+       the group, is what lets a whole symbol recolour together — the same
+       one-override mechanism .car.unknown-class and the sensor's data-state
+       use. */
     --car-ink: #f472b6;
   }
 
@@ -56,10 +76,15 @@ export const carMarkerStyles: CSSResult = css`
     stroke: var(--car-ink);
     stroke-width: 1.5;
     vector-effect: non-scaling-stroke;
-    /* Translucent, and that is the requirement rather than a taste: the
+    /* Mixed from --car-ink rather than written as a second literal, so an
+       override recolours the wash with the outline instead of leaving a pink
+       fill inside a red border. Identical to the old
+       rgba(244, 114, 182, 0.16) at the default ink.
+
+       Translucent, and that is the requirement rather than a taste: the
        rectangle is read *against the car underneath it*, which is how a labeler
        tells a label that covers the car from one that does not. */
-    fill: rgba(244, 114, 182, 0.16);
+    fill: color-mix(in srgb, var(--car-ink) 16%, transparent);
   }
 
   .car line {
@@ -125,7 +150,12 @@ export const carMarkerStyles: CSSResult = css`
     stroke-width: 2;
     stroke-dasharray: 14 7;
     vector-effect: non-scaling-stroke;
-    fill: none;
+    /* Unfilled by default, which is the live view: nothing is checked by eye
+       there. The diagnostics view passes an ink and gets a wash with it, so a
+       box can be read *over* a label's rectangle without either one hiding the
+       photograph — the two are drawn together only there (#87). A fallback
+       rather than an override so the live view's appearance is untouched. */
+    fill: var(--detection-fill, none);
   }
 
   .car text,
@@ -226,7 +256,17 @@ export function renderCar(
   size: CarSymbolSize,
   coupled: CoupledEnds = NO_COUPLED_ENDS,
   warning: CarWarning | null = null,
-  highlighted = false
+  highlighted = false,
+  /**
+   * Recolours this one label (#87). `null` is the authored pink, which is every
+   * caller but the diagnostics view — there, ground truth is drawn neutral so
+   * that every hue on the photograph belongs to a verdict.
+   *
+   * Ignored when `warning` is set: a class the vocabulary does not name is a
+   * fact about the archive rather than about any model's opinion of it, and it
+   * must stay legible whoever is drawing.
+   */
+  ink: string | null = null
 ): SVGTemplateResult {
   const { p0, p1 } = car;
   const corners = size.dpt === null ? null : carCorners(p0, p1, size.dpt);
@@ -236,6 +276,7 @@ export function renderCar(
     <g
       class="car ${warning ? 'unknown-class' : ''} ${highlighted ? HIGHLIGHT_CLASS : ''}"
       data-label-id="${car.id}"
+      style="${warning || !ink ? '' : `--car-ink:${ink}`}"
     >
       ${
         corners
@@ -385,7 +426,17 @@ export function renderPendingCar(pending: PendingCar, size: CarSymbolSize): SVGT
 export function renderDetection(
   detection: Detection,
   size: CarSymbolSize,
-  frame: FrameSize
+  frame: FrameSize,
+  /**
+   * Recolours this one box and gives it a translucent wash (#87).
+   *
+   * `null` is the live view: the shared car ink, unfilled. The diagnostics view
+   * passes the finding's verdict colour, which is what lets a box say *what
+   * kind* of disagreement it is without reading the panel beside it. Drawing
+   * every box in one ink is right where they are the only thing on screen and
+   * wrong where they sit on top of the labels they are being read against.
+   */
+  ink: string | null = null
 ): SVGTemplateResult {
   const corners = boxCorners(detection);
   // The class and the score together: the class because the vocabulary is
@@ -396,7 +447,7 @@ export function renderDetection(
   const placement = placeLabel(detection.centre, text, size.labelPx, size.labelPx * 0.7, frame);
 
   return svg`
-    <g class="detection">
+    <g class="detection" style="${detectionInk(ink)}">
       <polygon points="${corners.map(c => `${c.x},${c.y}`).join(' ')}" />
       <text
         x="${placement.x}"
