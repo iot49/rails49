@@ -17,6 +17,17 @@ dist/
 # see classifier/resnet/README.md
 classifier/resnet/models/*
 !classifier/resnet/models/version.txt
+
+# Detector weights and Ultralytics run output. Same rule as the classifier's:
+# only version.txt is tracked. runs/ also holds the .pt checkpoints, which are
+# what training produces and what export_onnx.py consumes.
+detector/models/*
+!detector/models/version.txt
+detector/runs/
+detector/train.log
+# The DOTA-pretrained checkpoint Ultralytics downloads into the working
+# directory on first use. Fetched, not authored.
+detector/*.pt
 rails49.org/ui/
 
 # Detector benchmarking scratch — exported .ort variants and their timings
