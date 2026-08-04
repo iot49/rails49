@@ -73,6 +73,13 @@ for project in classifier/resnet detector; do
   fi
   echo "   $project"
   (cd "$project" && uv run ruff check . && uv run black --check . && uv run pyright)
+  # Only detector has tests, and only for one thing: the letterbox it writes a
+  # second copy of because the browser needs the same arithmetic in TypeScript
+  # (issue #100). Guarded by the directory rather than by project name so a
+  # tests/ tree added to the other one is picked up without editing this.
+  if [ -d "$project/tests" ]; then
+    (cd "$project" && uv run pytest -q)
+  fi
 done
 
 echo "🎉 All checks passed successfully!"

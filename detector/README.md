@@ -82,7 +82,23 @@ checked the output shape, which a collapsed model passes.
 Which is why `export_onnx.py` finishes by running fp32 and INT8 over the
 calibration frames and comparing detection counts. Loading, running and shape
 all pass on a model that detects nothing; only the comparison catches it. On
-the tracer weights: fp32 106, INT8 115, whole-graph-quantized **0**.
+the tracer weights: fp32 116, INT8 124, whole-graph-quantized **0**.
+
+**Calibration frames are letterboxed, because the browser's are.** Static
+quantization fixes its activation ranges on whatever geometry it is shown, so
+preprocessing them differently from the deployed path calibrates the model for a
+distribution it will never be given. `detector/letterbox.py` is therefore a
+second copy of `lib/detector/src/letterbox.ts` — deliberate duplication (issue
+#100): sharing nine lines of arithmetic across the language boundary would mean
+emitting a *function* from `config.yaml` or shelling out to node mid-quantize,
+and both cost more than the copy. `tests/test_letterbox.py` and
+`lib/detector/tests/decode.test.ts` assert the same scale and padding for the
+same inputs, which is what keeps them together. The fill is `(114, 114, 114)`,
+Ultralytics' own, which is what makes the bars in-distribution.
+
+It is worth 2 px of bar per edge on today's 1920x1080 corpus — the detection
+counts above went up from 106/115 when the probe frames stopped being stretched
+— and 42 px per edge at the intended capture geometry (§ Resolution below).
 
 ## Resolution is chosen by geometry
 

@@ -34,5 +34,13 @@ dependencies = [
 dev = [
     "black>=24.10.0",
     "pyright>=1.1.385",
+    "pytest>=8.0.0",
     "ruff>=0.4.10",
 ]
+
+[tool.pytest.ini_options]
+# `letterbox.py` sits at the project root beside `export_onnx.py`, which imports
+# it the same way. There is no package to install here — this is a two-script
+# project — so the root goes on the path explicitly.
+pythonpath = ["."]
+testpaths = ["tests"]

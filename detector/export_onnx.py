@@ -44,6 +44,8 @@ from onnxruntime.quantization import (
 from PIL import Image
 from ultralytics import YOLO
 
+from letterbox import letterboxed
+
 HERE = Path(__file__).parent
 REPO = HERE.parent
 
@@ -83,14 +85,13 @@ class FrameCalibrationReader(CalibrationDataReader):
 
     @staticmethod
     def _preprocess(path: Path, width: int, height: int) -> np.ndarray:
-        # Plain resize, no letterbox. The corpus is 1920x1080 and the target is
-        # 960x544 — both 16:9 to within a pixel — so letterboxing would add bars
-        # the deployed path never sees.
-        image = (
-            Image.open(path)
-            .convert("RGB")
-            .resize((width, height), Image.Resampling.BILINEAR)
-        )
+        # Letterbox, matching `loadDetector`'s browser path exactly — the
+        # quantizer fixes its activation ranges on whatever geometry it is shown,
+        # so a frame preprocessed differently from the deployed one calibrates the
+        # model for a distribution it will never be given. Worth 2 px per edge on
+        # today's 1920x1080 corpus; worth 42 px bars at the intended capture
+        # geometry (~4440x2130, aspect 2.08:1). See issue #100.
+        image = letterboxed(Image.open(path).convert("RGB"), (width, height))
         array = np.asarray(image, dtype=np.float32) / 255.0
         return np.transpose(array, (2, 0, 1))[np.newaxis, ...]
 
