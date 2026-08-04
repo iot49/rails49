@@ -73,6 +73,15 @@ detector:
   # It has a floor above zero: at 0 you accept 300 padding slots as phantom
   # cars and every sensor reads `occupied` on every frame.
   confidence_threshold: 0.25
+  # Fraction of exported images held out as the validation split. The split is
+  # by image, not by label — every car in an image must land on the same side,
+  # or the same frame appears in both. Deterministic in the image's identity,
+  # so re-exporting reshuffles nothing.
+  #
+  # Its own key rather than a reuse of `cnn.val_split`: the two derivations
+  # split different units (crops there, images here) and nothing requires the
+  # ratios to move together.
+  val_split: 0.2
   #
   # ⚠️  APPEND-ONLY. A list position *is* a YOLO class index, so reordering or
   # deleting an entry invalidates trained weights while this file still

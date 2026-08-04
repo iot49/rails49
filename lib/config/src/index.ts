@@ -25,10 +25,13 @@ export {
 } from './generated.ts';
 
 //── Detector ────────────────────────────────────────────────────────────────
-// Values only. Nothing here is wired into a runtime yet.
+// The dataset exporter reads the class list and the split ratio. The input
+// resolution and the confidence threshold are still values only — no
+// runtime decodes a detection yet.
 export {
   DETECTOR_INPUT,
   DETECTOR_CONFIDENCE_THRESHOLD,
+  DETECTOR_VAL_SPLIT,
   DETECTOR_CLASSES,
   DETECTOR_VOCABULARY,
 } from './generated.ts';

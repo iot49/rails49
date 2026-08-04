@@ -55,6 +55,14 @@ export const DETECTOR_INPUT = [960, 544] as const;
 export const DETECTOR_CONFIDENCE_THRESHOLD = 0.25;
 
 /**
+ * Fraction of exported images held out for validation.
+ *
+ * The unit is the image, not the label: every car in a frame lands on
+ * the same side of the split, or the frame appears in both.
+ */
+export const DETECTOR_VAL_SPLIT = 0.2;
+
+/**
  * The YOLO class list, verbatim and index-ordered.
  *
  * ⚠️  APPEND-ONLY. A position in this array *is* a class index, so

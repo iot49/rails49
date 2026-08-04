@@ -88,6 +88,7 @@ def render_generated_ts(config: dict) -> str:
 
     detector_input = require(config, "detector", "input")
     confidence_threshold = require(config, "detector", "confidence_threshold")
+    val_split = require(config, "detector", "val_split")
     detector_classes = require(config, "detector", "classes")
     vocabulary = require(config, "detector", "vocabulary")
 
@@ -170,6 +171,14 @@ def render_generated_ts(config: dict) -> str:
         f"export const DETECTOR_CONFIDENCE_THRESHOLD = {ts_literal(confidence_threshold)};",
         "",
         doc(
+            "Fraction of exported images held out for validation.",
+            "",
+            "The unit is the image, not the label: every car in a frame lands on",
+            "the same side of the split, or the frame appears in both.",
+        ),
+        f"export const DETECTOR_VAL_SPLIT = {ts_literal(val_split)};",
+        "",
+        doc(
             "The YOLO class list, verbatim and index-ordered.",
             "",
             "⚠️  APPEND-ONLY. A position in this array *is* a class index, so",
@@ -221,10 +230,13 @@ def render_index_ts() -> str:
             "} from './generated.ts';",
             "",
             "//── Detector ────────────────────────────────────────────────────────────────",
-            "// Values only. Nothing here is wired into a runtime yet.",
+            "// The dataset exporter reads the class list and the split ratio. The input",
+            "// resolution and the confidence threshold are still values only — no",
+            "// runtime decodes a detection yet.",
             "export {",
             "  DETECTOR_INPUT,",
             "  DETECTOR_CONFIDENCE_THRESHOLD,",
+            "  DETECTOR_VAL_SPLIT,",
             "  DETECTOR_CLASSES,",
             "  DETECTOR_VOCABULARY,",
             "} from './generated.ts';",
