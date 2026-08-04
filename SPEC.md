@@ -423,6 +423,7 @@ The `.r49` manifest is versioned. The current shipped version is 3; the model de
 ```jsonc
 {
   "version": 4,
+  "id": "<snowflake>",                                      // optional — see below
   "layout": {
     "name": "…", "description": "…", "contact": "…",      // all optional
     "scale": "HO",
@@ -455,6 +456,8 @@ Encoding rules, each with its reason:
 * **`class` is a plain string at the format layer**, *not* validated against the vocabulary at parse time. Conformance is a visible warning in the editor and a **fatal error in the training exporter**, which is where a mis-mapped class silently corrupts a model. A format that refuses to open files because someone pruned `config.yaml` would punish config edits.
 * **`calibration` is always present, with `points` defaulting to `[]`.** "Uncalibrated" is a real state the editor handles, and an empty list expresses it without every consumer null-checking the parent. `getDPT()` returns `null` when no equal-`z` pair exists, covering the empty and single-point cases with one rule.
 * **`labeled_complete` defaults to `false`**, always. "A human asserts no car is unlabeled" is a claim no default and no conversion can make on a human's behalf.
+* **Unknown keys are rejected, not stripped.** Every object in the schema is strict, so a manifest carrying a field this build does not know fails to parse instead of loading shorter than it arrived. Silently deleting what a newer build wrote is the same failure class as a defaulted `scale` or a defaulted `provenance`: the damage is done at *save* time, to someone else's file, and nothing in the pipeline looks wrong afterwards. The cost is that adding a field is a coordinated change — which is what a version number is for.
+* **The archive-level `id` is identity, and it is optional here.** `R49Archive` mints one on write when it is absent and **never** overwrites one that exists, so a file lacks an `id` only until its first save. It is required by the [corpus repo](https://github.com/iot49/rails49/issues/54), never by the editor or the detector — the format stays loadable for a hand-built manifest, and every archive written before the field existed keeps working. It is not derived from the file's name or path: an archive can be renamed or moved without becoming a different archive, which is precisely what a per-contributor corpus path forces. Whether a *fork* — someone else's archive, edited and resubmitted under the same `id` — needs archive-level provenance is deliberately unresolved; v4 models provenance for labels only.
 
 ### Migration is a one-time conversion, not a feature
 

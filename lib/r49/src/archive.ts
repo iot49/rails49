@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { make_id } from '@occupancy/uid';
 import {
   ManifestDataSchema,
   assertManifestVersion,
@@ -59,13 +60,20 @@ export class R49Archive {
   }
 
   /**
-   * Writes the in-memory manifest back into the archive. Called by export();
-   * rarely needed directly.
+   * Writes the in-memory manifest back into the archive, minting an archive
+   * `id` first if it has none. Called by export(); rarely needed directly.
+   *
+   * **An existing id is never overwritten.** This method is the single choke
+   * point every write passes through, which is what makes that a guarantee
+   * rather than a convention — including for the download fallback, which
+   * writes a freshly-named file on every save and would otherwise be the one
+   * path that mints a new identity for the same archive each time.
    *
    * @throws If no manifest has been loaded or set.
    */
   async saveManifest(): Promise<void> {
     if (!this.manifest) throw new Error('No manifest data to save');
+    if (this.manifest.id === undefined) this.manifest.id = make_id();
     this.zip.file('manifest.json', JSON.stringify(this.manifest, null, 2));
   }
 
