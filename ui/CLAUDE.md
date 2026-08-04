@@ -253,8 +253,10 @@ The same component backs the editor (`src` → `<img>`) and the live view (`stre
 * `symbolSize = SYMBOL_SIZE_SCREEN_PX / ctm.a`, recomputed by a `ResizeObserver` off the **content
   group's** CTM (a ratio from the SVG's bounding rect is wrong by the letterbox), keeps annotations
   a constant screen size.
-* It draws what it is given — `markers`, `cars`, `calibrationPoints`, `sensors` — from the manifest,
-  never writing it. Cars draw **first**: their rectangles are the overlay's only area fills, and a
+* It draws what it is given — `cars`, `calibrationPoints`, `sensors` from the manifest, and
+  `detections`/`sensorStates` from the live view's loop — never writing any of it. Order is a
+  claim: cars **first**, then the detections over them (a prediction is read *against* a label),
+  then points and sensors over both. Their rectangles are the overlay's only area fills, and a
   point or sensor on a car must not be tinted over.
 
 ### Zoom is one transform above the overlay (#44)
@@ -284,7 +286,9 @@ jsdom does not lay out or paint, so anything left inside a Lit element is untest
 component that happens to need it first. Rules it encodes, each wrong somewhere if reimplemented:
 
 * **No scale lookup.** The ratio cancels out of `DPT × STANDARD_WIDTH / STANDARD_GAUGE`, so a car is
-  2.09 track-widths wide in every scale. Both constants come from `@occupancy/config`.
+  2.09 track-widths wide in every scale. `carWidthPx` itself is **re-exported from
+  `@occupancy/detector`** rather than implemented here, so the width L1 normalizes with and the
+  width the editor draws cannot disagree.
 * **Objects draw at world sizes; annotations at screen sizes.** A sensor is one track width across
   (`trackWidthPx` *is* DPT: px/mm × gauge_mm) and a car is 2.09, so both shrink with the
   photograph; labels, crosshairs, markers and endpoint handles stay constant on screen. `rr-viewer`
@@ -350,8 +354,8 @@ component that happens to need it first. Rules it encodes, each wrong somewhere 
 
 ### Markers are modules, not elements
 
-Custom elements break the SVG namespace when nested in `<svg>`, so `marker.ts`,
-`calibrationMarker.ts`, `sensorMarker.ts` and `carMarker.ts` are plain-export modules whose exports
+Custom elements break the SVG namespace when nested in `<svg>`, so `calibrationMarker.ts`,
+`sensorMarker.ts` and `carMarker.ts` are plain-export modules whose exports
 (renderer, defs where needed, styles) **must be used together** — the module boundary is the
 encapsulation. Each object type is unmistakable in both shape and colour, a requirement rather than
 taste (`SPEC.md` § Reference points: authored by different tools, meaning different things); README
@@ -360,7 +364,11 @@ carries the exact exports and glyphs. Two rules that don't show in the README ta
 * `renderCar` takes the **DPT**, not a width — the 2.09 derivation lives in `geometry.ts`, and a
   caller passing a number would be a second place to get it wrong. A `null` DPT draws the chord and
   handles with **no rectangle**: there is no derived width to claim, and authored cars must stay
-  visible after a calibration point is deleted.
+  visible after a calibration point is deleted. `renderDetection`, beside it in the same module,
+  takes the opposite: a `Detection`, drawn at the width the *model* predicted (#85).
+* `marker.ts` is **gone** (#85). Its glyph set — `track`, `train`, `coupling` — was the CNN's label
+  vocabulary, and nothing could produce a `MarkerData` once the live view stopped classifying
+  points. Do not reintroduce it: L0 is a box and L1 is a state on the sensor that already exists.
 * Labels flip inwards at a frame edge through the shared `placeLabel`.
 * `highlight.ts` spans all three: one white glow, on the group, for whichever object a reveal
   points at. Its class and its styles are used together like every other pair here. White because
@@ -470,7 +478,7 @@ those rather than hardcoding new colors.
   *rule* stays in `static styles` and whose three numbers are written as `--zoom-*`). A rule written
   inline is still a rule in the wrong place.
 * Compose from small elements. All custom elements are `rr-<noun>[-<qualifier>]`; non-element modules
-  use plain camelCase filenames (`marker.ts`, `capture.ts`). Add the `HTMLElementTagNameMap`
+  use plain camelCase filenames (`carMarker.ts`, `capture.ts`). Add the `HTMLElementTagNameMap`
   declaration block at the bottom of every element file.
 * Document each component with a short purpose comment and its interface (properties in, events out).
   Update `README.md`'s table for that component in the same change.
