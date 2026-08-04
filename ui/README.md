@@ -39,7 +39,7 @@ Non-element modules use plain camelCase filenames with no prefix.
 
 ```
 rr-app                          ← shell: owns the archive and the view mode
-├── rr-header                   ← app bar: status slot, view toggle, settings gear
+├── rr-header                   ← app bar: status slot, view toggle, source link, settings gear
 │   └── rr-settings-dialog      ← layout metadata (sl-dialog)
 ├── rr-editor-view              ← editor mode; images, DPT readout, calibration points, sensors, cars
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
@@ -224,8 +224,15 @@ Feedback is a Shoelace `sl-alert` toast (`_notify`), not `alert()`.
 
 ### `rr-header`
 
-Top app bar. Renders the view toggle, the status slot, and the settings gear; hosts
+Top app bar. Renders the view toggle, the status slot, a source link, and the settings gear; hosts
 `rr-settings-dialog` and opens it imperatively via its `show()` method.
+
+The source link is an `sl-icon-button` with an `href`, so it renders as an anchor rather than a
+button: `target="_blank"` opens the repository in a new tab and leaves this page — and the archive
+held in memory with it — untouched. The `rel` is Shoelace's, not ours (it emits
+`noreferrer noopener` on the anchor for any `target`), so the test asserts it there rather than on
+the host, where a `rel` attribute would be inert. The URL is a module constant, not a property; the
+element's interface is unchanged by it.
 
 | Property | Type | Description |
 |---|---|---|

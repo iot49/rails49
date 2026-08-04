@@ -7,8 +7,22 @@ import './rr-settings-dialog.js';
 import type { RRSettingsDialog } from './rr-settings-dialog.js';
 
 /**
- * Top app bar with title/status, view toggle, and settings gear.
- * 
+ * Where the source lives — a constant, not bound state, so it is no property.
+ *
+ * `href` makes that button an anchor rather than a button, so the app's page —
+ * and the unsaved archive held in memory with it — is never navigated away
+ * from. `rel` is deliberately **not** written here: `sl-icon-button` forwards
+ * only `href`, `target` and `download`, so a `rel` on the host would be inert
+ * decoration. Shoelace emits `rel="noreferrer noopener"` on the anchor itself
+ * whenever `target` is set, which is what actually severs the opened tab's
+ * handle on this one; `tests/rr-header.test.ts` asserts it on the rendered
+ * anchor so an upgrade that dropped it fails there rather than silently.
+ */
+const REPO_URL = 'https://github.com/iot49/rails49';
+
+/**
+ * Top app bar with title/status, view toggle, source link, and settings gear.
+ *
  * @fires rr-view-toggle - Toggle between editor and live views.
  */
 @customElement('rr-header')
@@ -98,6 +112,14 @@ export class RRHeader extends LitElement {
         </div>
 
         <div class="right-section">
+          <sl-tooltip content="Source on GitHub">
+            <sl-icon-button
+              name="github"
+              label="Source on GitHub"
+              href=${REPO_URL}
+              target="_blank"
+            ></sl-icon-button>
+          </sl-tooltip>
           <sl-icon-button name="gear" @click=${this._onOpenSettings}></sl-icon-button>
         </div>
       </nav>

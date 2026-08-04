@@ -63,21 +63,60 @@ describe('rr-header', () => {
 
   it('emits rr-view-toggle when toggle button is clicked', async () => {
     const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
-    const toggleBtn = el.shadowRoot!.querySelector('sl-icon-button')!;
+    const toggleBtn = el.shadowRoot!.querySelector('.left-section sl-icon-button')!;
     
     setTimeout(() => (toggleBtn as HTMLElement).click());
     await oneEvent(el, 'rr-view-toggle');
   });
 
+  // Selected by name rather than by index: the right-hand group holds more than
+  // one button, so an index would silently follow whichever was added last.
   it('opens settings dialog when gear icon is clicked', async () => {
     const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
-    const gearBtn = el.shadowRoot!.querySelectorAll('sl-icon-button')[1];
+    const gearBtn = el.shadowRoot!.querySelector('sl-icon-button[name="gear"]')!;
     const dialog = el.shadowRoot!.querySelector('rr-settings-dialog')!;
-    
+
     const showSpy = vi.spyOn(dialog, 'show');
     (gearBtn as HTMLElement).click();
-    
+
     expect(showSpy).toHaveBeenCalled();
+  });
+
+  it('links to the source repository from the right-hand button group', async () => {
+    const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
+    const group = el.shadowRoot!.querySelector('.right-section')!;
+    const githubBtn = group.querySelector('sl-icon-button[name="github"]')!;
+
+    expect(githubBtn).to.exist;
+    expect(githubBtn.getAttribute('href')).to.equal('https://github.com/iot49/rails49');
+    expect(githubBtn.getAttribute('target')).to.equal('_blank');
+    expect(githubBtn.getAttribute('label')).to.equal('Source on GitHub');
+  });
+
+  // Asserted on the rendered anchor, not the host: sl-icon-button forwards no
+  // `rel`, and emits its own whenever `target` is set. Reading the host would
+  // pass just as happily with no rel on the anchor at all — and without
+  // noopener the opened tab keeps a handle on this one, which holds an unsaved
+  // archive in memory.
+  it('opens the repository in a tab with no handle back on this one', async () => {
+    const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
+    const githubBtn = el.shadowRoot!.querySelector('sl-icon-button[name="github"]')!;
+    const anchor = githubBtn.shadowRoot!.querySelector('a')!;
+
+    expect(anchor).to.exist;
+    expect(anchor.getAttribute('href')).to.equal('https://github.com/iot49/rails49');
+    expect(anchor.getAttribute('target')).to.equal('_blank');
+    expect(anchor.getAttribute('rel')).to.contain('noopener');
+    expect(anchor.getAttribute('rel')).to.contain('noreferrer');
+  });
+
+  it('gives the repository link a tooltip naming its destination', async () => {
+    const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
+    const githubBtn = el.shadowRoot!.querySelector('sl-icon-button[name="github"]')!;
+    const tooltip = githubBtn.closest('sl-tooltip')!;
+
+    expect(tooltip).to.exist;
+    expect(tooltip.getAttribute('content')).to.match(/github/i);
   });
 });
 
