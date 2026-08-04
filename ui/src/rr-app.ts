@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { R49Archive, MANIFEST_VERSION } from '@occupancy/r49';
+import { R49Archive, MANIFEST_VERSION, type ValidScales } from '@occupancy/r49';
 import { EditHistory, revealTarget, type HistoryEntry } from './history.js';
 import { openArchive, writeArchive, type FileBinding } from './persistence.js';
 import './rr-header.js';
@@ -72,10 +72,11 @@ export class RRApp extends LitElement {
       overflow: hidden;
     }
 
-    /* Slotted into rr-header, so it is styled here — the slot's content is this
-       component's DOM. Lighter than the layout name: it qualifies the name
-       rather than competing with it. */
-    .bound-file {
+    /* Slotted into rr-header, so these are styled here — the slot's content is
+       this component's DOM. Lighter than the layout name: each qualifies the
+       name rather than competing with it. */
+    .bound-file,
+    .layout-scale {
       font-weight: 400;
       opacity: 0.75;
     }
@@ -357,10 +358,17 @@ export class RRApp extends LitElement {
   }
 
   render() {
-    let layout = { name: '', scale: 'N' };
+    let layout: { name: string; scale: ValidScales } = { name: '', scale: 'N' };
+    // Null until a manifest has actually been read (#52). The `N` above is a
+    // placeholder for the dialog to render against, not an answer any archive
+    // gave, so with nothing open the header states no scale rather than
+    // inventing one. Read on every render, so a scale changed in the dialog is
+    // the one shown.
+    let scale: ValidScales | null = null;
     try {
       if (this._archive) {
         layout = this._archive.getManifest().layout as any;
+        scale = layout.scale;
       }
     } catch (e) {
       // Ignore if manifest not yet ready
@@ -373,12 +381,16 @@ export class RRApp extends LitElement {
         @rr-view-toggle=${this._onViewToggle}
         @rr-layout-change=${this._onLayoutChange}
       >
-        <!-- The bound filename is shown only when Save would overwrite it: the
-             question "where does my work go?" is asked before the click, and a
-             toast answers it only afterwards. A binding without a handle names
-             no file that exists yet, so it stays quiet. -->
+        <!-- Three things, each qualifying the one before: the layout's name,
+             the scale its geometry is read in (#52, resolved above), and the
+             file a save would land in. The bound filename is shown only when
+             Save would overwrite it: the question "where does my work go?" is
+             asked before the click, and a toast answers it only afterwards. A
+             binding without a handle names no file that exists yet, so it
+             stays quiet. -->
         <span slot="status"
-          >${this._status}${this._binding?.handle
+          >${this._status}${scale ? html`<span class="layout-scale"> · ${scale}</span>` : ''}${this
+            ._binding?.handle
             ? html`<span class="bound-file"> — ${this._binding.stem}.r49</span>`
             : ''}</span
         >

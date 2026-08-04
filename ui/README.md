@@ -112,6 +112,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#44]: https://github.com/iot49/rails49/issues/44
 > [#48]: https://github.com/iot49/rails49/issues/48
 > [#49]: https://github.com/iot49/rails49/issues/49
+> [#52]: https://github.com/iot49/rails49/issues/52
 
 ## State and data flow
 
@@ -214,6 +215,12 @@ hijack Cmd+Z mid-typing. A press with a drag still live returns nothing (see `hi
 * The header's status carries the bound filename in a `.bound-file` span **only when a handle
   exists** — that is exactly when Save would overwrite it. A binding without a handle names no file
   that exists yet. The span is styled in `rr-app` because slotted content is this component's DOM.
+* It also carries the layout's **scale** in a `.layout-scale` span ([#52]), read out of the manifest
+  on every render so a scale changed in the settings dialog is the one shown. It is stated **only
+  once a manifest has been read**: the `N` the render falls back to is a placeholder giving
+  `rr-settings-dialog` something to render against — it matches that component's own default but is
+  not bound to it — and is an answer no archive gave, so with nothing open the header names no scale
+  rather than inventing one.
 * **Saving does not validate calibration.** The v3 check read `{p0, p1, size_mm}` structurally, which
   v4 has not — calibration is a list of points that legitimately starts empty, so "uncalibrated" is a
   state the editor reports rather than an error to refuse a save over.
