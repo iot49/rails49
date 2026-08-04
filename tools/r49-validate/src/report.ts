@@ -1,0 +1,73 @@
+/**
+ * The one shape both surfaces read.
+ *
+ * A corpus PR is reported in two places — `::warning` annotations attached to
+ * the archive's path, and a table on the run's job summary — and they must
+ * never disagree about what was found. So the validator produces this, and the
+ * workflow renders it twice. Nothing about GitHub appears below: the tool
+ * decides what is true, the workflow decides how it is displayed.
+ *
+ * Blocking errors and warnings are separate fields rather than one list with a
+ * severity, because the distinction is the whole point of the soft bar and a
+ * consumer must not have to filter correctly to respect it.
+ */
+
+/** Which bar an archive is held to, decided by where it sits in the corpus. */
+export type Scope =
+  /** `archives/<handle>/<slug>.r49` — a contributor submission. Full bar. */
+  | 'archives'
+  /** `fixtures/<slug>.r49` — the six. Structure only, and no warnings. */
+  | 'fixtures'
+  /** Neither. A `.r49` somewhere the corpus layout does not define. */
+  | 'unknown';
+
+/** One thing found, blocking or not. */
+export interface Finding {
+  /** Stable machine name, safe to match on. Human text may be reworded. */
+  readonly code: string;
+  /** One sentence, addressed to the contributor, naming the fix where there is one. */
+  readonly message: string;
+}
+
+/**
+ * Everything known about one archive: the facts for the summary table and the
+ * findings for the annotations.
+ *
+ * The facts are present even when the archive failed to load — `path` and
+ * `scope` always, the rest `null` — so a row exists for every file examined.
+ * A table missing its worst row would be the wrong table.
+ */
+export interface ArchiveReport {
+  readonly path: string;
+  readonly scope: Scope;
+  readonly id: string | null;
+  /** Resolution in Dots Per Track, or `null` when calibration does not resolve. */
+  readonly dpt: number | null;
+  /**
+   * The fit's disagreement in image pixels — **reported, never thresholded**.
+   * It is the only signal that makes a mis-typed world coordinate visible
+   * rather than absorbed into the scale, but no calibrated threshold exists and
+   * inventing one here would put a number in the pipeline that nothing earned.
+   */
+  readonly dptResidual: number | null;
+  readonly images: number | null;
+  readonly labels: number | null;
+  readonly complete: number | null;
+  readonly incomplete: number | null;
+  readonly errors: readonly Finding[];
+  readonly warnings: readonly Finding[];
+}
+
+/** The whole run. */
+export interface Report {
+  /** Bumped when a consumer would have to change. The workflow pins it. */
+  readonly version: 1;
+  readonly archives: readonly ArchiveReport[];
+  /** True when no archive carries a blocking error. Warnings do not clear it. */
+  readonly ok: boolean;
+}
+
+/** Whether a report passes the blocking bar. Warnings are not failures. */
+export function isOk(archives: readonly ArchiveReport[]): boolean {
+  return archives.every(a => a.errors.length === 0);
+}

@@ -105,6 +105,31 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.41)(jsdom@26.1.0)
 
+  tools/r49-validate:
+    dependencies:
+      '@occupancy/config':
+        specifier: workspace:*
+        version: link:../../lib/config
+      '@occupancy/r49':
+        specifier: workspace:*
+        version: link:../../lib/r49
+      tsx:
+        specifier: ^4.10.5
+        version: 4.21.0
+    devDependencies:
+      '@types/node':
+        specifier: ^20.12.12
+        version: 20.19.41
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.1
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.41)(jsdom@26.1.0)
+
   ui:
     dependencies:
       '@lit/reactive-element':
