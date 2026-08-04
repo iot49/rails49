@@ -21,13 +21,31 @@ import type { RRSettingsDialog } from './rr-settings-dialog.js';
 const REPO_URL = 'https://github.com/iot49/rails49';
 
 /**
- * Top app bar with title/status, view toggle, source link, and settings gear.
+ * The three things the app can be doing, and how each is offered.
  *
- * @fires rr-view-toggle - Toggle between editor and live views.
+ * A **segmented control, not a toggle** since #87. Two modes could cycle on one
+ * button, because "the other one" is unambiguous; three cannot — a user who
+ * wants Diagnostics from Live would have to guess whether the button steps
+ * forward or backward, and either way one destination is two clicks away with
+ * no way to tell which. Every mode is one click, and the current one is shown
+ * rather than implied by an icon that means "where you would go next".
+ */
+const VIEW_MODES = [
+  { mode: 'editor', icon: 'image-fill', label: 'Label' },
+  { mode: 'live', icon: 'camera-video-fill', label: 'Live' },
+  { mode: 'diagnostics', icon: 'clipboard-data', label: 'Diagnostics' },
+] as const;
+
+export type ViewMode = (typeof VIEW_MODES)[number]['mode'];
+
+/**
+ * Top app bar with title/status, mode control, source link, and settings gear.
+ *
+ * @fires rr-view-change - A mode was chosen. Detail: { mode: ViewMode }
  */
 @customElement('rr-header')
 export class RRHeader extends LitElement {
-  @property({ type: String }) viewMode: 'editor' | 'live' = 'editor';
+  @property({ type: String }) viewMode: ViewMode = 'editor';
   @property({ type: Object }) layout: any = null;
 
   @query('rr-settings-dialog') settingsDialog!: RRSettingsDialog;
@@ -83,10 +101,30 @@ export class RRHeader extends LitElement {
       color: var(--sl-color-primary-100);
     }
 
+    .modes {
+      display: flex;
+      align-items: center;
+      gap: 0.1rem;
+      padding: 0.1rem;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.18);
+      flex-shrink: 0;
+    }
+
+    /* The current mode is stated, not implied. The old toggle showed the icon
+       of where you would *go*, which reads backwards the moment there are
+       three destinations. */
+    .modes sl-icon-button.active::part(base) {
+      background: rgba(255, 255, 255, 0.22);
+      border-radius: 50%;
+      color: white;
+    }
   `;
 
-  private _onToggleView() {
-    this.dispatchEvent(new CustomEvent('rr-view-toggle', {
+  private _onSelectView(mode: ViewMode) {
+    if (mode === this.viewMode) return;
+    this.dispatchEvent(new CustomEvent('rr-view-change', {
+      detail: { mode },
       bubbles: true,
       composed: true
     }));
@@ -100,12 +138,22 @@ export class RRHeader extends LitElement {
     return html`
       <nav>
         <div class="left-section">
-          <sl-tooltip content="${this.viewMode === 'editor' ? 'Switch to Live View' : 'Switch to Editor View'}">
-            <sl-icon-button 
-              name=${this.viewMode === 'editor' ? 'image-fill' : 'camera-video-fill'} 
-              @click=${this._onToggleView}
-            ></sl-icon-button>
-          </sl-tooltip>
+          <div class="modes" role="tablist" aria-label="View">
+            ${VIEW_MODES.map(
+              ({ mode, icon, label }) => html`
+                <sl-tooltip content=${label}>
+                  <sl-icon-button
+                    name=${icon}
+                    label=${label}
+                    role="tab"
+                    aria-selected=${this.viewMode === mode}
+                    class=${this.viewMode === mode ? 'active' : ''}
+                    @click=${() => this._onSelectView(mode)}
+                  ></sl-icon-button>
+                </sl-tooltip>
+              `
+            )}
+          </div>
           <div class="title-status">
             <slot name="status">Occupancy UI</slot>
           </div>

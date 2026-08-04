@@ -4,9 +4,11 @@ import { R49Archive, MANIFEST_VERSION, type ValidScales } from '@occupancy/r49';
 import { EditHistory, revealTarget, type HistoryEntry } from './history.js';
 import { openArchive, writeArchive, type FileBinding } from './persistence.js';
 import './rr-header.js';
+import type { ViewMode } from './rr-header.js';
 import './rr-editor-view.js';
 import type { NotifyDetail, RREditorView } from './rr-editor-view.js';
 import './rr-live-view.js';
+import './rr-diagnostics-view.js';
 import { setBasePath } from '@shoelace-style/shoelace/dist/utilities/base-path.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -36,7 +38,7 @@ function isTypingTarget(event: KeyboardEvent): boolean {
 @customElement('rr-app')
 export class RRApp extends LitElement {
   @state() private _archive: R49Archive | null = null;
-  @state() private _viewMode: 'editor' | 'live' = 'editor';
+  @state() private _viewMode: ViewMode = 'editor';
   @state() private _status = 'No archive loaded';
 
   /**
@@ -342,8 +344,8 @@ export class RRApp extends LitElement {
     }
   }
 
-  private _onViewToggle() {
-    this._viewMode = this._viewMode === 'editor' ? 'live' : 'editor';
+  private _onViewChange(e: CustomEvent<{ mode: ViewMode }>) {
+    this._viewMode = e.detail.mode;
   }
 
   private async _onLayoutChange(e: CustomEvent) {
@@ -378,7 +380,7 @@ export class RRApp extends LitElement {
       <rr-header
         .viewMode=${this._viewMode}
         .layout=${layout}
-        @rr-view-toggle=${this._onViewToggle}
+        @rr-view-change=${this._onViewChange}
         @rr-layout-change=${this._onLayoutChange}
       >
         <!-- Three things, each qualifying the one before: the layout's name,
@@ -416,7 +418,14 @@ export class RRApp extends LitElement {
                 @rr-undo=${this._undo}
                 @rr-redo=${this._redo}
               ></rr-editor-view>`
-          : html`<rr-live-view .archive=${this._archive}></rr-live-view>`
+          : this._viewMode === 'live'
+            ? html`<rr-live-view .archive=${this._archive}></rr-live-view>`
+            // Each mode is torn down when it leaves: the live view stops the
+            // camera, the diagnostics view abandons an in-flight sweep and
+            // releases its ORT session. Keeping them alive to preserve state
+            // would leave a camera light on, or twenty seconds of WASM running
+            // for a view nobody is looking at.
+            : html`<rr-diagnostics-view .archive=${this._archive}></rr-diagnostics-view>`
         }
       </main>
     `;

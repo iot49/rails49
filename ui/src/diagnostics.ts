@@ -482,3 +482,32 @@ export const KIND_LABEL: Readonly<Record<FindingKind, string>> = {
   missed: 'Missed car',
   phantom: 'Phantom box',
 };
+
+/**
+ * The one place a verdict's colour is named.
+ *
+ * Here rather than in three components' `static styles` because the same four
+ * hues appear as chips, as table cells, as scorecard tiles **and** as ink on
+ * the photograph — and the ink is passed to `rr-viewer` as a value, so it
+ * cannot come from a stylesheet. Split across the elements that draw them, the
+ * chip and the box it filters would drift apart, which is precisely the
+ * legibility failure this scheme exists to fix (#86).
+ */
+export const KIND_COLOR: Readonly<Record<FindingKind, string>> = {
+  agreed: '#4caf50',
+  'pose-off': '#ffb300',
+  missed: '#ef5350',
+  phantom: '#ab47bc',
+};
+
+/**
+ * Ground truth's ink here — deliberately **not** the editor's authored pink.
+ *
+ * `carMarker.ts`'s `--car-ink` (#f472b6) and `missed`'s red are
+ * indistinguishable on a layout photograph, which defeats colouring the verdict
+ * at all (#86). In a comparison surface the human's label is the reference and
+ * every hue on the image should mean *what the model got wrong*, so the label
+ * goes neutral. A miss is the one finding with no box to colour, so its label
+ * carries the red instead.
+ */
+export const LABEL_INK = '#e8eaed';

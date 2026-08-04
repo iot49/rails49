@@ -381,11 +381,24 @@ carries the exact exports and glyphs. Two rules that don't show in the README ta
 `setBasePath('/ui/shoelace')` in `rr-app.ts`, `/ui/ort/`, and `modelAssets.ts`'s
 `DETECTOR_MODEL_URL`. Changing `base` means changing all of them.
 
-### Model loading lives only in the live view, and the model is the detector (#85)
+### Model loading lives in `detectorSession.ts`, and the model is the detector (#85, #87)
 
-`rr-live-view.ts` is the sole place that calls `loadDetector`. It points
+`ui/src/detectorSession.ts` is the sole place that calls `loadDetector`. It points
 `ort.env.wasm.wasmPaths` at `/ui/ort/` — the same path everywhere, deployed or not (#15) — then
-loads `DETECTOR_MODEL_URL`.
+loads `DETECTOR_MODEL_URL`. **Two views open a session through it**: `rr-live-view` per camera
+frame, and `rr-diagnostics-view` over an archive's stills.
+
+It used to live in the live view, which was the only caller. Two callers make the extraction
+load-bearing rather than tidy: `ort.env` is module-global, so a second view setting the path would
+mean **mount order decides whether the runtime resolves** — and the failure is a 404 on a hashed
+filename in whichever view happened to come up second. `tests/ortAssets.test.ts` now asserts the
+assignment exists in exactly one file, and `tests/modelAssets.test.ts` that no `rr-*` view names the
+model at all.
+
+What the module does **not** do is decide what a failed load means. It rejects; the views differ —
+the live view keeps its loop running and reports every sensor `unknown`, because `occupancy()` is
+total and that is a state SPEC names, while the diagnostics view has no partial answer to give and
+says so. Folding that into the loader would take the choice away from both.
 
 **Which model ships is named once, in `ui/modelAssets.ts`.** It used to be two literals in two files
 that run in different worlds — a build-time copy target in `vite.config.ts` and a run-time fetch
@@ -410,7 +423,7 @@ cross-origin-isolates `/ui/`, without which ORT silently runs one WASM thread; `
 rejects any cross-origin subresource, so the jsDelivr branch that used to serve the runtime is gone
 and cannot come back on its own. It existed because the default `onnxruntime-web` entry asks for the
 jsep (WebGPU/WebNN) binary, which is 25.02 MiB — 0.02 over Cloudflare's per-file limit. The app
-requests `executionProviders: ['wasm']` and needs none of jsep, so this file,
+requests `executionProviders: ['wasm']` and needs none of jsep, so `detectorSession.ts`,
 `lib/detector/src/browser.ts` and `lib/classifier/src/browser.ts` all import
 **`onnxruntime-web/wasm`**, whose 12.42 MiB binary fits. Those specifiers must stay identical: two
 specifiers are two module instances, and the
@@ -434,11 +447,51 @@ must keep working with no local model present — that directory is gitignored a
 clone. Without it the live view starts, shows the no-model banner and reports every sensor
 `unknown`.
 
-### What the two views draw, and why the viewer holds both
+### Diagnostics reads the model against the labels (#87)
 
-`rr-viewer` takes the editor's authored objects (`calibrationPoints`, `sensors`, `cars`) and the
-live view's per-frame answers (`detections` for L0, `sensorStates` for L1) — and computes neither.
-Three rules the code depends on:
+`ui/src/diagnostics.ts` is the scoring, and it is pure — same reason `geometry.ts` is: jsdom lays
+nothing out, so anything left in a Lit element is untestable. Rules that are decisions rather than
+implementation:
+
+* **It is not in `@occupancy/detector`.** That package's root is the car-box geometry both sides of
+  the model need. Scoring belongs to whoever is evaluating, and that is one view in one app today —
+  the package's own interface note says to add a `./node` entry point "when something wants to score
+  a corpus offline, not before", and the same restraint applies to the scoring itself.
+* **Matching is confidence-ordered greedy assignment over oriented-box IoU**, not nearest centre.
+  The case that decided it is in the tests: a box lying *across* a car sits at zero centre distance
+  and reads as a perfect match, where overlap correctly calls it a phantom over a missed car.
+* **Matching is width-normalized**, the same substitution `occupancy()` makes and for the same
+  reason: a label's width is *derived* from DPT rather than authored, so scoring the predicted width
+  would charge the model against no ground truth. The raw ratio is reported, never matched on.
+* **`AGREE_IOU` is 0.7, deliberately not mAP50's 0.5.** At 0.5 a box half the car's length scores as
+  agreement — two equal-width rectangles sharing half their length have exactly IoU 0.5 — and nobody
+  looking at that picture would say the model agreed. It is a legibility threshold; no published
+  figure depends on it, and it is **not** the automated model gate SPEC says not to invent.
+* **The vocabulary is "agreed", never "correct" or "accurate".** This measures one model against one
+  archive's labels. `SPEC.md` § Accuracy makes a generalization estimate a property of a held-out
+  protocol over a corpus that does not exist yet.
+* **`KIND_COLOR` and `LABEL_INK` live here**, not in three components' `static styles`: the same
+  four hues are chips, table cells, scorecard tiles **and** ink passed to `rr-viewer` as a value, so
+  they cannot come from a stylesheet. Ground truth draws **neutral white** rather than the editor's
+  pink, because pink and the missed-car red are indistinguishable on a layout photograph (#86) —
+  every hue on the image belongs to a verdict, and a miss (which has no box) colours its label.
+
+### What the three views draw, and why the viewer holds all of them
+
+`rr-viewer` takes the editor's authored objects (`calibrationPoints`, `sensors`, `cars`), the
+live view's per-frame answers (`detections` for L0, `sensorStates` for L1), and the diagnostics
+view's per-object inks (`carInks`, `detectionInks`) — and computes none of it.
+Rules the code depends on:
+
+* **The inks are parallel arrays, and a short one reads as "no override".** So the live view passes
+  nothing and gets today's appearance exactly. A `Detection` is the model's output and a colour is
+  the caller's opinion of it; putting the opinion inside the data would make the viewer's input
+  something no detector produces.
+* **A detection's ink moves `--car-ink` and `--detection-fill` together** (`carMarker.ts` §
+  `detectionInk`). One without the other is a coloured wash inside a pink outline. **`renderCar`
+  refuses an ink when the class is non-conforming**: that warning is a fact about the archive, and
+  letting a verdict about some model overwrite it would cost the labeler the one signal telling them
+  to fix it.
 
 * **`sensorStates: null` is not an empty map.** `null` is the editor, where a sensor is being placed
   rather than answered, and the diamond keeps its authored amber. An empty map would be a live view
