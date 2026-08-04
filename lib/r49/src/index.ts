@@ -50,6 +50,13 @@ export {
   type ValidScales,
 } from './manifest.schema.ts';
 
+//── Class vocabulary ─────────────────────────────────────────────────────────
+// How the authored taxonomy in `config.yaml` is read. Here rather than in a
+// consumer because two of them must agree: the editor warns on a
+// non-conforming class, and the corpus validator blocks on it. Not parse-time
+// validation — `class` stays a plain string at the format layer.
+export { isKnownClass, vocabularySubtypes, type VocabularyNode } from './vocabulary.ts';
+
 // Withheld: the zod schemas (ManifestDataSchema, PointSchema, LayoutSchema,
 // …). Exporting them would make zod part of this package's contract, so it
 // could not be replaced without a breaking change. Validation is an

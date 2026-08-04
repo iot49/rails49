@@ -1,4 +1,17 @@
 import { DETECTOR_VOCABULARY } from '@occupancy/config';
+import { vocabularySubtypes, type VocabularyNode } from '@occupancy/r49';
+
+/**
+ * Whether a stored class names an entry of the taxonomy.
+ *
+ * Re-exported from `@occupancy/r49` rather than implemented here: the corpus
+ * validator **blocks** a submission on the same predicate the editor merely
+ * warns on, and two implementations of segment matching would matter most in
+ * exactly the case where they disagreed — a contributor rejected for a class
+ * this editor drew as fine. This module stays the only place `ui/` learns what
+ * a car may be called.
+ */
+export { isKnownClass } from '@occupancy/r49';
 
 /**
  * The authored class taxonomy, read as a tree — the one place `ui/` learns what
@@ -26,14 +39,7 @@ import { DETECTOR_VOCABULARY } from '@occupancy/config';
  *   menu renders the root's children.
  */
 
-/**
- * One mapping in the taxonomy: subtypes by name, mixed with the node's own
- * properties.
- *
- * `unknown` rather than a union, because the two are told apart by shape and a
- * property may be any scalar the YAML allows.
- */
-export type VocabularyNode = { readonly [key: string]: unknown };
+export type { VocabularyNode };
 
 /** One class the menu can offer, and the subtypes nested under it. */
 export interface ClassChoice {
@@ -48,13 +54,13 @@ export interface ClassChoice {
 /** The authored taxonomy. A separate name so the default is legible. */
 const AUTHORED: VocabularyNode = DETECTOR_VOCABULARY;
 
-/** The subtypes of a node, in authored order — the object-valued keys. */
-function subtypes(node: VocabularyNode): readonly (readonly [string, VocabularyNode])[] {
-  return Object.entries(node).filter(
-    (entry): entry is [string, VocabularyNode] =>
-      typeof entry[1] === 'object' && entry[1] !== null && !Array.isArray(entry[1])
-  );
-}
+/**
+ * The subtypes of a node, in authored order. Shared with the validator through
+ * `@occupancy/r49` for the same reason `isKnownClass` is: "a nested object is a
+ * subtype, anything else is a property" is a rule about the authored taxonomy,
+ * not about the menu.
+ */
+const subtypes = vocabularySubtypes;
 
 /**
  * The taxonomy's single root — the class every new car is created as.
@@ -102,27 +108,3 @@ export function classChoices(vocabulary: VocabularyNode = AUTHORED): readonly Cl
   return choicesUnder(vocabulary[root] as VocabularyNode, root);
 }
 
-/**
- * Whether a stored class names an entry of the taxonomy.
- *
- * `class` is a plain string at the format layer and is deliberately **not**
- * validated when an archive is parsed (`SPEC.md` § Format): a format that
- * refused to open files because someone pruned `config.yaml` would punish
- * config edits. So conformance is a visible warning here in the editor, and a
- * fatal error in the training exporter later, where a mis-mapped class is what
- * silently corrupts a model.
- *
- * Matching is **segment by segment**, the same rule the exporter maps with:
- * `stockyard` is not `stock` with a suffix, and a property name is not a class.
- */
-export function isKnownClass(cls: string, vocabulary: VocabularyNode = AUTHORED): boolean {
-  if (cls === '') return false;
-
-  let node: VocabularyNode = vocabulary;
-  for (const segment of cls.split('.')) {
-    const child = subtypes(node).find(([name]) => name === segment)?.[1];
-    if (!child) return false;
-    node = child;
-  }
-  return true;
-}

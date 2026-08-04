@@ -110,6 +110,24 @@ export class R49Archive {
   }
 
   /**
+   * Every file entry in the archive, `manifest.json` included, in no
+   * particular order. Directory entries are omitted.
+   *
+   * The manifest names the images it expects; this is the other direction —
+   * what the zip actually carries. A validator needs both to tell a manifest
+   * naming an absent image from an image nobody references, and neither is
+   * answerable through {@link getImage}, which reports only presence of a name
+   * it is handed.
+   */
+  listEntries(): string[] {
+    const names: string[] = [];
+    this.zip.forEach((path, file) => {
+      if (!file.dir) names.push(path);
+    });
+    return names;
+  }
+
+  /**
    * Adds an image to the archive and, if a manifest is loaded, appends a
    * matching entry with no labels and `labeled_complete: false` — nothing may
    * assert completeness on a human's behalf. Adding an existing filename
