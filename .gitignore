@@ -55,6 +55,10 @@ dataset/r49/
 .pnpm-store/
 
 # Local dev scaffolding: a symlink to a corpus checkout for driving the
-# diagnostics view without the file picker. Machine-specific, and `ui/public`
-# is copied verbatim into the deployed bundle — see PR #106 review.
-ui/public/proto-fixtures
+# diagnostics view without the file picker. Machine-specific.
+#
+# It must stay **out of `ui/public`**, which vite copies verbatim into `dist/`
+# and `bin/deploy.sh` rsyncs to production — dereferencing the symlink on the
+# way (#122). Ignoring it is not what keeps it out of the bundle; its location
+# is. `ui/tests/publicDir.test.ts` is what holds that.
+ui/proto-fixtures
