@@ -40,30 +40,14 @@ echo "📁 Syncing UI assets to '$DEPLOY_DIR/ui'..."
 mkdir -p "$DEPLOY_DIR/ui"
 rsync -a --delete ui/dist/ "$DEPLOY_DIR/ui/"
 
-# 3. The ONNX Runtime WASM binary must ship from origin: `_headers` sets
-#    Cross-Origin-Embedder-Policy: require-corp on /ui/ so the app is
-#    crossOriginIsolated and ORT can use more than one thread (#15), and a
-#    cross-origin CDN would fail that check. Only the plain build is copied
-#    (see ui/ortAssets.ts) — the jsep one is over Cloudflare's limit.
-ORT_WASM="ort-wasm-simd-threaded.wasm"
-if [ ! -f "$DEPLOY_DIR/ui/ort/$ORT_WASM" ]; then
-  echo "❌ Error: $ORT_WASM is missing from the bundle; the app would not run."
-  exit 1
-fi
-
-# Fail loudly rather than deploying a bundle Cloudflare will reject.
-OVERSIZED=$(find "$DEPLOY_DIR" -type f -size +25M)
-if [ -n "$OVERSIZED" ]; then
-  echo "❌ Error: these files exceed Cloudflare's 25 MiB limit:"
-  echo "$OVERSIZED"
-  exit 1
-fi
-
-# Check if deploy directory exists
-if [ ! -d "$DEPLOY_DIR" ]; then
-  echo "❌ Error: Deployment directory '$DEPLOY_DIR' not found."
-  exit 1
-fi
+# 3. Refuse to publish anything unaccounted for. Every check lives in the guard
+#    script — an inventory of what may ship, no symlinks, a total-size budget,
+#    plus the ORT-binary and per-file checks that used to sit here. It is a
+#    separate script so it can be run against a directory built to fail it;
+#    `ui/tests/deployGuard.test.ts` does that. `set -e` aborts on its exit code,
+#    which is what keeps a refused deploy from uploading anything.
+echo "🔍 Checking '$DEPLOY_DIR' before uploading..."
+bin/check-deploy-dir.sh "$DEPLOY_DIR"
 
 # 4. Attempt to create the project in case it doesn't exist yet
 echo "🌐 Ensuring Cloudflare Pages project '$PROJECT_NAME' exists..."

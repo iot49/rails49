@@ -119,8 +119,12 @@ describe('ORT wasm assets', () => {
     expect(assigners).toEqual([]);
   });
 
-  it('is named identically by the deploy script, which cannot import it', () => {
-    expect(read('bin/deploy.sh')).toContain(ORT_WASM_BINARY);
+  it('is named identically by the deploy guard, which cannot import it', () => {
+    // In `bin/check-deploy-dir.sh` since #122, where the presence check moved
+    // when the deploy directory's guards were gathered into one runnable
+    // script. Still a repeated literal, still for the same reason: a shell
+    // script cannot import TypeScript.
+    expect(read('bin/check-deploy-dir.sh')).toContain(ORT_WASM_BINARY);
   });
 
   it('refuses to load a model before something says where the runtime is', async () => {
