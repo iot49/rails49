@@ -108,6 +108,15 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@24.13.3)(jsdom@26.1.0)
 
+  lib/drift:
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@24.13.3)(jsdom@26.1.0)
+
   lib/r49:
     dependencies:
       '@occupancy/config':
@@ -141,6 +150,9 @@ importers:
 
   tools/drift-bench:
     dependencies:
+      '@occupancy/drift':
+        specifier: workspace:*
+        version: link:../../lib/drift
       '@occupancy/r49':
         specifier: workspace:*
         version: link:../../lib/r49
@@ -197,6 +209,9 @@ importers:
       '@occupancy/detector':
         specifier: workspace:*
         version: link:../lib/detector
+      '@occupancy/drift':
+        specifier: workspace:*
+        version: link:../lib/drift
       '@occupancy/r49':
         specifier: workspace:*
         version: link:../lib/r49

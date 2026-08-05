@@ -62,6 +62,34 @@ layout:
   # persistently, never blocks — the fixture corpus lives at DPT 18-19. Under
   # `layout` and not `classifier` because it gates the editor.
   min_dpt: 20
+  # Largest apparent camera displacement, in `camera.resolution` pixels, still
+  # treated as the canonical pose. Above it the frame has drifted: the live view
+  # refuses to classify (with an override) and the editor warns without
+  # blocking. One authored number, two responses — @occupancy/drift measures and
+  # decides nothing, so this is where the policy lives (issues #93, #97).
+  #
+  # Chosen from the benchmark, not from taste. `tools/drift-bench` scores all 230
+  # legitimate cases at **exactly 0** — the correlation peak is taken at integer
+  # lag, so an unmoved frame reads a hard zero rather than a noise floor — and
+  # the gentlest drift grade at 1.0 px of the 960-wide working resolution, ≈2 px
+  # in a 1920-wide reference frame (#92). Anything strictly inside that gap is
+  # the same operating point.
+  #
+  # 0.5 rather than the gap's midpoint because the check's quantum is one
+  # *working* pixel, which is `camera.resolution.width / 960` reference pixels —
+  # 2.0 for a 1920-wide archive, but 1.0 for a 960-wide one and below that for
+  # anything narrower, since the working resolution is clamped and never
+  # upsamples. A threshold of 1.0 would swallow the smallest measurable drift on
+  # any archive at or below 960 px wide. 0.5 is under the quantum at every
+  # resolution the check accepts, which is what makes it a property of the
+  # method rather than of one corpus.
+  #
+  # Expect to raise it once real drifted frames exist. Validation is entirely
+  # synthetic today — the fixtures were all shot on a tripod — and a live camera
+  # brings rolling shutter, autofocus breathing and video compression that no
+  # warped still reproduces. That is also why the live view's refusal carries an
+  # override (#94).
+  max_drift_px: 0.5
 
 # ====================================================================================
 # Detector parameters (YOLO26n-OBB)

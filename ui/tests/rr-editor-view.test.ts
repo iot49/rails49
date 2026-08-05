@@ -15,6 +15,30 @@ import type { NotifyDetail } from '../src/rr-editor-view.js';
 import type { SlCheckbox } from '@shoelace-style/shoelace';
 import type { Rect } from '../src/geometry.js';
 
+// The camera and the drift check are both mocked: one needs `getUserMedia` and
+// the other decodes blobs through `createImageBitmap` and reads pixels back out
+// of a canvas, and jsdom has none of the three. What the tests below prove is
+// that a drift verdict reaches the screen and blocks nothing — the measurement
+// is `lib/drift`'s to prove and `tools/drift-bench` scores it.
+const captureFromCamera = vi.fn(async () => new Uint8Array([1, 2, 3]));
+const check = vi.fn(async () => ({ displacementPx: 0, refIndex: 0 }));
+const openDriftCheck = vi.fn(async (..._args: unknown[]) => ({
+  check: { check },
+  refNames: ['img1.jpg'],
+}));
+
+vi.mock('../src/capture.js', () => ({
+  DEFAULT_CAMERA_CONSTRAINTS: { video: true, audio: false },
+  getCameraStream: async () => ({ getTracks: () => [] }),
+  captureFromCamera: () => captureFromCamera(),
+}));
+
+vi.mock('../src/driftSession.js', () => ({
+  openDriftCheck: (...args: unknown[]) => (openDriftCheck as any)(...args),
+  planeFromBytes: async () => ({ width: 4, height: 4, data: new Float32Array(16) }),
+  grabPlane: () => ({ width: 4, height: 4, data: new Float32Array(16) }),
+}));
+
 // Mock ResizeObserver for RRViewer
 global.ResizeObserver = vi.fn().mockImplementation(() => ({
   observe: vi.fn(),
@@ -198,6 +222,174 @@ describe('rr-editor-view', () => {
 
       expect(el.shadowRoot!.querySelector('rr-viewer')).to.exist;
       expect(el.shadowRoot!.querySelector('rr-tool-palette')).to.exist;
+    });
+  });
+
+  describe('the camera-drift warning (#95)', () => {
+    beforeEach(() => {
+      captureFromCamera.mockClear();
+      check.mockClear();
+      openDriftCheck.mockClear();
+      check.mockImplementation(async () => ({ displacementPx: 0, refIndex: 0 }));
+      openDriftCheck.mockImplementation(async () => ({ check: { check }, refNames: ['img1.jpg'] }));
+    });
+
+    /** What `rr-thumbnail-bar` emits when the user adds an image. */
+    function addImage(el: RREditorView, source: 'camera' | 'file') {
+      el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
+        new CustomEvent('rr-image-add', { detail: { source }, bubbles: true, composed: true })
+      );
+    }
+
+    /** The check is deliberately not awaited by the add, so wait for its effect. */
+    async function waitFor(el: RREditorView, done: () => boolean) {
+      for (let i = 0; i < 100 && !done(); i++) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+        await el.updateComplete;
+      }
+      await el.updateComplete;
+    }
+
+    it('warns about a captured image that disagrees with the archive', async () => {
+      check.mockImplementation(async () => ({ displacementPx: 7.4, refIndex: 0 }));
+
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => el.shadowRoot!.querySelector('.drift-warning:not(.checking)') !== null);
+
+      const bar = el.shadowRoot!.querySelector('.drift-warning')!;
+      expect(bar.textContent).to.contain('7.4 px');
+      // The image it matched, not just a verdict: a knocked tripod and a camera
+      // aimed at a different corner of the layout read the same without it.
+      expect(bar.textContent).to.contain('img1.jpg');
+      expect(bar.textContent).to.contain('not blocked');
+    });
+
+    it('blocks nothing — the image is added, selected and labelable', async () => {
+      check.mockImplementation(async () => ({ displacementPx: 12, refIndex: 0 }));
+
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => el.shadowRoot!.querySelector('.drift-warning:not(.checking)') !== null);
+
+      // The MIN_DPT precedent: a human is present and can judge, and blocking
+      // authoring on a heuristic would be worse than the disease.
+      expect(archive.getManifest().images).to.have.lengthOf(2);
+      expect(el.shadowRoot!.querySelector('rr-viewer')).to.exist;
+      expect(el.shadowRoot!.querySelector('rr-tool-palette')).to.exist;
+    });
+
+    it('keeps the warning when the user looks at another image and comes back', async () => {
+      // Persistent, not a toast: it is a property of the image, and it matters
+      // at labeling time rather than at capture time.
+      check.mockImplementation(async () => ({ displacementPx: 5, refIndex: 0 }));
+
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => el.shadowRoot!.querySelector('.drift-warning:not(.checking)') !== null);
+
+      const select = (index: number) =>
+        el.shadowRoot!.querySelector('rr-thumbnail-bar')!.dispatchEvent(
+          new CustomEvent('rr-image-select', { detail: { index }, bubbles: true, composed: true })
+        );
+
+      select(0);
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.drift-warning')).to.not.exist;
+
+      select(1);
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.drift-warning')).to.exist;
+    });
+
+    it('says nothing when the camera has not moved', async () => {
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => check.mock.calls.length > 0);
+
+      expect(el.shadowRoot!.querySelector('.drift-warning')).to.not.exist;
+    });
+
+    it('says nothing for a first image, which has nothing to have drifted from', async () => {
+      openDriftCheck.mockImplementation(async () => null as any);
+
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => openDriftCheck.mock.calls.length > 0);
+
+      expect(el.shadowRoot!.querySelector('.drift-warning')).to.not.exist;
+      expect(check).not.toHaveBeenCalled();
+    });
+
+    it('excludes the new image from its own reference set', async () => {
+      // In the manifest by the time the check runs, and an image compared with
+      // itself reports zero drift forever.
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => openDriftCheck.mock.calls.length > 0);
+
+      const added = archive.getManifest().images[1].filename;
+      expect(openDriftCheck.mock.calls[0][1]).to.deep.equal({ exclude: added });
+    });
+
+    it('checks an image picked off the filesystem too', async () => {
+      // #95 names the capture path, and a fresh capture is what it was written
+      // about — but a file picked from disk is as likely to come from a session
+      // where the tripod had moved, and two paths would mean one of them
+      // silently trusting what the other checked.
+      check.mockImplementation(async () => ({ displacementPx: 3.5, refIndex: 0 }));
+
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+
+      // The file path goes through a synthetic <input type="file">, so the only
+      // seam is createElement. Restored immediately: Lit builds elements too.
+      const create = document.createElement.bind(document);
+      const spy = vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+        const node = create(tag as 'input');
+        if (tag === 'input') {
+          node.click = () =>
+            (node as any).onchange({
+              target: { files: [{ arrayBuffer: async () => new Uint8Array([9, 9]).buffer }] },
+            });
+        }
+        return node;
+      }) as typeof document.createElement);
+      addImage(el, 'file');
+      spy.mockRestore();
+
+      await waitFor(el, () => el.shadowRoot!.querySelector('.drift-warning:not(.checking)') !== null);
+      expect(el.shadowRoot!.querySelector('.drift-warning')!.textContent).to.contain('3.5 px');
+    });
+
+    it('reports nothing on screen when the check itself fails', async () => {
+      // The image is added and labelable. An error bar for a warning the user
+      // did not ask for would be noise about noise; the console gets it.
+      openDriftCheck.mockImplementation(async () => {
+        throw new Error('decode failed');
+      });
+
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => openDriftCheck.mock.calls.length > 0);
+
+      expect(el.shadowRoot!.querySelector('.drift-warning')).to.not.exist;
+      expect(archive.getManifest().images).to.have.lengthOf(2);
     });
   });
 

@@ -8,6 +8,8 @@ published. `ui/` and `dataset/` are the only consumers.
 * `classifier` : ONNX Runtime image classifier (browser and node targets)
 * `detector` : car boxes — the YOLO OBB session (browser), the L0 decode, the
   L1 occupancy geometry, and the span→box construction the exporter uses
+* `drift` : camera-drift detection — block-wise phase correlation over an
+  archive's own images, measuring only, deciding nothing
 * `config` : **generated** from `config.yaml` — layout and detector constants
 
 ## `config` is generated, and committed
@@ -70,6 +72,20 @@ Three rules:
   type; `./browser` and `./node` carry the classifiers. The split is what keeps
   `onnxruntime-node` and `sharp` out of the browser bundle, so it is load-
   bearing, not stylistic.
+
+* **`drift` has one, and that is the decision.** `classifier` and `detector`
+  split entry points to keep a platform's runtime out of the other platform's
+  bundle. `drift` has no runtime to keep out of anything: the FFT is hand-rolled
+  (~60 lines, against opencv.js at ~10.5 MiB) and every input is a `GrayPlane`,
+  which is why `ImageData` is **not** the parameter type — it does not exist in
+  Node, and `tools/drift-bench` is a first-class consumer that must score the
+  code that ships rather than a copy of it. The canvas work lives in
+  `ui/src/driftSession.ts`, which is the `detectorSession.ts` of that path.
+
+  It also exports **no verdict**. `layout.max_drift_px` is `@occupancy/config`'s,
+  because the live view refuses on it and the editor only warns — one authored
+  number, two responses, and a module that decided would force both surfaces to
+  agree about policy as well as about measurement.
 
 * **`detector` has two, and the second one is the same idea.** `.` is pure —
   types and geometry, importable from node, which is how `dataset` gets

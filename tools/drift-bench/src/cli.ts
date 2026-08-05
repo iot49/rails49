@@ -6,6 +6,7 @@ import { loadArchives } from './load.ts';
 import { buildCases } from './cases.ts';
 import { runBenchmark, formatReport } from './harness.ts';
 import { BASELINE_SCORERS } from './baseline.ts';
+import { phasecorrScorer } from './phasecorr.ts';
 
 /**
  * Synthetic camera-drift benchmark over the iot49/r49 fixture archives.
@@ -17,6 +18,17 @@ import { BASELINE_SCORERS } from './baseline.ts';
  * anywhere else that holds .r49 archives.
  */
 
+/**
+ * Every scorer, with the shipped one first and as the default.
+ *
+ * The default is `phasecorr` — `@occupancy/drift` itself — because a bare run
+ * of this benchmark should answer "does the check that ships still separate the
+ * corpus?". The naive pixel baselines stay reachable by name: they are what
+ * put a number on why structural comparison was needed (#91), and a table
+ * without them loses the comparison that justifies the whole approach.
+ */
+const SCORERS = { [phasecorrScorer.name]: phasecorrScorer, ...BASELINE_SCORERS };
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 const { values } = parseArgs({
@@ -24,15 +36,15 @@ const { values } = parseArgs({
   args: process.argv.slice(2).filter((a) => a !== '--'),
   options: {
     fixtures: { type: 'string', default: join(repoRoot, '..', 'r49', 'fixtures') },
-    scorer: { type: 'string', default: 'mad' },
+    scorer: { type: 'string', default: phasecorrScorer.name },
     archive: { type: 'string' },
     json: { type: 'string' },
   },
 });
 
-const scorer = BASELINE_SCORERS[values.scorer!];
+const scorer = SCORERS[values.scorer!];
 if (!scorer) {
-  console.error(`unknown scorer "${values.scorer}" — built in: ${Object.keys(BASELINE_SCORERS).join(', ')}`);
+  console.error(`unknown scorer "${values.scorer}" — built in: ${Object.keys(SCORERS).join(', ')}`);
   process.exit(1);
 }
 

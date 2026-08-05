@@ -237,6 +237,7 @@ describe('renderSensor() — L1 state (#85)', () => {
       'no-model': /no model/i,
       'no-calibration': /calibration/i,
       'outside-frame': /frame/i,
+      drift: /drift/i,
     };
     for (const [reason, pattern] of Object.entries(reasons) as [UnknownReason, RegExp][]) {
       const el = renderSvg(renderSensor(sensor(), size(40), frame, false, { state: 'unknown', reason }));

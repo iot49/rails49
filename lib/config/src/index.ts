@@ -19,6 +19,7 @@ export {
   STANDARD_GAUGE,
   STANDARD_WIDTH,
   MIN_DPT,
+  MAX_DRIFT_PX,
   SCALE_TO_RATIO,
   SCALES,
   type Scale,

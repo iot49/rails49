@@ -85,6 +85,7 @@ def render_generated_ts(config: dict) -> str:
     standard_width = require(config, "layout", "standard_width")
     scale_to_ratio = require(config, "layout", "scale_to_ratio")
     min_dpt = require(config, "layout", "min_dpt")
+    max_drift_px = require(config, "layout", "max_drift_px")
 
     detector_input = require(config, "detector", "input")
     confidence_threshold = require(config, "detector", "confidence_threshold")
@@ -140,6 +141,20 @@ def render_generated_ts(config: dict) -> str:
             "corpus sits below it at DPT 18-19.",
         ),
         f"export const MIN_DPT = {ts_literal(min_dpt)};",
+        "",
+        doc(
+            "Largest apparent camera displacement still taken as the canonical",
+            "pose, in `camera.resolution` pixels.",
+            "",
+            "The verdict `@occupancy/drift` deliberately does not make. Above this,",
+            "the live view refuses to classify — with an override — and the editor",
+            "warns without blocking: one authored number, two responses, which is",
+            "why it is config and not a constant inside the module.",
+            "",
+            "Set under the check's own quantum rather than at the middle of the",
+            "benchmark's gap; see config.yaml for the derivation.",
+        ),
+        f"export const MAX_DRIFT_PX = {ts_literal(max_drift_px)};",
         "",
         doc("Every scale name config.yaml defines a ratio for."),
         f"export type Scale = {scale_union};",
@@ -234,6 +249,7 @@ def render_index_ts() -> str:
             "  STANDARD_GAUGE,",
             "  STANDARD_WIDTH,",
             "  MIN_DPT,",
+            "  MAX_DRIFT_PX,",
             "  SCALE_TO_RATIO,",
             "  SCALES,",
             "  type Scale,",

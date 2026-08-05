@@ -447,6 +447,61 @@ must keep working with no local model present — that directory is gitignored a
 clone. Without it the live view starts, shows the no-model banner and reports every sensor
 `unknown`.
 
+### Camera drift lives in `driftSession.ts`, and the two views answer it differently (#89)
+
+`ui/src/driftSession.ts` is the drift path's `detectorSession.ts`: the sole place that holds a
+canvas for it. `@occupancy/drift` takes a `GrayPlane` and not an `ImageData` on purpose — the
+benchmark is a Node program and a first-class consumer, so making the browser's type the boundary
+would lock out the thing that proves the check works — which leaves somebody to do the decoding, and
+this is that somebody. It exports `openDriftCheck(archive, { exclude? })`, `grabPlane(source, w, h)`
+and `planeFromBytes(bytes)`.
+
+**References are decoded at their native resolution, and that is load-bearing.** `displacementPx` is
+reported in the frame of the *first* reference, so handing the check pre-shrunk images silently
+rescales every number — while `layout.max_drift_px` is authored in `camera.resolution` pixels. The
+check clamps to its own working resolution internally; letting it do that is what keeps the constant
+meaning one thing.
+
+**`DriftSession` carries `refNames` because `refIndex` is not a manifest index.** An image whose
+bytes are missing from the zip is skipped, so every index past it would be off by one — and a warning
+that names the wrong image is worse than one that names none.
+
+**The live view refuses L1 and keeps L0** (#94). Past `layout.max_drift_px` every sensor reads
+`unknown` / `drift` — `occupancy()` takes a `drifted` flag and builds those states, so no view
+assembles an unknown-map of its own — while the detector goes on running and the dashed boxes go on
+being drawn. The boxes are computed *in the live frame* and are true of it; what a moved camera
+invalidates is their mapping onto sensors authored in the archive's frame. Sensor diamonds visibly
+off the track beside correct boxes is the clearest available statement of why the view is refusing.
+Occupancy is machine-consumable, so withholding it is the honest response where a banner alone is
+not — the banner is for the human, and it carries the number, the image matched, and a
+**"classify anyway" override**. The override is not sticky across a remount: a new session should
+start by telling the truth again.
+
+Drift is sampled on an interval (`DRIFT_SAMPLE_INTERVAL_MS`, 3 s), never per frame — a check measures
+**~0.58 s** against a six-image 1920x1080 archive on the 2017 i7 in Chrome (~3.4 s to build the
+reference spectra once, dominated by resampling rather than by FFTs), and it measures something that
+changes on the timescale of somebody knocking a tripod. The sample is **not awaited by the loop**: the
+check yields to the host between references, which is what its async signature was reserved for, so
+the loop keeps drawing and keeps reporting the *previous* verdict while the next is computed.
+Sampling continues while refusing — putting the camera back is the fix, and a gate that stopped
+measuring the moment it fired could not see it happen.
+
+> ⚠️ **The yield primitive is `MessageChannel`, and it was measured, not assumed.** `lib/drift` first
+> yielded with `setTimeout(0)`; browsers clamp a timer nested more than five deep in a
+> non-foreground page to roughly a second, and these yields are nested by construction, so the same
+> 0.53 s of arithmetic took **6 s** wall-clock in a backgrounded tab — the exact case a phone puts the
+> live view in. `MessageChannel` is not subject to timer throttling. Do not "simplify" it back.
+
+**The editor warns and blocks nothing** (#95) — the `MIN_DPT` precedent exactly. An image added by
+camera *or* by file picker is compared against the rest of the archive, excluding itself, and a
+disagreement earns a persistent `.drift-warning` bar sharing the row and the amber of the DPT and
+frame-mismatch bars. It is keyed by filename in memory and never stored: a drift verdict is derived,
+v4 stores no derived state (#6), and the archive's images already *are* the pose record. A first
+image finds no references and earns no warning — "nothing to have drifted from" is not "checked and
+found steady", and neither claim is made on screen. The check runs unawaited, with a neutral
+"checking…" row while it does, because silence where a warning would appear reads as "no problem
+found" long before one has been ruled out.
+
 ### Diagnostics reads the model against the labels (#87)
 
 `ui/src/diagnostics.ts` is the scoring, and it is pure — same reason `geometry.ts` is: jsdom lays

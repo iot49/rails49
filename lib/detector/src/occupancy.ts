@@ -1,6 +1,6 @@
 import type { Sensor } from '@occupancy/r49';
 import { carWidthPx, covers } from './geometry.ts';
-import type { Detection, Frame, SensorState } from './types.ts';
+import type { Detection, Frame, SensorState, UnknownReason } from './types.ts';
 
 /**
  * L1: per-sensor occupancy, as a pure function of L0.
@@ -30,20 +30,39 @@ import type { Detection, Frame, SensorState } from './types.ts';
  *                         layout is uncalibrated.
  * @param input.frame      The frame sensors and detections are expressed in —
  *                         `camera.resolution`, normally.
+ * @param input.drifted    Whether the camera has moved away from the pose the
+ *                         archive was authored against (`@occupancy/drift`
+ *                         against `layout.max_drift_px`). Optional, defaulting
+ *                         to `false`, because a caller with no drift check
+ *                         running is not asserting that the camera is steady —
+ *                         it is saying it does not know, and that was every
+ *                         caller before #94.
  */
 export function occupancy(input: {
   detections: readonly Detection[] | null;
   sensors: readonly Sensor[];
   dpt: number | null;
   frame: Frame;
+  drifted?: boolean;
 }): ReadonlyMap<string, SensorState> {
-  const { detections, sensors, dpt, frame } = input;
+  const { detections, sensors, dpt, frame, drifted = false } = input;
   const states = new Map<string, SensorState>();
 
-  // Precedence: the two whole-system conditions first, then the per-sensor one.
+  // Precedence: the whole-system conditions first, then the per-sensor one.
   // A sensor outside the frame of a layout with no model loaded is unanswerable
   // for both reasons; reporting the system-wide cause is the one that tells a
   // human what to fix.
+  //
+  // Drift comes first of all, and that ordering is the refusal. The other three
+  // reasons say a measurement could not be made; this one says a measurement
+  // could, and must not be trusted — so it outranks them rather than waiting
+  // behind a missing model for its turn. It is also the only one that survives
+  // being fixed elsewhere: build the model, calibrate the layout, and a drifted
+  // camera is still drifted.
+  if (drifted) {
+    for (const sensor of sensors) states.set(sensor.id, unknown('drift'));
+    return states;
+  }
   if (detections === null) {
     for (const sensor of sensors) states.set(sensor.id, unknown('no-model'));
     return states;
@@ -77,6 +96,6 @@ export function occupancy(input: {
   return states;
 }
 
-function unknown(reason: 'no-model' | 'no-calibration' | 'outside-frame'): SensorState {
+function unknown(reason: UnknownReason): SensorState {
   return { state: 'unknown', reason };
 }
