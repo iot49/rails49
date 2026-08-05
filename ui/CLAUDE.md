@@ -453,8 +453,20 @@ clone. Without it the live view starts, shows the no-model banner and reports ev
 canvas for it. `@occupancy/drift` takes a `GrayPlane` and not an `ImageData` on purpose — the
 benchmark is a Node program and a first-class consumer, so making the browser's type the boundary
 would lock out the thing that proves the check works — which leaves somebody to do the decoding, and
-this is that somebody. It exports `openDriftCheck(archive, { exclude? })`, `grabPlane(source, w, h)`
-and `planeFromBytes(bytes)`.
+this is that somebody. It exports `openDriftCheck(archive)`, `grabPlane(source, w, h)` and
+`planeFromBytes(bytes)`.
+
+**One image defines the pose: `images[0]`, the first thumbnail in the strip** (#118). What shipped
+first made every image a reference and scored the minimum over them, which had a hole — an image
+captured from a moved camera and kept anyway (the editor warns, it never blocks) joined the reference
+set, so the drifted pose then scored ~0 and the refusal never fired again. One accepted warning
+permanently widened the accepted pose.
+
+Position 0 closes it, and **the reorder control is what keeps the choice legible rather than hidden**:
+dragging a thumbnail to the front re-points the comparison, and because the editor shows *every*
+image's drift against the reference, every number on screen moves when you do. A rule keyed on
+something invisible — the oldest filename, say — would be safer against accident and much harder to
+understand or correct. That trade was made deliberately; see #118's resolution.
 
 **References are decoded at their native resolution, and that is load-bearing.** `displacementPx` is
 reported in the frame of the *first* reference, so handing the check pre-shrunk images silently
@@ -477,9 +489,8 @@ a second wrong answer in a quieter voice.
 > nothing about when occupancy actually breaks. The check resolves far less than the tolerance
 > accepts, and should.
 
-**`DriftSession` carries `refNames` because `refIndex` is not a manifest index.** An image whose
-bytes are missing from the zip is skipped, so every index past it would be off by one — and a warning
-that names the wrong image is worse than one that names none.
+**`DriftSession` carries one `refName`.** With a single reference, `DriftResult.refIndex` is always 0
+and callers ignore it; what they want to name is the image the measurement was taken against.
 
 **The live view refuses L1 and keeps L0** (#94). Past `maxDriftPx(dpt)` every sensor reads
 `unknown` / `drift` — `occupancy()` takes a `drifted` flag and builds those states, so no view
@@ -501,9 +512,10 @@ renders `—` rather than `0.0` before the first sample — this is the one read
 claim rather than an initial value. No row at all when no tolerance resolves.
 
 Drift is sampled on an interval (`DRIFT_SAMPLE_INTERVAL_MS`, 3 s), never per frame — a check measures
-**~0.58 s** against a six-image 1920x1080 archive on the 2017 i7 in Chrome (~3.4 s to build the
-reference spectra once, dominated by resampling rather than by FFTs), and it measures something that
-changes on the timescale of somebody knocking a tripod. The sample is **not awaited by the loop**: the
+**~0.27 s** against the single 1920x1080 reference on the 2017 i7 in Chrome (~0.13 s to build its
+spectra once, dominated by resampling rather than by FFTs), and it measures something that changes on
+the timescale of somebody knocking a tripod. Both figures were ~7x and ~3x worse when every archive
+image was a reference; #118's single reference bought that back as a side effect of a correctness fix. The sample is **not awaited by the loop**: the
 check yields to the host between references, which is what its async signature was reserved for, so
 the loop keeps drawing and keeps reporting the *previous* verdict while the next is computed.
 Sampling continues while refusing — putting the camera back is the fix, and a gate that stopped
@@ -515,15 +527,40 @@ measuring the moment it fired could not see it happen.
 > 0.53 s of arithmetic took **6 s** wall-clock in a backgrounded tab — the exact case a phone puts the
 > live view in. `MessageChannel` is not subject to timer throttling. Do not "simplify" it back.
 
-**The editor warns and blocks nothing** (#95) — the `MIN_DPT` precedent exactly. An image added by
-camera *or* by file picker is compared against the rest of the archive, excluding itself, and a
-disagreement earns a persistent `.drift-warning` bar sharing the row and the amber of the DPT and
-frame-mismatch bars. It is keyed by filename in memory and never stored: a drift verdict is derived,
-v4 stores no derived state (#6), and the archive's images already *are* the pose record. A first
-image finds no references and earns no warning — "nothing to have drifted from" is not "checked and
-found steady", and neither claim is made on screen. The check runs unawaited, with a neutral
-"checking…" row while it does, because silence where a warning would appear reads as "no problem
-found" long before one has been ruled out.
+**The editor measures every image and blocks nothing** (#95, #118) — the `MIN_DPT` precedent exactly.
+The row above the viewer has four states, and only one of them is amber:
+
+| state | when |
+| :--- | :--- |
+| `.reference` | position 0 — "zero drift by definition", plus how to change it |
+| `.checking` | a measurement in flight |
+| `.steady` | measured, inside the tolerance — the number, stated |
+| *(amber)* | measured, past the tolerance — the warning |
+
+**`.steady` exists because the reference is user-movable.** A row that appeared only past the
+tolerance would let a reorder re-point the pose with nothing on screen moving, which is exactly the
+silence #118 was about. And position 0 says "reference" rather than reading `0.0 px`: "zero because it
+*is* the reference" and "measured and found steady" are different claims, and only the first is true
+there.
+
+Measurements are keyed by filename in memory and never stored: a drift verdict is derived, v4 stores
+no derived state (#6), and the archive's images already *are* the pose record. An image absent from
+the map has **not been measured** — which the render distinguishes from measuring zero.
+
+Recomputation is scoped to what actually invalidates:
+
+* **archive change, reorder** → full `_sweepDrift()`. A reorder can move the reference, and getting
+  the "did position 0 change" arithmetic subtly wrong would leave stale numbers attributed to the
+  wrong reference — a sweep is idempotent and costs seconds of background work.
+* **add** → `_checkOneImage()`. Appending cannot move position 0, so every measurement still stands;
+  a labeler adding a dozen captures should not pay for the whole archive a dozen times.
+* **delete** → sweep only if position 0 went; otherwise drop that image's row.
+
+A sweep is guarded by `_driftSweepToken` rather than cancelled: the archive can change under it, and
+a stale result is worse than a missing one because it would name a drift measured against an image
+that is no longer the reference. Nothing here holds a resource, so a token is cheaper and harder to
+get wrong. An uncalibrated layout is not swept at all and shows no row — a fraction of a track width
+needs a track width, and the calibration gate already has the labeler's attention.
 
 ### Diagnostics reads the model against the labels (#87)
 

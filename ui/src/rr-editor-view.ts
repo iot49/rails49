@@ -540,27 +540,24 @@ export class RREditorView extends LitElement {
    */
   @state() private _frameMismatch: ViewerMediaFrameDetail | null = null;
   /**
-   * Images added this session that disagree structurally with the archive they
-   * were added to, by filename — the camera-drift warning (#95).
+   * How far each image has drifted from the archive's reference image, in
+   * `camera.resolution` pixels, by filename — the camera-drift readout (#95, #118).
    *
-   * **Keyed by filename and held only in memory, on purpose.** A drift verdict
-   * is derived, and derived state is never stored in a v4 manifest (map #89 §
-   * Notes; #6 already ruled provenance fields out of the format) — the archive's
-   * images *are* the pose record, so a verdict is recomputable and a stored one
-   * could go stale against the very images it was computed from.
+   * **Every image is measured, and `images[0]` is absent from this map by
+   * construction**: it is the reference, so its drift is zero by definition and
+   * asking would be asking whether an image matches itself. An image absent for
+   * any other reason has not been measured — which is not the same as measuring
+   * zero, and the render distinguishes them.
    *
-   * A map rather than a single slot because the warning must survive looking at
-   * another image and coming back. Only images added *this session* are in it:
-   * checking the whole archive on open would compare every image against every
-   * other, which is a different feature (archive diagnostics, #87) and a
-   * multi-second one.
+   * **Held only in memory, on purpose.** A drift verdict is derived, and derived
+   * state is never stored in a v4 manifest (map #89 § Notes; #6 already ruled
+   * provenance fields out of the format) — the archive's images *are* the pose
+   * record, so a verdict is recomputable and a stored one could go stale against
+   * the very images it was computed from.
    */
-  @state() private _driftWarnings = new Map<
-    string,
-    { px: number; tracks: number; tolerancePx: number; against: string }
-  >();
+  @state() private _driftPx = new Map<string, number>();
   /**
-   * Whether a freshly added image is still being checked.
+   * Which image is being measured, or `null` when none is.
    *
    * Rendered, because a check takes seconds on a phone and a user who has just
    * captured an image is looking straight at the place the warning would appear.
@@ -568,6 +565,17 @@ export class RREditorView extends LitElement {
    * anything.
    */
   @state() private _driftChecking: string | null = null;
+  /**
+   * Which sweep's results are current.
+   *
+   * A sweep is several seconds of async work over an archive the user can edit
+   * while it runs. Bumping this abandons the results of every sweep in flight,
+   * which matters most for a **reorder**: it changes which image is the
+   * reference, so a measurement that lands afterwards would be a drift against
+   * an image that no longer defines the pose. Cheaper and less error-prone than
+   * cancellation, since nothing here holds a resource to release.
+   */
+  private _driftSweepToken = 0;
   /**
    * What a click in the viewer means.
    *
@@ -750,9 +758,17 @@ export class RREditorView extends LitElement {
       color: var(--sl-color-warning-800);
     }
 
-    /* A check in flight is not a finding. It keeps the neutral treatment so the
-       amber row means "something is wrong" and nothing else. */
-    .drift-warning.checking {
+    /* Three of the four drift states are not findings, and they keep the neutral
+       treatment so that amber goes on meaning "something is wrong" and nothing
+       else: a check in flight, an image measured and inside tolerance, and the
+       reference image itself. Only a measurement past the tolerance is amber.
+
+       The measured-and-fine row exists because the *reference* is user-movable
+       (#118): a bar that appeared only on failure would let a reorder change the
+       pose with nothing on screen moving. */
+    .drift-warning.checking,
+    .drift-warning.steady,
+    .drift-warning.reference {
       background: var(--sl-color-neutral-100);
       color: var(--sl-color-neutral-700);
     }
@@ -851,10 +867,13 @@ export class RREditorView extends LitElement {
       this._abandonPlacement();
       this._clearHighlight();
       this._frameMismatch = null;
-      // Drift warnings are keyed by filename, and a filename means nothing on
-      // the next archive — the same reason the zoom rect goes below.
-      this._driftWarnings = new Map();
+      // Drift measurements are keyed by filename, and a filename means nothing
+      // on the next archive — the same reason the zoom rect goes below. Bumping
+      // the token abandons any sweep still running against the old one; the new
+      // sweep starts from `updated()`, once the images can be read.
+      this._driftPx = new Map();
       this._driftChecking = null;
+      this._driftSweepToken++;
       // New and Open both arrive here. A zoom rect is a region of *this*
       // layout's authored frame, so it names nothing on the next one — which is
       // the same reason it survives an image change and not an archive one.
@@ -867,6 +886,9 @@ export class RREditorView extends LitElement {
     if (changedProperties.has('archive') && this.archive) {
       await this._refreshImageUrls();
       this._currentImageIndex = 0;
+      // Not awaited: it is seconds of work over the whole archive, and the
+      // editor is usable throughout — every row appears as its image is measured.
+      void this._sweepDrift();
     }
   }
 
@@ -1343,64 +1365,102 @@ export class RREditorView extends LitElement {
     // Not awaited: the image is added, selected and labelable now. A check runs
     // for seconds on a phone, and holding the editor for it would make the
     // warning cost more than the error it reports.
-    void this._checkDrift(filename, bytes);
+    void this._checkOneImage(filename, bytes);
   }
 
   /**
-   * Compare a freshly added image against the rest of the archive.
+   * Measure every image against the archive's reference image — `images[0]`.
    *
    * **Warns persistently, never blocks** — the `MIN_DPT` precedent exactly
    * (`SPEC.md` § Reference points). A human is present and can judge, the check
    * has never been validated against a real drifted frame, and blocking
    * authoring on a heuristic would be worse than the disease.
    *
-   * **What a shift actually costs, since the first version of this said it
-   * wrongly.** Car labels are authored on the image's own pixels, so a translated
-   * image's spans are self-consistent and the training data derived from them is
-   * fine — the offset is *not* baked into a label. What breaks is everything
-   * per-*layout* read against this image: the sensors and calibration were
-   * authored against the archive's other images, so the overlay lands off the
-   * track here, and the image joins the reference set the live view's drift check
-   * compares against.
+   * **Every image, not only the ones added this session** (#118). One image
+   * defines the pose now, so the comparison is n-1 checks against one reference
+   * rather than every-image-against-every-other, which is what made a whole-
+   * archive sweep too expensive before. Sweeping is also the only way the
+   * reference *choice* stays legible: reorder the strip and every number on
+   * screen has to move, or the pose would change silently.
    *
-   * The new image is **excluded from its own reference set**: it is in the
-   * manifest by the time this runs, and an image compared against itself reports
-   * zero drift forever. A first image finds no references at all and is recorded
-   * as no warning — there is nothing for it to have drifted from, which is not
-   * the same as having been checked and found steady, and neither claim is made
-   * on screen. An uncalibrated layout resolves no tolerance and earns no warning
-   * for the same reason: a fraction of a track width needs a track width.
+   * **What a shift actually costs.** Car labels are authored on the image's own
+   * pixels, so a translated image's spans are self-consistent and the training
+   * data derived from them is fine — the offset is *not* baked into a label.
+   * What breaks is everything per-*layout* read against this image: the sensors
+   * and calibration were authored against the reference, so the overlay lands
+   * off the track here.
+   *
+   * Guarded by a token rather than by cancellation, because the archive can
+   * change under a sweep — an add, a delete, a reorder — and a stale result is
+   * worse than a missing one: it would name a drift measured against a reference
+   * that is no longer the reference. An uncalibrated layout resolves no tolerance
+   * and is not swept at all: a fraction of a track width needs a track width.
    */
-  private async _checkDrift(filename: string, bytes: Uint8Array) {
+  private async _sweepDrift() {
     if (!this.archive) return;
+    const token = ++this._driftSweepToken;
+    this._driftPx = new Map();
+    this._driftChecking = null;
+
+    if (maxDriftPx(getDPT(this.archive.getManifest())) === null) return;
+
+    let session;
+    try {
+      session = await openDriftCheck(this.archive);
+    } catch (err) {
+      console.error('Camera-drift reference could not be built', err);
+      return;
+    }
+    if (!session || token !== this._driftSweepToken) return;
+
+    // Skip index 0: it *is* the reference, so its drift is zero by definition
+    // and measuring it would be asking whether an image matches itself.
+    for (const { filename } of this.archive.getManifest().images.slice(1)) {
+      if (token !== this._driftSweepToken) return;
+      this._driftChecking = filename;
+      try {
+        const bytes = await this.archive.getImage(filename);
+        if (!bytes) continue;
+        const { displacementPx } = await session.check.check(await planeFromBytes(bytes));
+        if (token !== this._driftSweepToken) return;
+        this._driftPx = new Map(this._driftPx).set(filename, displacementPx);
+      } catch (err) {
+        // The image is in the archive and labelable. A measurement that could not
+        // run leaves no row rather than an error row: the labeler did not ask for
+        // this check, and an error about a warning would be noise about noise.
+        console.error(`Camera-drift check failed for ${filename}`, err);
+      }
+    }
+    if (token === this._driftSweepToken) this._driftChecking = null;
+  }
+
+  /**
+   * Measure one image against the reference, leaving the rest alone.
+   *
+   * What an **add** needs: appending cannot change which image is at position 0,
+   * so every measurement already taken still stands. A full sweep would re-check
+   * the whole archive for one new image, and a labeler adding a dozen captures in
+   * a row would pay for it a dozen times.
+   */
+  private async _checkOneImage(filename: string, bytes: Uint8Array) {
+    if (!this.archive) return;
+    const token = this._driftSweepToken;
+    if (maxDriftPx(getDPT(this.archive.getManifest())) === null) return;
+    // The image just added *is* the reference when it is the archive's first.
+    if (this.archive.getManifest().images[0]?.filename === filename) return;
+
     this._driftChecking = filename;
     try {
-      const dpt = getDPT(this.archive.getManifest());
-      const tolerancePx = maxDriftPx(dpt);
-      if (tolerancePx === null) return;
-      const session = await openDriftCheck(this.archive, { exclude: filename });
-      if (!session) return;
-      const { displacementPx, refIndex } = await session.check.check(
-        await planeFromBytes(bytes)
-      );
-      if (displacementPx > tolerancePx) {
-        // Replaced rather than mutated: Lit does not observe a Map's contents,
-        // and `@state` compares by identity.
-        this._driftWarnings = new Map(this._driftWarnings).set(filename, {
-          px: displacementPx,
-          tracks: displacementPx / dpt!,
-          tolerancePx,
-          against: session.refNames[refIndex],
-        });
-      }
+      const session = await openDriftCheck(this.archive);
+      if (!session || token !== this._driftSweepToken) return;
+      const { displacementPx } = await session.check.check(await planeFromBytes(bytes));
+      if (token !== this._driftSweepToken) return;
+      // Replaced rather than mutated: Lit does not observe a Map's contents, and
+      // `@state` compares by identity.
+      this._driftPx = new Map(this._driftPx).set(filename, displacementPx);
     } catch (err) {
-      // The image is already in the archive and labelable. A check that could
-      // not run is reported to the console and nowhere else: an error bar for a
-      // warning the user did not ask for would be noise about noise.
       console.error(`Camera-drift check failed for ${filename}`, err);
     } finally {
-      // Only if it is still ours — a second add while this one was running owns
-      // the flag now.
       if (this._driftChecking === filename) this._driftChecking = null;
     }
   }
@@ -1422,6 +1482,16 @@ export class RREditorView extends LitElement {
       );
       await this._refreshImageUrls();
       this._currentImageIndex = Math.max(0, Math.min(this._currentImageIndex, manifest.images.length - 1));
+      // Deleting the image at position 0 promotes the next one to reference, so
+      // every measurement was against an image that no longer defines the pose.
+      // Deleting any other image invalidates nothing — drop its row and stop.
+      if (index === 0) {
+        void this._sweepDrift();
+      } else {
+        const remaining = new Map(this._driftPx);
+        remaining.delete(image.filename);
+        this._driftPx = remaining;
+      }
     }
   }
 
@@ -1442,6 +1512,16 @@ export class RREditorView extends LitElement {
       this.archive!.reorderImages(from, to)
     );
     this.requestUpdate();
+
+    // **A reorder can change the reference, and that is the whole design.**
+    // Position 0 defines the pose (#118), so dragging a thumbnail to the front
+    // re-points the comparison — and because every image's drift is on screen,
+    // re-sweeping is what makes that visible instead of silent. Unconditional
+    // rather than only when position 0 changed: `from`/`to` both being non-zero
+    // still shifts what sits at 0 when one of them crosses it, and getting that
+    // arithmetic subtly wrong would leave stale numbers attributed to the wrong
+    // reference. A sweep is idempotent and costs seconds of background work.
+    void this._sweepDrift();
   }
 
   /**
@@ -2475,46 +2555,79 @@ export class RREditorView extends LitElement {
   }
 
   /**
-   * The camera-drift warning for the image on screen, or nothing when there is
-   * none.
+   * The camera-drift row for the image on screen.
    *
-   * Persistent: it is a property of the image, not of the moment it was added,
-   * so it survives looking at another image and coming back — a toast would be
-   * gone by the time the user started labeling, which is when it matters.
+   * **Shown for every image, not only the ones that fail** (#118). The reference
+   * is `images[0]` and the user can move it by dragging the strip, so the only
+   * thing that keeps that choice honest is seeing what it decided about each
+   * image: a bar that appeared only past the tolerance would let a reorder change
+   * the pose with nothing on screen moving. Position 0 says so in as many words
+   * rather than reading 0.0 px — "zero because it is the reference" and "measured
+   * and found steady" are different claims, and only the first is true there.
    *
-   * It names the displacement and the image the comparison matched, for the same
-   * reason the frame-mismatch bar names both sizes: "drifted" alone cannot tell a
-   * knocked tripod from a camera moved to photograph a different corner of the
-   * layout, and those call for different decisions.
+   * Persistent: it is a property of the image, not of the moment it was added, so
+   * it survives looking at another image and coming back — a toast would be gone
+   * by the time the user started labeling, which is when it matters.
+   *
+   * It names the displacement in pixels **and** track widths, for the same reason
+   * the frame-mismatch bar names both sizes: "drifted" alone cannot tell a knocked
+   * tripod from a camera moved to photograph a different corner of the layout, and
+   * those call for different decisions.
    *
    * **What it says about the consequence is narrower than it first was, and the
    * narrower version is the true one.** Labeling this image is fine: a car span is
    * authored on this image's own pixels, so it is self-consistent whatever the
    * camera did, and nothing about the shift reaches the training data derived from
    * it. What the copy warns about is the per-*layout* geometry — the sensors and
-   * calibration drawn over this image belong to the archive's other images, so the
-   * overlay is misplaced here — and that this image now widens the pose the live
-   * view will accept. Telling a labeler their labels are poisoned when they are
-   * not would train them to ignore the bar.
+   * calibration drawn over this image were authored against the reference, so the
+   * overlay is misplaced here. Telling a labeler their labels are poisoned when
+   * they are not would train them to ignore the bar.
    */
-  private _renderDriftWarning(image: Image) {
-    if (this._driftChecking === image.filename) {
-      return html`<div class="drift-warning checking">
-        Checking this image against the rest of the archive for camera drift…
+  private _renderDriftWarning(image: Image, index: number) {
+    const tolerancePx = maxDriftPx(getDPT(this.archive!.getManifest()));
+    // No track width to take a fraction of, and the calibration gate already has
+    // the labeler's attention. Nothing to say.
+    if (tolerancePx === null) return '';
+
+    if (index === 0) {
+      return html`<div class="drift-warning reference">
+        Reference image — zero drift by definition
+        <span class="detail">
+          every other image, and the live view's camera, is measured against this one.
+          Drag another thumbnail to the front of the strip to make it the reference instead.
+        </span>
       </div>`;
     }
 
-    const warning = this._driftWarnings.get(image.filename);
-    if (!warning) return '';
+    if (this._driftChecking === image.filename) {
+      return html`<div class="drift-warning checking">
+        Measuring this image against the reference for camera drift…
+      </div>`;
+    }
+
+    const px = this._driftPx.get(image.filename);
+    // Absent and not being measured: the check failed, or has not reached this
+    // image yet. Silence beats a fabricated zero.
+    if (px === undefined) return '';
+
+    const tracks = px / getDPT(this.archive!.getManifest())!;
+    const measurement = html`Camera moved ${px.toFixed(1)} px (${tracks.toFixed(2)} track widths)
+      from the reference`;
+
+    if (px <= tolerancePx) {
+      return html`<div class="drift-warning steady">
+        ${measurement}
+        <span class="detail">within the ${tolerancePx.toFixed(1)} px this layout allows.</span>
+      </div>`;
+    }
 
     return html`<div class="drift-warning">
-      Camera moved ${warning.px.toFixed(1)} px (${warning.tracks.toFixed(2)} track widths) since
-      <code>${warning.against}</code>
+      ${measurement}
       <span class="detail">
-        past the ${warning.tolerancePx.toFixed(1)} px this layout allows.
+        past the ${tolerancePx.toFixed(1)} px this layout allows.
         <strong>Labeling this image is unaffected</strong> — a car span is authored on its own
-        pixels. What is off is the sensor and calibration overlay, which belongs to the other
-        images, and this image will now count as a valid camera pose in the live view.
+        pixels. What is off is the sensor and calibration overlay, which was authored against the
+        reference image.
         Nothing is blocked: re-aim and re-capture, or keep it deliberately.
       </span>
     </div>`;
@@ -2632,7 +2745,7 @@ export class RREditorView extends LitElement {
 
             ${this._renderFrameMismatch()}
 
-            ${currentImage ? this._renderDriftWarning(currentImage) : ''}
+            ${currentImage ? this._renderDriftWarning(currentImage, this._currentImageIndex) : ''}
 
             <div class="viewer-wrap">
               <rr-viewer

@@ -37,7 +37,7 @@ vi.mock('@occupancy/detector/browser', () => ({
 // unable to tell a DPT-relative threshold from the fixed pixel count this
 // replaced.
 const check = vi.fn(async () => ({ displacementPx: 0, refIndex: 0 }));
-const openDriftCheck = vi.fn(async () => ({ check: { check }, refNames: ['test.jpg'] }));
+const openDriftCheck = vi.fn(async () => ({ check: { check }, refName: 'test.jpg' }));
 
 vi.mock('../src/driftSession.js', async importOriginal => {
   // Safe to import for real: the module builds no canvas at import time, only
@@ -207,7 +207,7 @@ describe('rr-live-view', () => {
       check.mockClear();
       openDriftCheck.mockClear();
       check.mockImplementation(async () => ({ displacementPx: 0, refIndex: 0 }));
-      openDriftCheck.mockImplementation(async () => ({ check: { check }, refNames: ['test.jpg'] }));
+      openDriftCheck.mockImplementation(async () => ({ check: { check }, refName: 'test.jpg' }));
       calibrate();
     });
 
@@ -301,7 +301,8 @@ describe('rr-live-view', () => {
       // one that says whether a sensor can still sit on the car it reads.
       expect(notice).to.contain('0.45 track widths');
       expect(notice).to.contain(TOLERANCE_PX.toFixed(1));
-      // And which image it agreed with best, which is what refNames exist for.
+      // And which image it was measured against — one reference now (#118), so
+      // this is the archive's first image rather than a closest match.
       expect(notice).to.contain('test.jpg');
     });
 
