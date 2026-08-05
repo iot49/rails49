@@ -53,3 +53,8 @@ dataset/r49/
 # pnpm falls back to a store inside the repo when it cannot write the global
 # one (a sandboxed install will do this). Never a source artifact.
 .pnpm-store/
+
+# Local dev scaffolding: a symlink to a corpus checkout for driving the
+# diagnostics view without the file picker. Machine-specific, and `ui/public`
+# is copied verbatim into the deployed bundle — see PR #106 review.
+ui/public/proto-fixtures

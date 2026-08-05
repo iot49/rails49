@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { Frame } from '@occupancy/detector';
 import {
@@ -299,8 +299,13 @@ export class RRDiagnosticsReport extends LitElement {
   }
 
   private _header(key: SortKey, text: string) {
+    // `nothing`, not `undefined`: an attribute binding set to `undefined`
+    // renders `aria-sort=""` rather than removing the attribute, so the
+    // `th[aria-sort]` rule below matched every sortable column at once and the
+    // sorted column was indistinguishable. `nothing` is the only value that
+    // removes an attribute — and an empty `aria-sort` is invalid ARIA besides.
     return html`<th
-      aria-sort=${this._sort === key ? 'descending' : undefined}
+      aria-sort=${this._sort === key ? 'descending' : nothing}
       @click=${() => {
         this._sort = key;
       }}

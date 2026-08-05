@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -138,15 +138,22 @@ export class RRHeader extends LitElement {
     return html`
       <nav>
         <div class="left-section">
-          <div class="modes" role="tablist" aria-label="View">
+          <!-- A group of buttons, not a tablist. The ARIA tab pattern promises
+               things this does not deliver: the roles would sit on the
+               sl-icon-button hosts while focus lands on the native button
+               inside each shadow root, nothing here is a tabpanel or is named
+               by aria-controls, and there is no roving tabindex — the arrow
+               keys belong to the diagnostics queue. Three buttons that behave
+               like buttons are honest; aria-current states which one you are
+               on without claiming a widget that isn't here. -->
+          <div class="modes" role="group" aria-label="View">
             ${VIEW_MODES.map(
               ({ mode, icon, label }) => html`
                 <sl-tooltip content=${label}>
                   <sl-icon-button
                     name=${icon}
                     label=${label}
-                    role="tab"
-                    aria-selected=${this.viewMode === mode}
+                    aria-current=${this.viewMode === mode ? 'true' : nothing}
                     class=${this.viewMode === mode ? 'active' : ''}
                     @click=${() => this._onSelectView(mode)}
                   ></sl-icon-button>

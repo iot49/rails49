@@ -210,7 +210,7 @@ export class RRDiagnosticsView extends LitElement {
 
     try {
       for (const image of images) {
-        if (abandon.signal.aborted) return;
+        if (abandon.signal.aborted) return releaseUrls(urls);
 
         const bytes = await archive.getImage(image.filename);
         if (!bytes) continue;
@@ -220,7 +220,13 @@ export class RRDiagnosticsView extends LitElement {
         this._urls = new Map(urls);
 
         const element = await decodeImage(url);
-        if (abandon.signal.aborted) return;
+        // Every `return` past this point must hand the URLs back. `_teardown`
+        // cannot do it: it revoked and cleared `this._urls` before this
+        // iteration resumed, and the assignment above then republished the map
+        // — so a sweep that simply returned would leave the blob it had just
+        // created pinned for the lifetime of the document, once per abandoned
+        // sweep.
+        if (abandon.signal.aborted) return releaseUrls(urls);
 
         const detections = await this._detector.detect(element, frame, {
           minConfidence: SWEEP_MIN_CONFIDENCE,
@@ -233,7 +239,7 @@ export class RRDiagnosticsView extends LitElement {
 
       if (!abandon.signal.aborted) this._run = { kind: 'complete' };
     } catch (err) {
-      if (abandon.signal.aborted) return;
+      if (abandon.signal.aborted) return releaseUrls(urls);
       this._run = {
         kind: 'failed',
         message: `Inference failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -357,6 +363,17 @@ export class RRDiagnosticsView extends LitElement {
  * `complete` is a poll, and polling it here would be a race the sweep loses on
  * exactly the largest images.
  */
+/**
+ * Revoke every blob URL a sweep created.
+ *
+ * Idempotent: `URL.revokeObjectURL` on an already-revoked handle is a no-op, so
+ * an abandoned sweep can release its whole map without needing to know which
+ * entries `_teardown` already dealt with.
+ */
+function releaseUrls(urls: ReadonlyMap<string, string>): void {
+  for (const url of urls.values()) URL.revokeObjectURL(url);
+}
+
 function decodeImage(url: string): Promise<HTMLImageElement> {
   const element = new Image();
   element.src = url;
