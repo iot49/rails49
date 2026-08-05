@@ -88,6 +88,7 @@ def render_generated_ts(config: dict) -> str:
 
     detector_input = require(config, "detector", "input")
     confidence_threshold = require(config, "detector", "confidence_threshold")
+    nms_iou = require(config, "detector", "nms_iou")
     val_split = require(config, "detector", "val_split")
     detector_classes = require(config, "detector", "classes")
     vocabulary = require(config, "detector", "vocabulary")
@@ -171,6 +172,15 @@ def render_generated_ts(config: dict) -> str:
         f"export const DETECTOR_CONFIDENCE_THRESHOLD = {ts_literal(confidence_threshold)};",
         "",
         doc(
+            "Rotated-box IoU above which two detections are the same car.",
+            "",
+            "The exported graph does not deduplicate: `end2end`'s `TopK` selects the",
+            "300 top-scoring slots and suppresses nothing, so up to four boxes land",
+            "on one vehicle (issue #107). The decode applies this after thresholding.",
+        ),
+        f"export const DETECTOR_NMS_IOU = {ts_literal(nms_iou)};",
+        "",
+        doc(
             "Fraction of exported images held out for validation.",
             "",
             "The unit is the image, not the label: every car in a frame lands on",
@@ -239,6 +249,7 @@ def render_index_ts() -> str:
             "export {",
             "  DETECTOR_INPUT,",
             "  DETECTOR_CONFIDENCE_THRESHOLD,",
+            "  DETECTOR_NMS_IOU,",
             "  DETECTOR_VAL_SPLIT,",
             "  DETECTOR_CLASSES,",
             "  DETECTOR_VOCABULARY,",

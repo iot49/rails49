@@ -24,7 +24,7 @@
 
 import type { CarLabel, Point } from '@occupancy/r49';
 import type { Detection, Frame } from '@occupancy/detector';
-import { boxCorners, carWidthPx } from '@occupancy/detector';
+import { boxCorners, carWidthPx, polygonIoU } from '@occupancy/detector';
 import { carCorners } from './geometry.js';
 import type { Rect } from './geometry.js';
 
@@ -147,95 +147,11 @@ export const MATCH_IOU = 0.15;
  */
 export const AGREE_IOU = 0.7;
 
-/** Area of a simple polygon, by the shoelace formula. Sign-free. */
-export function polygonArea(polygon: readonly Point[]): number {
-  let twice = 0;
-  for (let i = 0; i < polygon.length; i++) {
-    const a = polygon[i];
-    const b = polygon[(i + 1) % polygon.length];
-    twice += a.x * b.y - b.x * a.y;
-  }
-  return Math.abs(twice) / 2;
-}
-
-/**
- * Area shared by two **convex** polygons, by Sutherland–Hodgman clipping.
- *
- * Convexity is what makes this correct and it is not an assumption to relax:
- * both inputs here are rectangles by construction — `carCorners` and
- * `boxCorners` both walk a perimeter rather than pairing ends, so neither can
- * produce the bowtie that would break this.
- *
- * Winding is normalized before clipping rather than assumed. `carCorners` and
- * `boxCorners` build their corners from normals that point opposite ways for a
- * span running right-to-left, so a shared rule cannot be relied on — and a
- * mismatched pair silently clips to nothing, which reads as a total miss.
- */
-export function convexIntersectionArea(a: readonly Point[], b: readonly Point[]): number {
-  let output = counterClockwise(a);
-  const clip = counterClockwise(b);
-
-  for (let i = 0; i < clip.length && output.length > 0; i++) {
-    const edgeStart = clip[i];
-    const edgeEnd = clip[(i + 1) % clip.length];
-    const input = output;
-    output = [];
-
-    for (let j = 0; j < input.length; j++) {
-      const current = input[j];
-      const previous = input[(j + input.length - 1) % input.length];
-      const currentInside = side(edgeStart, edgeEnd, current) >= 0;
-      const previousInside = side(edgeStart, edgeEnd, previous) >= 0;
-
-      if (currentInside) {
-        if (!previousInside) output.push(intersect(previous, current, edgeStart, edgeEnd));
-        output.push(current);
-      } else if (previousInside) {
-        output.push(intersect(previous, current, edgeStart, edgeEnd));
-      }
-    }
-  }
-
-  return output.length < 3 ? 0 : polygonArea(output);
-}
-
-/** Positive when `p` is left of the directed edge `a → b`. */
-function side(a: Point, b: Point, p: Point): number {
-  return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-}
-
-function counterClockwise(polygon: readonly Point[]): Point[] {
-  let twice = 0;
-  for (let i = 0; i < polygon.length; i++) {
-    const a = polygon[i];
-    const b = polygon[(i + 1) % polygon.length];
-    twice += a.x * b.y - b.x * a.y;
-  }
-  return twice < 0 ? [...polygon].reverse() : [...polygon];
-}
-
-/** Where segment `p → q` crosses the infinite line through `a → b`. */
-function intersect(p: Point, q: Point, a: Point, b: Point): Point {
-  const dx1 = q.x - p.x;
-  const dy1 = q.y - p.y;
-  const dx2 = b.x - a.x;
-  const dy2 = b.y - a.y;
-  const denominator = dx1 * dy2 - dy1 * dx2;
-  // Parallel: the caller only reaches this when the endpoints straddle the
-  // edge, so a zero here is floating-point noise on a near-tangent crossing.
-  // Answering with `p` keeps the polygon closed instead of emitting NaN.
-  if (denominator === 0) return { ...p };
-  const t = ((a.x - p.x) * dy2 - (a.y - p.y) * dx2) / denominator;
-  return { x: p.x + t * dx1, y: p.y + t * dy1 };
-}
-
-/** Intersection over union of two convex polygons. */
-export function polygonIoU(a: readonly Point[], b: readonly Point[]): number {
-  const intersection = convexIntersectionArea(a, b);
-  if (intersection === 0) return 0;
-  const union = polygonArea(a) + polygonArea(b) - intersection;
-  return union <= 0 ? 0 : intersection / union;
-}
+// `polygonArea`, `convexIntersectionArea` and `polygonIoU` moved into
+// `@occupancy/detector` when the decode needed them to suppress duplicate
+// boxes (#107). Same arithmetic, one home — two copies of a winding rule is
+// exactly how a matcher and a suppressor come to disagree about what
+// overlaps.
 
 /**
  * The rectangle a detection is **matched** by: its own centre, angle and

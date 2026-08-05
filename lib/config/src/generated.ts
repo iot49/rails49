@@ -55,6 +55,15 @@ export const DETECTOR_INPUT = [960, 544] as const;
 export const DETECTOR_CONFIDENCE_THRESHOLD = 0.25;
 
 /**
+ * Rotated-box IoU above which two detections are the same car.
+ *
+ * The exported graph does not deduplicate: `end2end`'s `TopK` selects the
+ * 300 top-scoring slots and suppresses nothing, so up to four boxes land
+ * on one vehicle (issue #107). The decode applies this after thresholding.
+ */
+export const DETECTOR_NMS_IOU = 0.5;
+
+/**
  * Fraction of exported images held out for validation.
  *
  * The unit is the image, not the label: every car in a frame lands on

@@ -5,14 +5,15 @@ import { carWidthPx } from '@occupancy/detector';
 import {
   AGREE_IOU,
   MATCH_IOU,
-  convexIntersectionArea,
   describeFinding,
   diagnoseImage,
   findingBounds,
-  polygonArea,
-  polygonIoU,
   rollUp,
 } from '../src/diagnostics.js';
+
+// The polygon arithmetic moved into `@occupancy/detector` with the decode's
+// duplicate suppression (#107); its tests went with it, to
+// `lib/detector/tests/overlap.test.ts`.
 
 // One DPT for the whole file, so every width below is the same number the
 // matcher derives. 10 px per track gauge puts a car at ~20.9 px wide.
@@ -40,58 +41,6 @@ function box(
     ...overrides,
   };
 }
-
-const square = [
-  { x: 0, y: 0 },
-  { x: 10, y: 0 },
-  { x: 10, y: 10 },
-  { x: 0, y: 10 },
-];
-
-describe('polygon arithmetic', () => {
-  it('measures area regardless of winding', () => {
-    expect(polygonArea(square)).toBe(100);
-    expect(polygonArea([...square].reverse())).toBe(100);
-  });
-
-  it('measures a rotated rectangle at its true area', () => {
-    // 45°, so no edge is axis-aligned and a bounding-box answer would be wrong.
-    const rotated = [
-      { x: 0, y: 0 },
-      { x: 5, y: 5 },
-      { x: 0, y: 10 },
-      { x: -5, y: 5 },
-    ];
-    expect(polygonArea(rotated)).toBeCloseTo(50, 9);
-  });
-
-  it('intersects identical, overlapping and disjoint squares', () => {
-    expect(convexIntersectionArea(square, square)).toBeCloseTo(100, 9);
-    const shifted = square.map(p => ({ x: p.x + 5, y: p.y }));
-    expect(convexIntersectionArea(square, shifted)).toBeCloseTo(50, 9);
-    const away = square.map(p => ({ x: p.x + 50, y: p.y }));
-    expect(convexIntersectionArea(square, away)).toBe(0);
-  });
-
-  it('is winding-agnostic, because the two corner builders disagree about it', () => {
-    // A span running right-to-left builds its normal the other way, so a rule
-    // that assumed one winding would clip to nothing and read as a total miss.
-    const reversed = [...square].reverse();
-    const shifted = square.map(p => ({ x: p.x + 5, y: p.y }));
-    expect(convexIntersectionArea(reversed, shifted)).toBeCloseTo(50, 9);
-    expect(convexIntersectionArea(shifted, reversed)).toBeCloseTo(50, 9);
-  });
-
-  it('scores IoU at 1 for identical and 0 for disjoint', () => {
-    expect(polygonIoU(square, square)).toBeCloseTo(1, 9);
-    expect(polygonIoU(square, square.map(p => ({ x: p.x + 50, y: p.y })))).toBe(0);
-  });
-
-  it('touching edges share no area', () => {
-    const abutting = square.map(p => ({ x: p.x + 10, y: p.y }));
-    expect(convexIntersectionArea(square, abutting)).toBeCloseTo(0, 9);
-  });
-});
 
 describe('diagnoseImage', () => {
   const base = { filename: 'img.jpg', labeledComplete: true, dpt: DPT };
