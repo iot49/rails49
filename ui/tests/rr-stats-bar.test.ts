@@ -38,4 +38,51 @@ describe('rr-stats-bar', () => {
     expect(rows.find(r => r.includes('Cars'))).to.contain('4');
     expect(rows.find(r => r.includes('Occupied'))).to.contain('0');
   });
+
+  describe('the alignment readout', () => {
+    const driftRow = (el: RRStatsBar) =>
+      [...el.shadowRoot!.querySelectorAll('.stat')].find(r => r.textContent?.includes('Drift:'));
+
+    it('shows the measurement against the tolerance', async () => {
+      // Both numbers, because the ratio is what a user aiming a camera judges.
+      // A red/green dot would discard exactly that.
+      const el = await fixture<RRStatsBar>(html`
+        <rr-stats-bar .alignment=${3.4} .alignmentTolerance=${22.4}></rr-stats-bar>
+      `);
+
+      const row = driftRow(el)!;
+      expect(row).to.exist;
+      expect(row.textContent).to.contain('3.4px');
+      expect(row.textContent).to.contain('22.4px');
+      expect(row.classList.contains('over')).to.be.false;
+    });
+
+    it('marks a measurement past the tolerance', async () => {
+      const el = await fixture<RRStatsBar>(html`
+        <rr-stats-bar .alignment=${40} .alignmentTolerance=${22.4}></rr-stats-bar>
+      `);
+      expect(driftRow(el)!.classList.contains('over')).to.be.true;
+    });
+
+    it('shows an em dash before anything has been measured, never 0.0', async () => {
+      // "not measured yet" and "measured, and the camera has not moved" are
+      // different facts. This is the one readout where a zero is a claim.
+      const el = await fixture<RRStatsBar>(html`
+        <rr-stats-bar .alignment=${null} .alignmentTolerance=${22.4}></rr-stats-bar>
+      `);
+
+      const row = driftRow(el)!;
+      expect(row.textContent).to.contain('—');
+      expect(row.textContent).to.not.contain('0.0px');
+    });
+
+    it('renders no row at all when no tolerance resolves', async () => {
+      // An uncalibrated layout has no track width to take a fraction of, and a
+      // bare pixel count invites the reader to supply their own threshold.
+      const el = await fixture<RRStatsBar>(html`
+        <rr-stats-bar .alignment=${9} .alignmentTolerance=${null}></rr-stats-bar>
+      `);
+      expect(driftRow(el)).to.be.undefined;
+    });
+  });
 });

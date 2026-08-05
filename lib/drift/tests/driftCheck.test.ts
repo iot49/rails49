@@ -82,8 +82,8 @@ describe('createDriftCheck', () => {
   it('reports in the reference frame, not the working resolution', async () => {
     // A 1920-wide reference is correlated at 960, so a 10 px displacement is
     // measured as 5 and reported as 10. This is the property that keeps
-    // `layout.max_drift_px` a number about the archive rather than about an
-    // internal constant.
+    // the tolerance a number about the archive's own geometry rather than about
+    // an internal constant.
     const check = await createDriftCheck([renderScene(1920, 1080)]);
     const still = await check.check(renderScene(1920, 1080));
     expect(still.displacementPx).toBe(0);

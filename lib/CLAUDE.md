@@ -82,10 +82,13 @@ Three rules:
   code that ships rather than a copy of it. The canvas work lives in
   `ui/src/driftSession.ts`, which is the `detectorSession.ts` of that path.
 
-  It also exports **no verdict**. `layout.max_drift_px` is `@occupancy/config`'s,
-  because the live view refuses on it and the editor only warns — one authored
-  number, two responses, and a module that decided would force both surfaces to
-  agree about policy as well as about measurement.
+  It also exports **no verdict**. `layout.max_drift_track_fraction` is
+  `@occupancy/config`'s, because the live view refuses on it and the editor only
+  warns — one authored number, two responses, and a module that decided would
+  force both surfaces to agree about policy as well as about measurement. It is a
+  fraction of a *track width*, not a pixel count: `ui/src/driftSession.ts`'s
+  `maxDriftPx` multiplies it by the layout's DPT, which is the only place that
+  conversion happens.
 
 * **`detector` has two, and the second one is the same idea.** `.` is pure —
   types and geometry, importable from node, which is how `dataset` gets

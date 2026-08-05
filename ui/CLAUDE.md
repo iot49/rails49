@@ -458,24 +458,47 @@ and `planeFromBytes(bytes)`.
 
 **References are decoded at their native resolution, and that is load-bearing.** `displacementPx` is
 reported in the frame of the *first* reference, so handing the check pre-shrunk images silently
-rescales every number — while `layout.max_drift_px` is authored in `camera.resolution` pixels. The
-check clamps to its own working resolution internally; letting it do that is what keeps the constant
-meaning one thing.
+rescales every number — while the tolerance is expressed in `camera.resolution` pixels. The check
+clamps to its own working resolution internally; letting it do that is what keeps the number meaning
+one thing.
+
+**The tolerance is a fraction of a track width, and `maxDriftPx(dpt)` here is the only place that
+multiplies.** `layout.max_drift_track_fraction` (0.25) times the layout's DPT — which *is* pixels per
+track gauge — gives the tolerance in the frame the sensors were authored in. A fraction rather than a
+pixel count because the failure is geometric: occupancy breaks when a sensor stops sitting on the car
+it reads, and both boundaries for that (falling off the box, sliding onto a neighbouring track's car)
+sit near one whole track width, so a quarter track is a ~4x margin. The same *pixel* count would mean
+five times as much misalignment at DPT 18 as at DPT 90. `null` DPT yields `null` and the verdict is
+withheld: those sensors already read `unknown` / `no-calibration`, and a fabricated tolerance would be
+a second wrong answer in a quieter voice.
+
+> This replaced an absolute `max_drift_px` of 0.5 — the check's own quantum. That number conflated a
+> **detection floor** with a **tolerance**: it was unreachable without precision mounting and said
+> nothing about when occupancy actually breaks. The check resolves far less than the tolerance
+> accepts, and should.
 
 **`DriftSession` carries `refNames` because `refIndex` is not a manifest index.** An image whose
 bytes are missing from the zip is skipped, so every index past it would be off by one — and a warning
 that names the wrong image is worse than one that names none.
 
-**The live view refuses L1 and keeps L0** (#94). Past `layout.max_drift_px` every sensor reads
+**The live view refuses L1 and keeps L0** (#94). Past `maxDriftPx(dpt)` every sensor reads
 `unknown` / `drift` — `occupancy()` takes a `drifted` flag and builds those states, so no view
 assembles an unknown-map of its own — while the detector goes on running and the dashed boxes go on
 being drawn. The boxes are computed *in the live frame* and are true of it; what a moved camera
 invalidates is their mapping onto sensors authored in the archive's frame. Sensor diamonds visibly
 off the track beside correct boxes is the clearest available statement of why the view is refusing.
 Occupancy is machine-consumable, so withholding it is the honest response where a banner alone is
-not — the banner is for the human, and it carries the number, the image matched, and a
-**"classify anyway" override**. The override is not sticky across a remount: a new session should
-start by telling the truth again.
+not — the banner is for the human, and it carries the displacement in **both pixels and track
+widths**, the image matched, and a **"classify anyway" override**. The override is not sticky across a
+remount: a new session should start by telling the truth again.
+
+**`rr-stats-bar` carries the alignment continuously, and the split from the banner is the point.** The
+banner is an *event* — it appears when something is wrong. Alignment is a *continuous measurement*,
+and someone aiming a camera has to watch it move: a number that only appeared once it was already too
+large would leave them adjusting a mount blind, and "how much margin is left" is the question the
+banner cannot answer. The row shows measurement against tolerance, like a gauge with a red line, and
+renders `—` rather than `0.0` before the first sample — this is the one readout where a zero is a
+claim rather than an initial value. No row at all when no tolerance resolves.
 
 Drift is sampled on an interval (`DRIFT_SAMPLE_INTERVAL_MS`, 3 s), never per frame — a check measures
 **~0.58 s** against a six-image 1920x1080 archive on the 2017 i7 in Chrome (~3.4 s to build the

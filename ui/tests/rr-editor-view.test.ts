@@ -33,11 +33,18 @@ vi.mock('../src/capture.js', () => ({
   captureFromCamera: () => captureFromCamera(),
 }));
 
-vi.mock('../src/driftSession.js', () => ({
-  openDriftCheck: (...args: unknown[]) => (openDriftCheck as any)(...args),
-  planeFromBytes: async () => ({ width: 4, height: 4, data: new Float32Array(16) }),
-  grabPlane: () => ({ width: 4, height: 4, data: new Float32Array(16) }),
-}));
+// `maxDriftPx` is the real implementation: it is pure arithmetic over
+// MAX_DRIFT_TRACK_FRACTION and a DPT, and it is what makes the tolerance
+// geometric rather than an absolute pixel count. Only the IO is stubbed.
+vi.mock('../src/driftSession.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/driftSession.js')>();
+  return {
+    maxDriftPx: actual.maxDriftPx,
+    openDriftCheck: (...args: unknown[]) => (openDriftCheck as any)(...args),
+    planeFromBytes: async () => ({ width: 4, height: 4, data: new Float32Array(16) }),
+    grabPlane: () => ({ width: 4, height: 4, data: new Float32Array(16) }),
+  };
+});
 
 // Mock ResizeObserver for RRViewer
 global.ResizeObserver = vi.fn().mockImplementation(() => ({
@@ -226,12 +233,27 @@ describe('rr-editor-view', () => {
   });
 
   describe('the camera-drift warning (#95)', () => {
+    /**
+     * The tolerance is a fraction of a track width, so these tests need a DPT.
+     *
+     * 100 px over 10 model mm in N scale resolves DPT 89.6875, putting the
+     * tolerance at 22.42 px. The outer suite's archive is uncalibrated on purpose
+     * — the DPT readout tests up there depend on it — so this is added here.
+     */
+    const TOLERANCE_PX = 0.25 * 89.6875;
+
     beforeEach(() => {
       captureFromCamera.mockClear();
       check.mockClear();
       openDriftCheck.mockClear();
       check.mockImplementation(async () => ({ displacementPx: 0, refIndex: 0 }));
       openDriftCheck.mockImplementation(async () => ({ check: { check }, refNames: ['img1.jpg'] }));
+      archive.getManifest().layout.calibration = {
+        points: [
+          { px: { x: 0, y: 0 }, world: { x: 0, y: 0, z: 0 } },
+          { px: { x: 100, y: 0 }, world: { x: 10, y: 0, z: 0 } },
+        ],
+      };
     });
 
     /** What `rr-thumbnail-bar` emits when the user adds an image. */
@@ -251,7 +273,7 @@ describe('rr-editor-view', () => {
     }
 
     it('warns about a captured image that disagrees with the archive', async () => {
-      check.mockImplementation(async () => ({ displacementPx: 7.4, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 40.4, refIndex: 0 }));
 
       const el = await fixture<RREditorView>(html`
         <rr-editor-view .archive=${archive}></rr-editor-view>
@@ -260,15 +282,19 @@ describe('rr-editor-view', () => {
       await waitFor(el, () => el.shadowRoot!.querySelector('.drift-warning:not(.checking)') !== null);
 
       const bar = el.shadowRoot!.querySelector('.drift-warning')!;
-      expect(bar.textContent).to.contain('7.4 px');
+      expect(bar.textContent).to.contain('40.4 px');
       // The image it matched, not just a verdict: a knocked tripod and a camera
       // aimed at a different corner of the layout read the same without it.
       expect(bar.textContent).to.contain('img1.jpg');
-      expect(bar.textContent).to.contain('not blocked');
+      expect(bar.textContent).to.contain(TOLERANCE_PX.toFixed(1));
+      // The corrected consequence: a car span is authored on this image's own
+      // pixels, so labeling it is fine. What is off is the per-layout overlay.
+      expect(bar.textContent).to.match(/Labeling this image is unaffected/i);
+      expect(bar.textContent).to.match(/nothing is blocked/i);
     });
 
     it('blocks nothing — the image is added, selected and labelable', async () => {
-      check.mockImplementation(async () => ({ displacementPx: 12, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 60, refIndex: 0 }));
 
       const el = await fixture<RREditorView>(html`
         <rr-editor-view .archive=${archive}></rr-editor-view>
@@ -286,7 +312,7 @@ describe('rr-editor-view', () => {
     it('keeps the warning when the user looks at another image and comes back', async () => {
       // Persistent, not a toast: it is a property of the image, and it matters
       // at labeling time rather than at capture time.
-      check.mockImplementation(async () => ({ displacementPx: 5, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 40, refIndex: 0 }));
 
       const el = await fixture<RREditorView>(html`
         <rr-editor-view .archive=${archive}></rr-editor-view>
@@ -306,6 +332,44 @@ describe('rr-editor-view', () => {
       select(1);
       await el.updateComplete;
       expect(el.shadowRoot!.querySelector('.drift-warning')).to.exist;
+    });
+
+    it('scales the tolerance with the track width, not the pixel count', async () => {
+      // 15 px is inside a quarter track at DPT 89.7 and outside it once the same
+      // calibration span covers half the pixels — the correction that replaced an
+      // absolute `max_drift_px`.
+      check.mockImplementation(async () => ({ displacementPx: 15, refIndex: 0 }));
+      expect(15).to.be.lessThan(TOLERANCE_PX);
+
+      const near = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(near, 'camera');
+      await waitFor(near, () => check.mock.calls.length > 0);
+      expect(near.shadowRoot!.querySelector('.drift-warning:not(.checking)')).to.not.exist;
+
+      archive.getManifest().layout.calibration.points[1].px = { x: 50, y: 0 };
+      const far = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(far, 'camera');
+      await waitFor(far, () => far.shadowRoot!.querySelector('.drift-warning:not(.checking)') !== null);
+      expect(far.shadowRoot!.querySelector('.drift-warning:not(.checking)')).to.exist;
+    });
+
+    it('checks nothing on an uncalibrated layout, which has no track width', async () => {
+      archive.getManifest().layout.calibration = { points: [] };
+      check.mockImplementation(async () => ({ displacementPx: 500, refIndex: 0 }));
+
+      const el = await fixture<RREditorView>(html`
+        <rr-editor-view .archive=${archive}></rr-editor-view>
+      `);
+      addImage(el, 'camera');
+      await waitFor(el, () => archive.getManifest().images.length === 2);
+
+      expect(el.shadowRoot!.querySelector('.drift-warning')).to.not.exist;
+      // Not even attempted: without a tolerance there is nothing to compare to.
+      expect(openDriftCheck).not.toHaveBeenCalled();
     });
 
     it('says nothing when the camera has not moved', async () => {
@@ -349,7 +413,7 @@ describe('rr-editor-view', () => {
       // about — but a file picked from disk is as likely to come from a session
       // where the tripod had moved, and two paths would mean one of them
       // silently trusting what the other checked.
-      check.mockImplementation(async () => ({ displacementPx: 3.5, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 30.5, refIndex: 0 }));
 
       const el = await fixture<RREditorView>(html`
         <rr-editor-view .archive=${archive}></rr-editor-view>
@@ -372,7 +436,7 @@ describe('rr-editor-view', () => {
       spy.mockRestore();
 
       await waitFor(el, () => el.shadowRoot!.querySelector('.drift-warning:not(.checking)') !== null);
-      expect(el.shadowRoot!.querySelector('.drift-warning')!.textContent).to.contain('3.5 px');
+      expect(el.shadowRoot!.querySelector('.drift-warning')!.textContent).to.contain('30.5 px');
     });
 
     it('reports nothing on screen when the check itself fails', async () => {

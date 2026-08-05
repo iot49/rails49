@@ -2,14 +2,14 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state, query } from 'lit/decorators.js';
 import type { R49Archive } from '@occupancy/r49';
 import { getDPT } from '@occupancy/r49';
-import { MAX_DRIFT_PX } from '@occupancy/config';
+import { MAX_DRIFT_TRACK_FRACTION } from '@occupancy/config';
 import { occupancy } from '@occupancy/detector';
 import type { Detection, Frame, SensorState } from '@occupancy/detector';
 import type { Detector } from '@occupancy/detector/browser';
 import type { DriftResult } from '@occupancy/drift';
 import { getCameraStream } from './capture.js';
 import { openDetector, DETECTOR_SOURCE } from './detectorSession.js';
-import { grabPlane, openDriftCheck } from './driftSession.js';
+import { grabPlane, maxDriftPx, openDriftCheck } from './driftSession.js';
 import type { DriftSession } from './driftSession.js';
 import './rr-viewer.js';
 import './rr-stats-bar.js';
@@ -115,7 +115,7 @@ export class RRLiveView extends LitElement {
    * Whether the user has overridden the refusal for this session.
    *
    * The override exists because the check's false-positive rate is young: every
-   * number behind `layout.max_drift_px` comes from synthetically warped stills,
+   * number behind `layout.max_drift_track_fraction` comes from synthetic warps,
    * and a live camera brings rolling shutter and autofocus that no warp
    * reproduces (#89 § Notes). It is deliberately **not** sticky across a
    * remount — a new session should start by telling the truth again.
@@ -294,14 +294,30 @@ export class RRLiveView extends LitElement {
   }
 
   /**
+   * The drift tolerance for this layout, in `camera.resolution` pixels, or
+   * `null` when no DPT resolves.
+   *
+   * A fraction of a track width, so it depends on the layout's scale and on how
+   * close the camera is — see `driftSession.maxDriftPx`. `null` withholds the
+   * verdict rather than defaulting it: an uncalibrated layout already reports
+   * every sensor `unknown` / `no-calibration`, and inventing a pixel tolerance
+   * for it would be a second wrong answer in a quieter voice.
+   */
+  private get _driftTolerancePx(): number | null {
+    return maxDriftPx(this._dpt);
+  }
+
+  /**
    * Whether the camera has moved further than the layout tolerates.
    *
    * `false` until something has been measured. An unmeasured session is not a
    * steady one, but it is also not evidence of drift, and the notice says which
-   * of the two it is rather than letting this boolean imply either.
+   * of the two it is rather than letting this boolean imply either. Also `false`
+   * when no tolerance resolves — see `_driftTolerancePx`.
    */
   private get _drifted(): boolean {
-    return this._drift !== null && this._drift.displacementPx > MAX_DRIFT_PX;
+    const tolerance = this._driftTolerancePx;
+    return this._drift !== null && tolerance !== null && this._drift.displacementPx > tolerance;
   }
 
   /** Drift found, and not overridden — the state that withholds L1. */
@@ -435,7 +451,7 @@ export class RRLiveView extends LitElement {
    *
    * The refusal names the number and not just the verdict, because the number is
    * what tells a nudged tripod from a camera somebody re-aimed at a different
-   * layout — and because `layout.max_drift_px` is young enough that a user
+   * layout — and because the tolerance is young enough that a user
    * deciding whether to trust it needs to see what it decided on.
    */
   private _renderDriftNotice() {
@@ -450,6 +466,8 @@ export class RRLiveView extends LitElement {
     if (!this._drifted) return '';
 
     const px = this._drift!.displacementPx.toFixed(1);
+    const tolerance = this._driftTolerancePx!.toFixed(1);
+    const tracks = (this._drift!.displacementPx / this._dpt!).toFixed(2);
     const against = this._driftSession?.refNames[this._drift!.refIndex];
     const closest = against ? html` (closest match: <code>${against}</code>)` : '';
 
@@ -461,11 +479,16 @@ export class RRLiveView extends LitElement {
       </div>`;
     }
 
+    // Both units, because they answer different questions. The pixel count is
+    // what to compare against the readout in the stats bar; the track-width
+    // figure is what says whether a sensor can still be expected to sit on the
+    // car it reads, which is the failure this tolerance is set from.
     return html`<div class="notice refusing">
-      The camera has drifted <strong>${px} px</strong> from this layout's images${closest}, more
-      than the ${MAX_DRIFT_PX} px this layout allows — <strong>refusing to classify</strong>. Every
-      sensor reads <strong>unknown</strong>; the boxes below are still real. Re-aim the camera to
-      the view the archive was shot from.
+      The camera has drifted <strong>${px} px</strong> from this layout's images${closest} —
+      <strong>${tracks} track widths</strong>, past the ${tolerance} px
+      (${MAX_DRIFT_TRACK_FRACTION} of a track) this layout allows.
+      <strong>Refusing to classify</strong>: every sensor reads <strong>unknown</strong>, and the
+      boxes below are still real. Re-aim the camera to the view the archive was shot from.
       <button @click=${() => (this._overrideDrift = true)}>Classify anyway</button>
     </div>`;
   }
@@ -480,6 +503,8 @@ export class RRLiveView extends LitElement {
         .cars=${this._detections.length}
         .occupied=${this._occupiedCount}
         .inference=${this._inference}
+        .alignment=${this._drift?.displacementPx ?? null}
+        .alignmentTolerance=${this._driftTolerancePx}
       ></rr-stats-bar>
 
       ${this._modelError

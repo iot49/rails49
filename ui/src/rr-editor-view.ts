@@ -9,10 +9,10 @@ import type {
   Point,
   Sensor,
 } from '@occupancy/r49';
-import { MAX_DRIFT_PX, MIN_DPT } from '@occupancy/config';
+import { MIN_DPT } from '@occupancy/config';
 import { make_id } from '@occupancy/uid';
 import { captureFromCamera } from './capture.js';
-import { openDriftCheck, planeFromBytes } from './driftSession.js';
+import { maxDriftPx, openDriftCheck, planeFromBytes } from './driftSession.js';
 import {
   boundsOfPoints,
   carCovering,
@@ -555,7 +555,10 @@ export class RREditorView extends LitElement {
    * other, which is a different feature (archive diagnostics, #87) and a
    * multi-second one.
    */
-  @state() private _driftWarnings = new Map<string, { px: number; against: string }>();
+  @state() private _driftWarnings = new Map<
+    string,
+    { px: number; tracks: number; tolerancePx: number; against: string }
+  >();
   /**
    * Whether a freshly added image is still being checked.
    *
@@ -1347,33 +1350,46 @@ export class RREditorView extends LitElement {
    * Compare a freshly added image against the rest of the archive.
    *
    * **Warns persistently, never blocks** — the `MIN_DPT` precedent exactly
-   * (`SPEC.md` § Reference points). A drifted image labeled into the corpus
-   * bakes the offset into training data, which is real damage; but a human is
-   * present and can judge, the check has never been validated against a real
-   * drifted frame, and blocking authoring on a heuristic would be worse than the
-   * disease.
+   * (`SPEC.md` § Reference points). A human is present and can judge, the check
+   * has never been validated against a real drifted frame, and blocking
+   * authoring on a heuristic would be worse than the disease.
+   *
+   * **What a shift actually costs, since the first version of this said it
+   * wrongly.** Car labels are authored on the image's own pixels, so a translated
+   * image's spans are self-consistent and the training data derived from them is
+   * fine — the offset is *not* baked into a label. What breaks is everything
+   * per-*layout* read against this image: the sensors and calibration were
+   * authored against the archive's other images, so the overlay lands off the
+   * track here, and the image joins the reference set the live view's drift check
+   * compares against.
    *
    * The new image is **excluded from its own reference set**: it is in the
    * manifest by the time this runs, and an image compared against itself reports
    * zero drift forever. A first image finds no references at all and is recorded
    * as no warning — there is nothing for it to have drifted from, which is not
    * the same as having been checked and found steady, and neither claim is made
-   * on screen.
+   * on screen. An uncalibrated layout resolves no tolerance and earns no warning
+   * for the same reason: a fraction of a track width needs a track width.
    */
   private async _checkDrift(filename: string, bytes: Uint8Array) {
     if (!this.archive) return;
     this._driftChecking = filename;
     try {
+      const dpt = getDPT(this.archive.getManifest());
+      const tolerancePx = maxDriftPx(dpt);
+      if (tolerancePx === null) return;
       const session = await openDriftCheck(this.archive, { exclude: filename });
       if (!session) return;
       const { displacementPx, refIndex } = await session.check.check(
         await planeFromBytes(bytes)
       );
-      if (displacementPx > MAX_DRIFT_PX) {
+      if (displacementPx > tolerancePx) {
         // Replaced rather than mutated: Lit does not observe a Map's contents,
         // and `@state` compares by identity.
         this._driftWarnings = new Map(this._driftWarnings).set(filename, {
           px: displacementPx,
+          tracks: displacementPx / dpt!,
+          tolerancePx,
           against: session.refNames[refIndex],
         });
       }
@@ -2469,10 +2485,17 @@ export class RREditorView extends LitElement {
    * It names the displacement and the image the comparison matched, for the same
    * reason the frame-mismatch bar names both sizes: "drifted" alone cannot tell a
    * knocked tripod from a camera moved to photograph a different corner of the
-   * layout, and those call for different decisions. And it states the
-   * consequence — labels placed here enter training data with the offset baked
-   * in — because that is the whole reason a warning about a *photograph* belongs
-   * in a labeling tool.
+   * layout, and those call for different decisions.
+   *
+   * **What it says about the consequence is narrower than it first was, and the
+   * narrower version is the true one.** Labeling this image is fine: a car span is
+   * authored on this image's own pixels, so it is self-consistent whatever the
+   * camera did, and nothing about the shift reaches the training data derived from
+   * it. What the copy warns about is the per-*layout* geometry — the sensors and
+   * calibration drawn over this image belong to the archive's other images, so the
+   * overlay is misplaced here — and that this image now widens the pose the live
+   * view will accept. Telling a labeler their labels are poisoned when they are
+   * not would train them to ignore the bar.
    */
   private _renderDriftWarning(image: Image) {
     if (this._driftChecking === image.filename) {
@@ -2485,12 +2508,14 @@ export class RREditorView extends LitElement {
     if (!warning) return '';
 
     return html`<div class="drift-warning">
-      Camera moved ${warning.px.toFixed(1)} px since <code>${warning.against}</code>
+      Camera moved ${warning.px.toFixed(1)} px (${warning.tracks.toFixed(2)} track widths) since
+      <code>${warning.against}</code>
       <span class="detail">
-        more than the ${MAX_DRIFT_PX} px this layout allows. Sensors and calibration were authored
-        against the archive's other images, so labels placed here carry that offset into the
-        training data. Labeling is not blocked — re-aim the camera and re-capture, or keep this
-        image deliberately.
+        past the ${warning.tolerancePx.toFixed(1)} px this layout allows.
+        <strong>Labeling this image is unaffected</strong> — a car span is authored on its own
+        pixels. What is off is the sensor and calibration overlay, which belongs to the other
+        images, and this image will now count as a valid camera pose in the live view.
+        Nothing is blocked: re-aim and re-capture, or keep it deliberately.
       </span>
     </div>`;
   }

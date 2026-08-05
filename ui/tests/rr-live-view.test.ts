@@ -24,19 +24,31 @@ vi.mock('@occupancy/detector/browser', () => ({
   loadDetector: (source: string) => loadDetector(source),
 }));
 
-// `driftSession` is mocked rather than exercised: it decodes blobs through
+// `driftSession`'s IO is mocked rather than exercised: it decodes blobs through
 // `createImageBitmap` and reads pixels back out of a canvas, and jsdom does
-// neither. What these tests can prove is the wiring — that a measurement past
-// `layout.max_drift_px` withholds L1, keeps L0, and offers the override — which
-// is the whole of #94. The measurement itself is `lib/drift`'s to prove, and
+// neither. What these tests can prove is the wiring — that a measurement past the
+// layout's tolerance withholds L1, keeps L0, and offers the override — which is
+// the whole of #94. The measurement itself is `lib/drift`'s to prove, and
 // `tools/drift-bench` scores it against the corpus.
+//
+// `maxDriftPx` is the **real** implementation, not a stub. It is pure arithmetic
+// over `MAX_DRIFT_TRACK_FRACTION` and a DPT, and it is the thing that makes the
+// tolerance geometric rather than absolute — stubbing it would leave the suite
+// unable to tell a DPT-relative threshold from the fixed pixel count this
+// replaced.
 const check = vi.fn(async () => ({ displacementPx: 0, refIndex: 0 }));
 const openDriftCheck = vi.fn(async () => ({ check: { check }, refNames: ['test.jpg'] }));
 
-vi.mock('../src/driftSession.js', () => ({
-  openDriftCheck: (...args: unknown[]) => (openDriftCheck as any)(...args),
-  grabPlane: () => ({ width: 4, height: 4, data: new Float32Array(16) }),
-}));
+vi.mock('../src/driftSession.js', async importOriginal => {
+  // Safe to import for real: the module builds no canvas at import time, only
+  // inside the two functions replaced below.
+  const actual = await importOriginal<typeof import('../src/driftSession.js')>();
+  return {
+    maxDriftPx: actual.maxDriftPx,
+    openDriftCheck: (...args: unknown[]) => (openDriftCheck as any)(...args),
+    grabPlane: () => ({ width: 4, height: 4, data: new Float32Array(16) }),
+  };
+});
 
 /**
  * Give the view a frame to read.
@@ -170,11 +182,89 @@ describe('rr-live-view', () => {
   });
 
   describe('the camera-drift refusal gate (#94)', () => {
+    /**
+     * The tolerance is a fraction of a track width, so these tests need a DPT.
+     *
+     * 100 px over 10 model mm in N scale (gauge 1435/160) resolves DPT 89.6875,
+     * so `MAX_DRIFT_TRACK_FRACTION` of 0.25 puts the tolerance at 22.42 px. The
+     * archive the outer suite builds is deliberately uncalibrated — one test up
+     * there asserts the "no calibration" notice — so calibration is added here
+     * rather than shared.
+     */
+    const DPT = 89.6875;
+    const TOLERANCE_PX = 0.25 * DPT;
+
+    function calibrate(pixelSpan = 100) {
+      archive.getManifest().layout.calibration = {
+        points: [
+          { px: { x: 0, y: 0 }, world: { x: 0, y: 0, z: 0 } },
+          { px: { x: pixelSpan, y: 0 }, world: { x: 10, y: 0, z: 0 } },
+        ],
+      };
+    }
+
     beforeEach(() => {
       check.mockClear();
       openDriftCheck.mockClear();
       check.mockImplementation(async () => ({ displacementPx: 0, refIndex: 0 }));
       openDriftCheck.mockImplementation(async () => ({ check: { check }, refNames: ['test.jpg'] }));
+      calibrate();
+    });
+
+    it('scales the tolerance with the track width, not the pixel count', async () => {
+      // The correction this replaced an absolute `max_drift_px` for: the same
+      // displacement is fine on a layout the camera sees close up and drift on
+      // one it sees from further away, because what fails is a sensor leaving the
+      // car it reads — a geometric condition. 15 px is inside a quarter track at
+      // DPT 89.7 and outside it at DPT 44.8.
+      check.mockImplementation(async () => ({ displacementPx: 15, refIndex: 0 }));
+
+      const near = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
+      standInReadySource(near);
+      await waitFor(near, () => check.mock.calls.length > 0);
+      expect(15).to.be.lessThan(TOLERANCE_PX);
+      expect(near.shadowRoot!.querySelector('.notice.refusing')).to.be.null;
+
+      // Half the pixels per track: the same camera motion is now half a track.
+      calibrate(50);
+      const far = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
+      standInReadySource(far);
+      await waitFor(far, () => far.shadowRoot!.querySelector('.notice.refusing') !== null);
+      expect(far.shadowRoot!.querySelector('.notice.refusing')).to.not.be.null;
+    });
+
+    it('reports the alignment continuously, not only once it is too large', async () => {
+      // Enhancement over the first cut: a user aiming a camera needs to watch the
+      // number move. The banner is an event; this is an instrument, so it lives
+      // in the stats bar and it shows the tolerance beside the measurement.
+      check.mockImplementation(async () => ({ displacementPx: 4, refIndex: 0 }));
+
+      const el = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
+      standInReadySource(el);
+      const stats = el.shadowRoot!.querySelector('rr-stats-bar')! as any;
+      await waitFor(el, () => stats.alignment !== null);
+
+      expect(stats.alignment).to.equal(4);
+      expect(stats.alignmentTolerance).to.be.closeTo(TOLERANCE_PX, 1e-6);
+      // Well inside tolerance, so nothing is refused and no banner appears — the
+      // readout is the only place this is visible.
+      expect(el.shadowRoot!.querySelector('.notice.refusing')).to.be.null;
+    });
+
+    it('withholds the tolerance, and the readout, for an uncalibrated layout', async () => {
+      // No DPT means no track width to take a fraction of. Those sensors already
+      // read `unknown` / `no-calibration`; a fabricated pixel tolerance would be
+      // a second wrong answer in a quieter voice.
+      archive.getManifest().layout.calibration = { points: [] };
+      check.mockImplementation(async () => ({ displacementPx: 500, refIndex: 0 }));
+
+      const el = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
+      standInReadySource(el);
+      await waitFor(el, () => check.mock.calls.length > 0);
+
+      const stats = el.shadowRoot!.querySelector('rr-stats-bar')! as any;
+      expect(stats.alignmentTolerance).to.be.null;
+      expect(el.shadowRoot!.querySelector('.notice.refusing')).to.be.null;
     });
 
     it('says nothing while the camera is where the archive left it', async () => {
@@ -190,7 +280,7 @@ describe('rr-live-view', () => {
     });
 
     it('refuses to classify once the camera has moved past the tolerance', async () => {
-      check.mockImplementation(async () => ({ displacementPx: 3.2, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 40, refIndex: 0 }));
 
       const el = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
       standInReadySource(el);
@@ -203,10 +293,14 @@ describe('rr-live-view', () => {
       });
 
       const notice = el.shadowRoot!.querySelector('.notice.refusing')!.textContent ?? '';
-      expect(notice).to.contain('refusing to classify');
+      expect(notice).to.match(/refusing to classify/i);
       // The number, not just the verdict: it is what tells a nudged tripod from
       // a camera re-aimed at a different layout.
-      expect(notice).to.contain('3.2 px');
+      expect(notice).to.contain('40.0 px');
+      // In track widths too, which is the unit the tolerance is set in and the
+      // one that says whether a sensor can still sit on the car it reads.
+      expect(notice).to.contain('0.45 track widths');
+      expect(notice).to.contain(TOLERANCE_PX.toFixed(1));
       // And which image it agreed with best, which is what refNames exist for.
       expect(notice).to.contain('test.jpg');
     });
@@ -216,7 +310,7 @@ describe('rr-live-view', () => {
       // moved camera invalidates is their mapping onto sensors authored in the
       // archive's frame. Sensor diamonds off the track beside correct boxes is
       // the clearest statement of why the view is refusing.
-      check.mockImplementation(async () => ({ displacementPx: 9, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 55, refIndex: 0 }));
 
       const el = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
       standInReadySource(el);
@@ -227,7 +321,7 @@ describe('rr-live-view', () => {
     });
 
     it('classifies again when the user overrides, and says that it is doing so', async () => {
-      check.mockImplementation(async () => ({ displacementPx: 4, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 40, refIndex: 0 }));
 
       const el = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
       standInReadySource(el);
@@ -250,7 +344,7 @@ describe('rr-live-view', () => {
 
     it('goes on measuring while refusing, so putting the camera back clears it', async () => {
       // A gate that stopped measuring the moment it fired could not see the fix.
-      check.mockImplementation(async () => ({ displacementPx: 6, refIndex: 0 }));
+      check.mockImplementation(async () => ({ displacementPx: 40, refIndex: 0 }));
 
       const el = await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
       standInReadySource(el);

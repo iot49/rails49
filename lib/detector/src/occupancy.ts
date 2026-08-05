@@ -31,12 +31,13 @@ import type { Detection, Frame, SensorState, UnknownReason } from './types.ts';
  * @param input.frame      The frame sensors and detections are expressed in —
  *                         `camera.resolution`, normally.
  * @param input.drifted    Whether the camera has moved away from the pose the
- *                         archive was authored against (`@occupancy/drift`
- *                         against `layout.max_drift_px`). Optional, defaulting
- *                         to `false`, because a caller with no drift check
- *                         running is not asserting that the camera is steady —
- *                         it is saying it does not know, and that was every
- *                         caller before #94.
+ *                         archive was authored against — `@occupancy/drift`
+ *                         measured against a fraction of a track width
+ *                         (`layout.max_drift_track_fraction`). Optional,
+ *                         defaulting to `false`, because a caller with no drift
+ *                         check running is not asserting that the camera is
+ *                         steady — it is saying it does not know, and that was
+ *                         every caller before #94.
  */
 export function occupancy(input: {
   detections: readonly Detection[] | null;

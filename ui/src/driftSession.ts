@@ -11,14 +11,40 @@
  * **References are decoded at their native resolution and that is load-bearing.**
  * `DriftResult.displacementPx` is reported in the frame of the first reference,
  * so handing the check pre-shrunk images would silently rescale every number —
- * and `layout.max_drift_px` is authored in `camera.resolution` pixels. The check
+ * and the tolerance `maxDriftPx` derives is in `camera.resolution` pixels. The check
  * clamps to its own working resolution internally; letting it do that is what
  * keeps the constant meaning one thing.
  */
 
 import { createDriftCheck, fromImageData } from '@occupancy/drift';
 import type { DriftCheck, GrayPlane } from '@occupancy/drift';
+import { MAX_DRIFT_TRACK_FRACTION } from '@occupancy/config';
 import type { R49Archive } from '@occupancy/r49';
+
+/**
+ * How far the camera may appear to have moved before it counts as drift, in
+ * `camera.resolution` pixels.
+ *
+ * **The one place `MAX_DRIFT_TRACK_FRACTION` is multiplied by a DPT.** Both
+ * surfaces need the number — the live view refuses on it and prints it, the
+ * editor warns on it — and written twice it is the `carWidthPx` mistake again: a
+ * constant that biases a safety decision, living in two files with nothing
+ * checking that they agree.
+ *
+ * DPT *is* pixels per track gauge, so this is a fraction of a track width
+ * expressed in the frame the sensors were authored in. That is the frame the
+ * failure happens in: occupancy breaks when a sensor stops sitting on the car it
+ * reads, which is a geometric condition, not a pixel count — the same physical
+ * misalignment matters equally at DPT 18 and at DPT 90.
+ *
+ * @param dpt the layout's resolution in dots per track. `null` yields `null`:
+ *            an uncalibrated layout has no track width to take a fraction of,
+ *            and its sensors already read `unknown` / `no-calibration` — a
+ *            fabricated tolerance would be a second, quieter wrong answer.
+ */
+export function maxDriftPx(dpt: number | null): number | null {
+  return dpt === null ? null : MAX_DRIFT_TRACK_FRACTION * dpt;
+}
 
 /**
  * A drift check, plus the names of what it is checking against.
