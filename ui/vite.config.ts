@@ -1,4 +1,4 @@
-import { defineConfig, type UserConfig } from 'vite';
+import { defineConfig, type UserConfig, type ViteDevServer } from 'vite';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import type { InlineConfig } from 'vitest';
@@ -32,6 +32,53 @@ const dropUnfetchableOrtWasm = {
   },
 };
 
+/**
+ * Where a corpus checkout may be symlinked for local dev, and the URL it is
+ * served at.
+ *
+ * **Deliberately not under `publicDir`** (#122). It lived in `ui/public/` and
+ * that directory means one thing — copied verbatim into `dist/`, and from there
+ * `rsync`ed to production by `bin/deploy.sh`. Vite dereferences the symlink on
+ * the way, so ~21 MB of `.r49` archives arrived at rails49.org as ordinary
+ * files, under every per-file size check and indistinguishable from bundle
+ * output. Gitignoring it (#108) stopped git from carrying it and did nothing
+ * about the build, which reads the working tree.
+ */
+const PROTO_FIXTURES_DIR = 'proto-fixtures';
+const PROTO_FIXTURES_ROUTE = '/ui/proto-fixtures';
+
+/**
+ * Serve those fixtures in `pnpm dev`, and only there.
+ *
+ * `apply: 'serve'` is the whole guarantee: there is no build hook, so no
+ * arrangement of this plugin can put a fixture in `dist/`. The URL is unchanged
+ * from when the symlink sat in `publicDir`, so nothing about driving the
+ * diagnostics view without the file picker changes.
+ */
+const serveProtoFixtures = {
+  name: 'rr-serve-proto-fixtures',
+  apply: 'serve' as const,
+  configureServer(server: ViteDevServer) {
+    server.middlewares.use(PROTO_FIXTURES_ROUTE, (req, res) => {
+      // `basename` flattens any traversal attempt, and the corpus fixtures tree
+      // is flat, so nothing legitimate needs a subdirectory.
+      const name = path.basename(decodeURIComponent((req.url ?? '').split('?')[0]));
+      const file = path.resolve(__dirname, PROTO_FIXTURES_DIR, name);
+      if (!name || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        // Answered here rather than passed on with `next()`. Everything
+        // reaching this middleware is a fixture request, and the fallthrough is
+        // vite's SPA rewrite — so a typo'd filename would return `index.html`
+        // with a 200 and the archive parser would report a corrupt zip.
+        res.statusCode = 404;
+        res.end(`No fixture ${name} in ui/${PROTO_FIXTURES_DIR}/`);
+        return;
+      }
+      res.setHeader('Content-Type', 'application/zip');
+      fs.createReadStream(file).pipe(res);
+    });
+  },
+};
+
 const includeModels = fs.existsSync(path.resolve(__dirname, DETECTOR_MODEL_DIR));
 
 const config: VitestConfig = {
@@ -52,6 +99,7 @@ const config: VitestConfig = {
       ],
     }) as any,
     dropUnfetchableOrtWasm,
+    serveProtoFixtures,
     ...(process.env.HTTP ? [] : [basicSsl()]),
   ],
   resolve: {
