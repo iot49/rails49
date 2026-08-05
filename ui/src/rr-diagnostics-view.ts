@@ -217,15 +217,23 @@ export class RRDiagnosticsView extends LitElement {
 
         const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'image/jpeg' }));
         urls.set(image.filename, url);
+        // An abandoned sweep must not publish. By the time one resumes, a
+        // replacement sweep may already have published its own map, and this
+        // assignment would overwrite it with handles `_teardown` has revoked —
+        // for images belonging to an archive that is no longer open. The
+        // symptom is a report full of broken thumbnails naming files it never
+        // swept, which no leak check would see: the handles are freed, they are
+        // just freed and still on screen.
+        if (abandon.signal.aborted) return releaseUrls(urls);
         this._urls = new Map(urls);
 
         const element = await decodeImage(url);
-        // Every `return` past this point must hand the URLs back. `_teardown`
-        // cannot do it: it revoked and cleared `this._urls` before this
-        // iteration resumed, and the assignment above then republished the map
-        // — so a sweep that simply returned would leave the blob it had just
-        // created pinned for the lifetime of the document, once per abandoned
-        // sweep.
+        // The rule from #108: every `return` past a handle's creation hands the
+        // URLs back, because `_teardown` can only revoke what was published
+        // before it ran. An abort landing on *this* await is covered either way
+        // — the map went out above — but keeping both returns symmetric is what
+        // stops the next `await` inserted into this loop from reopening the
+        // leak. `releaseUrls` is idempotent for exactly that reason.
         if (abandon.signal.aborted) return releaseUrls(urls);
 
         const detections = await this._detector.detect(element, frame, {

@@ -281,9 +281,9 @@ The same component backs the editor (`src` → `<img>`) and the live view (`stre
 
 ### `geometry.ts` holds the arithmetic, because a component cannot be tested
 
-jsdom does not lay out or paint, so anything left inside a Lit element is untestable until
-`@web/test-runner` is stood up — which nothing has done. Put new editor geometry here, not in the
-component that happens to need it first. Rules it encodes, each wrong somewhere if reimplemented:
+jsdom does not lay out or paint, so anything left inside a Lit element is covered by nothing — and
+by decision (#109) nothing is coming to cover it. Put new editor geometry here, not in the component
+that happens to need it first. Rules it encodes, each wrong somewhere if reimplemented:
 
 * **No scale lookup.** The ratio cancels out of `DPT × STANDARD_WIDTH / STANDARD_GAUGE`, so a car is
   2.09 track-widths wide in every scale. `carWidthPx` itself is **re-exported from
@@ -675,6 +675,28 @@ Vitest in **jsdom**, `@open-wc/testing` fixtures, `tests/<module>.test.ts` mirro
 `matchMedia`, `URL.createObjectURL`). `capture.ts` and `rr-settings-dialog.ts` have no test file
 yet; touching either is a chance to add one.
 
+**jsdom is the whole automated story, and no browser runner is coming** (#109). `@web/test-runner`
+sat in `devDependencies` for months with no config file and no script, running nothing while
+implying browser coverage existed; it is removed. Visual behaviour — that a box lands on the pixel
+it names, that a real pointer capture holds through a drag — is verified **by hand**, and the
+project accepts that. Do not add a second runner without reopening #109.
+
+That decision is not a claim jsdom is sufficient; it is a reading of where the defects actually
+were. Reviewing #106 turned up six, and four were plainly jsdom-testable and had simply never been
+written — the diagnostics components shipped with **zero** test files. A browser runner would have
+caught none of the six. Two more things follow, and both are load-bearing:
+
+* **A component with no test file is the failure mode**, not a component whose test file cannot
+  reach the paint. `rr-diagnostics-view` owned the sweep loop, the detector session's lifetime and
+  every blob URL on screen with nothing exercising any of it, which is why #108's leak could live
+  there — and why writing its tests surfaced a second defect of the same family (an abandoned sweep
+  republishing its dead handles over a live sweep's map).
+* **jsdom's gaps are stubbable more often than they look.** It implements neither
+  `HTMLImageElement.decode` nor `URL.createObjectURL`; both are a few lines in a `beforeEach`, and
+  the second must be stubbed *per test* when a test needs to tell handles apart — the global in
+  `setup.ts` returns `undefined` for every call, which is enough to pass a handle along and useless
+  for asserting one came back. Reach for a stub before concluding a module is untestable.
+
 * **jsdom has no File System Access API**, which is the honest baseline — it is the fallback path,
   and it is what Safari and every phone run. `tests/persistence.test.ts` covers the write-back
   routes by installing fakes on `window`, so it proves the module *routes* correctly and **not**
@@ -692,10 +714,13 @@ yet; touching either is a chance to add one.
   cover the editor's half of a gesture — one entry, no-op suppression, the sticky drag flag — and
   **not** pointer capture, which is the browser's and the viewer's. A drag leaving the viewer is
   exercised as coordinates outside the image, which is what the editor actually sees.
-* Real in-browser coverage — visual regression, genuine pointer interaction — is a stated goal but
-  **is not wired up**: `@web/test-runner` sits in `devDependencies` with no config file and runs
-  nothing. Standing it up (or removing the dependency) is real work; until then, be accurate about
-  what the suite proves.
+* The detector session is pinned from **two sides**, and they are different checks:
+  `tests/ortAssets.test.ts` reads `detectorSession.ts` as source text — that the `wasmPaths`
+  assignment exists, names `/ui/ort/`, and appears in no view — because the link it guards runs
+  between a build-time copy target and a run-time fetch, which neither the typechecker nor the build
+  can see. `tests/detectorSession.test.ts` runs the module instead, and asserts the setup actually
+  fires, fires once per page, and reaches `loadDetector` with the assets module's URL. An assignment
+  behind a condition that never fires would pass the first and fail the second.
 
 Run `pnpm test` from the repo root after changes here: it covers `lib/*` too, and `ui` consumes
 those packages as TypeScript source, so a library change breaks the UI at typecheck rather than at
