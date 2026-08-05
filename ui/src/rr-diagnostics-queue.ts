@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { Frame } from '@occupancy/detector';
 import { KIND_COLOR, KIND_LABEL, LABEL_INK, describeFinding, findingBounds } from './diagnostics.js';
+import { isInsideOpenDialog, isTypingTarget } from './keyboard.js';
 import type { Finding, ImageDiagnostics } from './diagnostics.js';
 import './rr-viewer.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -147,11 +148,27 @@ export class RRDiagnosticsQueue extends LitElement {
     super.disconnectedCallback();
   }
 
-  protected willUpdate(changed: Map<string, unknown>) {
-    // A different image, or a threshold change that re-scored this one, can
-    // leave the cursor past the end. Clamping here rather than in render keeps
-    // the counter and the card reading the same finding.
-    if (changed.has('image')) this._cursor = 0;
+  /**
+   * Which image the cursor belongs to, by **filename**.
+   *
+   * Not object identity. `rr-diagnostics-view` scores on every render rather
+   * than caching, so `image` is a fresh `ImageDiagnostics` each time and
+   * `changed.has('image')` is true on every parent update — including the one
+   * per completed image during a sweep. Resetting on that put the cursor back
+   * to the first finding roughly twice a second while the sweep ran, which made
+   * the queue unusable exactly when someone reviews early.
+   */
+  private _cursorImage: string | null = null;
+
+  protected willUpdate(_changed: Map<string, unknown>) {
+    const filename = this.image?.filename ?? null;
+    if (filename !== this._cursorImage) {
+      this._cursorImage = filename;
+      this._cursor = 0;
+    }
+    // A re-score at a new threshold can still shorten the queue under a cursor
+    // that stays put, so clamp separately. Here rather than in render, so the
+    // counter and the card always read the same finding.
     const count = this._queue.length;
     if (count > 0 && this._cursor >= count) this._cursor = count - 1;
   }
@@ -163,8 +180,15 @@ export class RRDiagnosticsQueue extends LitElement {
    * pair is muscle memory for anyone who has it. Escape leaves, because this is
    * a drill-down and every drill-down owes the user a way back that is not a
    * button hunt.
+   *
+   * **Bound to `window`, so it must decline what is not its own.** These are
+   * bare keys with no modifier: without the guards, typing "Zurich" into the
+   * settings dialog's layout name would swallow the `z` into a zoom toggle, and
+   * Escape would close this queue while leaving the dialog the user is actually
+   * looking at open.
    */
   private _onKeyDown = (event: KeyboardEvent) => {
+    if (isTypingTarget(event) || isInsideOpenDialog(event)) return;
     if (event.key === 'ArrowDown' || event.key === 'j') this._move(1);
     else if (event.key === 'ArrowUp' || event.key === 'k') this._move(-1);
     else if (event.key === 'z') this._zoomed = !this._zoomed;

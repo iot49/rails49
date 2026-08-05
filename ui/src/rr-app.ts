@@ -3,6 +3,9 @@ import { customElement, state } from 'lit/decorators.js';
 import { R49Archive, MANIFEST_VERSION, type ValidScales } from '@occupancy/r49';
 import { EditHistory, revealTarget, type HistoryEntry } from './history.js';
 import { openArchive, writeArchive, type FileBinding } from './persistence.js';
+// Shared with the diagnostics queue, which binds bare keys to `window` too —
+// see `keyboard.ts` for why the rule has one home.
+import { isTypingTarget } from './keyboard.js';
 import './rr-header.js';
 import type { ViewMode } from './rr-header.js';
 import './rr-editor-view.js';
@@ -15,22 +18,6 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 
 // Set the base path for Shoelace assets (icons, etc.)
 setBasePath('/ui/shoelace');
-
-/**
- * True when a keystroke is being typed into a field, so the browser's own text
- * undo must win over the editor's.
- *
- * Reads `composedPath()[0]`, not `event.target`: Shoelace inputs are custom
- * elements, so the event is retargeted to the host and the focused `<input>`
- * sits inside its shadow root. Checking `target` would see `<sl-input>`, decide
- * it is not editable, and hijack Cmd+Z in the middle of typing a layout name.
- */
-function isTypingTarget(event: KeyboardEvent): boolean {
-  const node = event.composedPath()[0] as HTMLElement | undefined;
-  if (!node || typeof node.tagName !== 'string') return false;
-  const tag = node.tagName.toLowerCase();
-  return tag === 'input' || tag === 'textarea' || tag === 'select' || node.isContentEditable === true;
-}
 
 /**
  * Top-level application shell.

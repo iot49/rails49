@@ -90,6 +90,26 @@ describe('rr-header', () => {
     expect(active[0].getAttribute('label')).to.equal('Live');
   });
 
+  it('marks the current mode with aria-current, on exactly one button', async () => {
+    // `nothing`, not `undefined`: an attribute bound to `undefined` renders as
+    // `aria-current=""`, which is present on every button and so marks none of
+    // them. Presence is the whole signal here, so this asserts the count.
+    const el = await fixture<RRHeader>(html`<rr-header .viewMode=${'live'}></rr-header>`);
+    const marked = el.shadowRoot!.querySelectorAll('.modes sl-icon-button[aria-current]');
+    expect(marked).to.have.lengthOf(1);
+    expect(marked[0].getAttribute('label')).to.equal('Live');
+    expect(marked[0].getAttribute('aria-current')).to.equal('true');
+  });
+
+  it('claims no tab pattern it does not implement', async () => {
+    // The roles would sit on the hosts while focus lands inside each shadow
+    // root, and nothing here is a tabpanel — see the comment in rr-header.ts.
+    const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
+    expect(el.shadowRoot!.querySelector('[role="tablist"]')).to.be.null;
+    expect(el.shadowRoot!.querySelector('[role="tab"]')).to.be.null;
+    expect(el.shadowRoot!.querySelector('.modes')!.getAttribute('role')).to.equal('group');
+  });
+
   it('emits nothing when the current mode is clicked again', async () => {
     const el = await fixture<RRHeader>(html`<rr-header .viewMode=${'editor'}></rr-header>`);
     const label = el.shadowRoot!.querySelector('sl-icon-button[label="Label"]')!;
