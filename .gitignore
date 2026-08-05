@@ -24,7 +24,7 @@ classifier/resnet/models/*
 detector/models/*
 !detector/models/version.txt
 detector/runs/
-detector/train.log
+detector/*.log
 # The DOTA-pretrained checkpoint Ultralytics downloads into the working
 # directory on first use. Fetched, not authored.
 detector/*.pt
