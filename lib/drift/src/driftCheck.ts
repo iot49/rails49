@@ -31,11 +31,18 @@ export const WORKING_WIDTH = 960;
  * whose images disagree about their size is a condition the editor already
  * warns about separately, and not this module's to restate.
  *
- * Measured on the 2017 i7, six 1920x1080 references, in Chrome: **~3.4 s to
- * build, ~0.58 s per check**. The build is dominated by resampling six 2-megapixel
- * planes down to the working grid, not by the FFTs (~0.4 s of the total) — it is
- * a once-per-session cost and has not been optimised for that reason. The check
- * is ~0.53 s of arithmetic plus the yields below, which is why the live view
+ * Cost is linear in the reference count, and the UI passes **one** (#118).
+ * Measured back to back on the 2017 i7 in Chrome, 1920x1080 fixture images:
+ *
+ * | references | build | per check |
+ * | :-- | :-- | :-- |
+ * | 1 | 0.13 s | 0.27 s |
+ * | 6 | 1.6 s  | 0.90 s |
+ *
+ * Take the ratio as the durable fact rather than the absolutes — they move with
+ * how warm the machine is. The build is dominated by resampling 2-megapixel planes
+ * onto the working grid rather than by the FFTs, and it is a once-per-session cost.
+ * A check is still tens of times a detector inference, which is why the live view
  * samples on an interval rather than per frame.
  *
  * @param refs the archive's images, in manifest order — `refIndex` indexes this

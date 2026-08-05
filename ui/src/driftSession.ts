@@ -8,12 +8,12 @@
  * benchmark is a first-class consumer, so somebody has to hold the canvas, and
  * this is the `detectorSession.ts` of the drift path.
  *
- * **References are decoded at their native resolution and that is load-bearing.**
- * `DriftResult.displacementPx` is reported in the frame of the first reference,
- * so handing the check pre-shrunk images would silently rescale every number —
- * and the tolerance `maxDriftPx` derives is in `camera.resolution` pixels. The check
+ * **The reference is decoded at its native resolution and that is load-bearing.**
+ * `DriftResult.displacementPx` is reported in the reference's frame, so handing
+ * the check a pre-shrunk image would silently rescale every number — and the
+ * tolerance `maxDriftPx` derives is in `camera.resolution` pixels. The check
  * clamps to its own working resolution internally; letting it do that is what
- * keeps the constant meaning one thing.
+ * keeps the number meaning one thing.
  */
 
 import { createDriftCheck, fromImageData } from '@occupancy/drift';
@@ -47,18 +47,16 @@ export function maxDriftPx(dpt: number | null): number | null {
 }
 
 /**
- * A drift check, plus the names of what it is checking against.
+ * A drift check, plus the name of the image it checks against.
  *
- * The names exist because `DriftResult.refIndex` indexes the references *as
- * handed to the check*, and that is not `manifest.images`: an image whose bytes
- * are missing from the zip is skipped, so every index past it would be off by
- * one. The editor names the image its warning is about, and a warning naming
- * the wrong image is worse than one naming none.
+ * One reference, not a set — see {@link openDriftCheck}. `DriftResult.refIndex`
+ * is therefore always 0 and callers can ignore it; what they want to name is
+ * this.
  */
 export interface DriftSession {
   readonly check: DriftCheck;
-  /** Manifest filenames, parallel to `DriftResult.refIndex`. */
-  readonly refNames: readonly string[];
+  /** The archive's reference image: `manifest.images[0]`. */
+  readonly refName: string;
 }
 
 /**
@@ -113,36 +111,36 @@ export async function planeFromBytes(bytes: Uint8Array): Promise<GrayPlane> {
 }
 
 /**
- * Build a drift check from an archive's images.
+ * Build a drift check against the archive's **reference image**: `images[0]`,
+ * the first thumbnail in the strip.
  *
- * Returns `null` when no reference survives, which is a real state and not an
- * error: a layout that has just been created has nothing to have drifted *from*,
- * and an image being compared against an archive that held nothing else is the
- * first image rather than a drifted one. Both callers say so rather than
- * treating it as a failure — "cannot tell" and "no drift" are different claims
- * and this is the first.
+ * **One image defines the pose, and it is the one the user can see and move.**
+ * The alternative — every image a reference, scored as the minimum over them —
+ * is what shipped first, and it had a hole: an image captured from a moved
+ * camera and kept anyway (the editor warns, it never blocks) joined the
+ * reference set, so the drifted pose then scored ~0 and the refusal never fired
+ * again. One accepted warning permanently widened the accepted pose (#118).
  *
- * @param options.exclude a filename to leave out of the reference set. The
- *        editor needs it: a freshly added image is already in the manifest by
- *        the time it can be checked, and an image compared against itself
- *        reports zero drift forever.
+ * Position 0 closes it, and the reorder control is what makes the choice
+ * legible rather than hidden: dragging a thumbnail to the front changes the
+ * reference, and because the editor shows **every** image's drift against it,
+ * every number on screen updates when you do. A rule keyed on something the
+ * user cannot see — the oldest filename, say — would be safer against accident
+ * and much harder to understand or correct.
+ *
+ * Returns `null` for an archive with no decodable first image, which is a real
+ * state and not an error: a layout that has just been created has no pose to
+ * have drifted from. Callers say so rather than reporting no drift — "cannot
+ * tell" and "steady" are different claims.
+ *
  * @throws whatever decoding or `createDriftCheck` throws. Callers report it;
  *         neither treats a missing drift check as fatal.
  */
-export async function openDriftCheck(
-  archive: R49Archive,
-  options: { exclude?: string } = {},
-): Promise<DriftSession | null> {
-  const manifest = archive.getManifest();
-  const refs: GrayPlane[] = [];
-  const refNames: string[] = [];
-  for (const { filename } of manifest.images) {
-    if (filename === options.exclude) continue;
-    const bytes = await archive.getImage(filename);
-    if (!bytes) continue;
-    refs.push(await planeFromBytes(bytes));
-    refNames.push(filename);
-  }
-  if (refs.length === 0) return null;
-  return { check: await createDriftCheck(refs), refNames };
+export async function openDriftCheck(archive: R49Archive): Promise<DriftSession | null> {
+  const reference = archive.getManifest().images[0];
+  if (!reference) return null;
+  const bytes = await archive.getImage(reference.filename);
+  if (!bytes) return null;
+  const plane: GrayPlane = await planeFromBytes(bytes);
+  return { check: await createDriftCheck([plane]), refName: reference.filename };
 }

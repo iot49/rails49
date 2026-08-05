@@ -124,6 +124,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#87]: https://github.com/iot49/rails49/issues/87
 > [#94]: https://github.com/iot49/rails49/issues/94
 > [#95]: https://github.com/iot49/rails49/issues/95
+> [#118]: https://github.com/iot49/rails49/issues/118
 
 ## State and data flow
 
@@ -927,16 +928,23 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
 * Image add (camera or file), delete, and reorder go through the corresponding `R49Archive` methods,
   each wrapped in `history.record` with target `images`. Deletion passes `retain` so the image's
   bytes survive for undo.
-* **Camera-drift warning on an added image** ([#95]). Both add paths run through one `_addImage`, and
-  the added image is compared against the rest of the archive — itself excluded, since it is already in
-  the manifest and an image compared with itself reports zero drift forever. Past
-  `maxDriftPx(dpt)` — `layout.max_drift_track_fraction` of a track width — it earns a persistent
-  `.drift-warning` bar naming the displacement in pixels *and* track widths plus the image it matched;
-  **nothing is blocked**, exactly as with a below-`MIN_DPT` DPT. An uncalibrated layout resolves no
-  tolerance and is not checked at all. The bar says explicitly that **labeling this image is
-  unaffected** — a car span is authored on the image's own pixels, so the training data derived from it
-  is self-consistent whatever the camera did; what is off is the per-*layout* sensor and calibration
-  overlay, and the fact that this image now counts as a valid camera pose in the live view. The check runs
+* **Camera-drift readout, one row per image** ([#95], [#118]). Every image is measured against the
+  archive's **reference image — `images[0]`, the first thumbnail** — and the row above the viewer shows
+  the result for the image on screen. Four states: `.reference` at position 0 ("zero drift by
+  definition", plus how to change it), `.checking` while a measurement runs, `.steady` for a
+  measurement inside `maxDriftPx(dpt)`, and an amber warning past it. The warning names the
+  displacement in pixels *and* track widths; **nothing is blocked**, exactly as with a below-`MIN_DPT`
+  DPT.
+
+  `.steady` is not decoration: the reference is **user-movable** by dragging the strip, so a row that
+  appeared only on failure would let a reorder re-point the pose with nothing on screen moving. For the
+  same reason a reorder re-measures the whole archive, an add measures only the new image (appending
+  cannot move position 0), and a delete re-sweeps only when position 0 went.
+
+  The bar says explicitly that **labeling this image is unaffected** — a car span is authored on the
+  image's own pixels, so the training data derived from it is self-consistent whatever the camera did;
+  what is off is the per-*layout* sensor and calibration overlay. An uncalibrated layout resolves no
+  tolerance and shows no row at all. The check runs
   unawaited, with a neutral "checking…" row meanwhile, and warnings are keyed by filename **in memory
   only** — a verdict is derived, v4 stores no derived state, and the archive's images already are the
   pose record. A first image finds no references and earns no warning: "nothing to have drifted from"
@@ -1220,13 +1228,13 @@ Camera stream under the two layers of the occupancy output ([#85]).
   L0 needs no DPT), and **drift** (below). The calibration one is resolved when the archive arrives
   rather than in the loop, so a session where no frame ever runs still shows it.
 * **Refuses to classify on camera drift, with an override** ([#94]). A drift check built from the
-  archive's own images (`driftSession.ts`) is sampled every `DRIFT_SAMPLE_INTERVAL_MS` (3 s) rather
+  archive's **reference image**, `images[0]` ([#118], `driftSession.ts`), is sampled every `DRIFT_SAMPLE_INTERVAL_MS` (3 s) rather
   than per frame, and a measurement past `maxDriftPx(dpt)` withholds **L1 only**: every sensor
   reads `unknown` / `drift`, while the detector keeps running and the L0 boxes keep being drawn. The
   boxes are true of the frame they were computed in; what a moved camera invalidates is their mapping
   onto sensors authored in the archive's frame — so diamonds off the track beside correct boxes is the
-  statement of *why*. The banner carries the displacement in pixels and in track widths, the archive
-  image it matched, and a **"classify anyway"** button; overridden, it keeps saying so. The override is per-session and does
+  statement of *why*. The banner carries the displacement in pixels and in track widths, the archive's
+  reference image, and a **"classify anyway"** button; overridden, it keeps saying so. The override is per-session and does
   not survive a remount. Sampling continues while refusing, since putting the camera back is the fix.
   An archive with no images, or a check that fails to build, reports **"not being checked"** — never
   silence, which would read as "no drift found".

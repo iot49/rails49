@@ -22,12 +22,15 @@ const DEFAULT_RESOLUTION: Frame = { width: 1920, height: 1080 };
 /**
  * How long to wait after one drift sample before taking the next.
  *
- * Not per frame: a check is **~0.58 s** against a six-image archive (measured on
- * the 2017 i7 in Chrome), where the detector is tens of milliseconds against one
- * graph. It is also measuring something that changes on the timescale of somebody
- * knocking the tripod — sampling it at 30 Hz would spend the whole frame budget
- * confirming that furniture has not moved. At 3 s that is under a 20% duty cycle,
- * broken into per-reference chunks by the check's own yields.
+ * Not per frame: a check is **~0.27 s** against the archive's single reference
+ * image (measured on the 2017 i7 in Chrome), where the detector is tens of
+ * milliseconds against one graph. It is also measuring something that changes on
+ * the timescale of somebody knocking the tripod — sampling it at 30 Hz would spend
+ * the whole frame budget confirming that furniture has not moved. At 3 s that is
+ * under a 10% duty cycle.
+ *
+ * It was ~0.9 s while every archive image was a reference; one reference (#118)
+ * bought that back, which is a happy side effect of a change made for correctness.
  *
  * Measured from the end of the previous sample rather than the start, so a slow
  * device stretches the gap instead of queueing checks it cannot finish.
@@ -468,12 +471,14 @@ export class RRLiveView extends LitElement {
     const px = this._drift!.displacementPx.toFixed(1);
     const tolerance = this._driftTolerancePx!.toFixed(1);
     const tracks = (this._drift!.displacementPx / this._dpt!).toFixed(2);
-    const against = this._driftSession?.refNames[this._drift!.refIndex];
-    const closest = against ? html` (closest match: <code>${against}</code>)` : '';
+    const against = this._driftSession?.refName;
+    // "against", not "closest match": there is one reference now — the archive's
+    // first image — so there is nothing to have been closest among (#118).
+    const reference = against ? html` (reference: <code>${against}</code>)` : '';
 
     if (this._overrideDrift) {
       return html`<div class="notice">
-        Classifying despite <strong>${px} px</strong> of camera drift${closest} — sensor states may
+        Classifying despite <strong>${px} px</strong> of camera drift${reference} — sensor states may
         be wrong, because the sensors were authored against a view the camera no longer has.
         <button @click=${() => (this._overrideDrift = false)}>Refuse again</button>
       </div>`;
@@ -484,7 +489,7 @@ export class RRLiveView extends LitElement {
     // figure is what says whether a sensor can still be expected to sit on the
     // car it reads, which is the failure this tolerance is set from.
     return html`<div class="notice refusing">
-      The camera has drifted <strong>${px} px</strong> from this layout's images${closest} —
+      The camera has drifted <strong>${px} px</strong> from this layout's reference image${reference} —
       <strong>${tracks} track widths</strong>, past the ${tolerance} px
       (${MAX_DRIFT_TRACK_FRACTION} of a track) this layout allows.
       <strong>Refusing to classify</strong>: every sensor reads <strong>unknown</strong>, and the
