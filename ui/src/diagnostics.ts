@@ -31,12 +31,20 @@ import type { Rect } from './geometry.js';
 /**
  * What one label-or-box turned out to be.
  *
- * Four outcomes and no fifth: a label is found or it is not, a box has a label
- * under it or it does not. `pose-off` is the found-but-badly case, split out
- * because it is the one a labeler can act on — a missed car and a phantom are
- * the model's problem, a pose that disagrees may be either side's.
+ * `pose-off` is the found-but-badly case, split from `agreed` because it is the
+ * one a labeler can act on — a missed car is the model's problem, a pose that
+ * disagrees may be either side's.
+ *
+ * **`duplicate` is split from `phantom` because the shipped model produces
+ * them in quantity.** Both are false positives and a scorer counts them the
+ * same, but they are different faults with different fixes: a phantom is the
+ * model seeing a car in the ballast, while a duplicate is the model seeing one
+ * car twice — a deduplication failure downstream of detection, not a detection
+ * failure. Collapsing them reports "77 boxes over nothing" for an archive whose
+ * real story is that almost every car was found two or three times, which sends
+ * the reader looking in entirely the wrong place.
  */
-export type FindingKind = 'agreed' | 'pose-off' | 'missed' | 'phantom';
+export type FindingKind = 'agreed' | 'pose-off' | 'missed' | 'phantom' | 'duplicate';
 
 /** Why a matched pair was called `pose-off`. Empty on an `agreed` pair. */
 export interface PoseDeviation {
@@ -59,7 +67,14 @@ export interface PoseDeviation {
 
 export interface Finding {
   readonly kind: FindingKind;
-  /** The authored span, or `null` for a phantom. */
+  /**
+   * The authored span, or `null` for a phantom.
+   *
+   * A **duplicate carries the label it duplicates**, even though that label was
+   * awarded to a better box. It is not a claim that this box matched — the kind
+   * says otherwise — it is what lets the crop frame both and the reader see
+   * *which* car was double-counted.
+   */
   readonly label: CarLabel | null;
   /** The predicted box, or `null` for a miss. */
   readonly detection: Detection | null;
@@ -308,10 +323,21 @@ export function diagnoseImage(input: DiagnoseInput): ImageDiagnostics {
   for (const { detection, index } of byConfidence) {
     let best = -1;
     let bestIoU = MATCH_IOU;
+    // Tracked separately so an unmatched box can say *why*: overlapping a label
+    // some better box already took is a duplicate, overlapping nothing at all
+    // is a phantom.
+    let takenBest = -1;
+    let takenBestIoU = MATCH_IOU;
 
     for (let l = 0; l < labels.length; l++) {
-      if (takenLabels.has(l)) continue;
       const iou = polygonIoU(boxPolygons[index], labelPolygons[l]);
+      if (takenLabels.has(l)) {
+        if (iou >= takenBestIoU) {
+          takenBest = l;
+          takenBestIoU = iou;
+        }
+        continue;
+      }
       if (iou >= bestIoU) {
         best = l;
         bestIoU = iou;
@@ -319,11 +345,12 @@ export function diagnoseImage(input: DiagnoseInput): ImageDiagnostics {
     }
 
     if (best < 0) {
+      const duplicates = takenBest >= 0;
       findings.push({
-        kind: 'phantom',
-        label: null,
+        kind: duplicates ? 'duplicate' : 'phantom',
+        label: duplicates ? labels[takenBest] : null,
         detection,
-        iou: null,
+        iou: duplicates ? takenBestIoU : null,
         deviation: null,
       });
       continue;
@@ -361,6 +388,7 @@ export function diagnoseImage(input: DiagnoseInput): ImageDiagnostics {
     'pose-off': 0,
     missed: 0,
     phantom: 0,
+    duplicate: 0,
   };
   for (const finding of findings) counts[finding.kind]++;
 
@@ -371,7 +399,8 @@ export function diagnoseImage(input: DiagnoseInput): ImageDiagnostics {
     detections,
     findings,
     counts,
-    disagreements: counts['pose-off'] + counts.missed + counts.phantom,
+    disagreements:
+      counts['pose-off'] + counts.missed + counts.phantom + counts.duplicate,
     worstConfidence: detections.length
       ? Math.min(...detections.map(detection => detection.confidence))
       : null,
@@ -385,6 +414,7 @@ export function rollUp(images: readonly ImageDiagnostics[]): ArchiveDiagnostics 
     'pose-off': 0,
     missed: 0,
     phantom: 0,
+    duplicate: 0,
   };
   let labels = 0;
   let detections = 0;
@@ -454,6 +484,11 @@ export function describeFinding(finding: Finding): string {
       return 'No box over a labelled car';
     case 'phantom':
       return `Box over no label — ${percent(finding.detection!.confidence)} confident`;
+    case 'duplicate':
+      return (
+        `Second box on a car already found — ${percent(finding.detection!.confidence)} ` +
+        `confident, IoU ${finding.iou!.toFixed(2)} with the same label`
+      );
     case 'agreed':
       return `Agrees — ${percent(finding.detection!.confidence)} confident, IoU ${finding.iou!.toFixed(2)}`;
     case 'pose-off': {
@@ -481,6 +516,7 @@ export const KIND_LABEL: Readonly<Record<FindingKind, string>> = {
   'pose-off': 'Pose off',
   missed: 'Missed car',
   phantom: 'Phantom box',
+  duplicate: 'Duplicate box',
 };
 
 /**
@@ -498,6 +534,10 @@ export const KIND_COLOR: Readonly<Record<FindingKind, string>> = {
   'pose-off': '#ffb300',
   missed: '#ef5350',
   phantom: '#ab47bc',
+  // Blue, well away from the other four. It shares the image with no
+  // calibration crosshair — this view never draws them — so the cyan family is
+  // free here in a way it is not in the editor.
+  duplicate: '#42a5f5',
 };
 
 /**

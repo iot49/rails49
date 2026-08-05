@@ -103,7 +103,7 @@ describe('diagnoseImage', () => {
       detections: [box(50, 0, 100)],
     });
 
-    expect(result.counts).toEqual({ agreed: 1, 'pose-off': 0, missed: 0, phantom: 0 });
+    expect(result.counts).toEqual({ agreed: 1, 'pose-off': 0, missed: 0, phantom: 0, duplicate: 0 });
     expect(result.findings[0].iou).toBeCloseTo(1, 6);
     expect(result.findings[0].deviation).toBeNull();
     expect(result.disagreements).toBe(0);
@@ -151,7 +151,13 @@ describe('diagnoseImage', () => {
       detections: [box(900, 500, 100)],
     });
 
-    expect(result.counts).toEqual({ agreed: 0, 'pose-off': 0, missed: 1, phantom: 1 });
+    expect(result.counts).toEqual({
+      agreed: 0,
+      'pose-off': 0,
+      missed: 1,
+      phantom: 1,
+      duplicate: 0,
+    });
     expect(result.findings.find(f => f.kind === 'missed')!.label!.id).toBe('L1');
     expect(result.findings.find(f => f.kind === 'phantom')!.detection).not.toBeNull();
   });
@@ -167,7 +173,13 @@ describe('diagnoseImage', () => {
       detections: [box(150, 0, 100, { angle: Math.PI / 2 })],
     });
 
-    expect(result.counts).toEqual({ agreed: 0, 'pose-off': 0, missed: 1, phantom: 1 });
+    expect(result.counts).toEqual({
+      agreed: 0,
+      'pose-off': 0,
+      missed: 1,
+      phantom: 1,
+      duplicate: 0,
+    });
   });
 
   it('pairs every car of a consist with its own box', () => {
@@ -198,6 +210,41 @@ describe('diagnoseImage', () => {
     );
   });
 
+  it('calls a second box on a found car a duplicate, not a phantom', () => {
+    // What the shipped model actually does, found the first time this view ran
+    // against a real archive: two or three boxes on one car. Reporting those as
+    // "box over no label" sends the reader hunting for phantom detections in
+    // the ballast, when the fault is that nothing deduplicated the output.
+    const result = diagnoseImage({
+      ...base,
+      labels: [label('L1', 0, 100)],
+      detections: [box(50, 0, 100, { confidence: 0.9 }), box(52, 0, 98, { confidence: 0.5 })],
+    });
+
+    expect(result.counts.duplicate).toBe(1);
+    expect(result.counts.phantom).toBe(0);
+    const duplicate = result.findings.find(f => f.kind === 'duplicate')!;
+    // It carries the label it duplicates, so a crop can frame both and name
+    // which car was double-counted.
+    expect(duplicate.label!.id).toBe('L1');
+    expect(duplicate.iou).toBeGreaterThan(MATCH_IOU);
+    expect(duplicate.detection!.confidence).toBe(0.5);
+    // Still a disagreement: it is a false positive whatever it is called.
+    expect(result.disagreements).toBe(1);
+  });
+
+  it('a box overlapping nothing stays a phantom even when labels exist', () => {
+    const result = diagnoseImage({
+      ...base,
+      labels: [label('L1', 0, 100)],
+      detections: [box(50, 0, 100, { confidence: 0.9 }), box(900, 600, 100, { confidence: 0.5 })],
+    });
+
+    expect(result.counts.duplicate).toBe(0);
+    expect(result.counts.phantom).toBe(1);
+    expect(result.findings.find(f => f.kind === 'phantom')!.label).toBeNull();
+  });
+
   it('gives a contested label to the more confident box', () => {
     // Both boxes overlap the one label. Confidence order is what decides, and
     // the loser is a phantom rather than silently dropped.
@@ -209,10 +256,12 @@ describe('diagnoseImage', () => {
 
     const result = diagnoseImage({ ...base, labels, detections });
 
-    expect(result.counts.phantom).toBe(1);
-    const matched = result.findings.find(f => f.label && f.detection)!;
+    // The loser overlaps the same car, so it is a duplicate rather than a
+    // phantom — but it is still the loser, and still a disagreement.
+    expect(result.counts.duplicate).toBe(1);
+    const matched = result.findings.find(f => f.kind === 'agreed' || f.kind === 'pose-off')!;
     expect(matched.detection!.confidence).toBe(0.95);
-    expect(result.findings.find(f => f.kind === 'phantom')!.detection!.confidence).toBe(0.4);
+    expect(result.findings.find(f => f.kind === 'duplicate')!.detection!.confidence).toBe(0.4);
   });
 
   it('reports the lowest confidence on the image, and null with no boxes', () => {
@@ -229,7 +278,13 @@ describe('diagnoseImage', () => {
 
   it('an image with no labels and no boxes is a clean sheet, not a divide by zero', () => {
     const result = diagnoseImage({ ...base, labels: [], detections: [] });
-    expect(result.counts).toEqual({ agreed: 0, 'pose-off': 0, missed: 0, phantom: 0 });
+    expect(result.counts).toEqual({
+      agreed: 0,
+      'pose-off': 0,
+      missed: 0,
+      phantom: 0,
+      duplicate: 0,
+    });
     expect(result.disagreements).toBe(0);
     expect(result.worstConfidence).toBeNull();
   });
@@ -254,7 +309,13 @@ describe('rollUp', () => {
 
     const archive = rollUp([complete, incomplete]);
 
-    expect(archive.counts).toEqual({ agreed: 1, 'pose-off': 0, missed: 0, phantom: 1 });
+    expect(archive.counts).toEqual({
+      agreed: 1,
+      'pose-off': 0,
+      missed: 0,
+      phantom: 1,
+      duplicate: 0,
+    });
     expect(archive.labels).toBe(1);
     expect(archive.detections).toBe(2);
     expect(archive.imagesWithDisagreements).toBe(1);

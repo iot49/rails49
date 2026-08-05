@@ -1252,6 +1252,10 @@ The document half: scorecard, one sortable row per image, a crop strip behind ea
 
 * **The wording is "agreed", never "accurate".** The percentage describes this archive against this
   model; a tile reading "accuracy" would be a claim nothing here can support.
+* **`Duplicate` is its own tile and column, separate from `Phantom`.** A duplicate is a second box
+  on a car that was already found; a phantom is a box over nothing. Both are false positives, but
+  the first is a deduplication failure and the second a detection failure — and the shipped model
+  produces mostly the first, which folding them together would hide.
 * Images **not marked `labeled_complete`** are flagged in the row and counted in the legend: a
   phantom there may simply be a car nobody has labelled, so it is not evidence against the model.
   Nothing is filtered on the flag — hiding those images would hide real detections.

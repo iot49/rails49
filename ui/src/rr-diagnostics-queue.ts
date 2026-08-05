@@ -173,9 +173,22 @@ export class RRDiagnosticsQueue extends LitElement {
     event.preventDefault();
   };
 
-  /** Everything worth judging, worst kind first. */
+  /**
+   * Everything worth judging, worst kind first.
+   *
+   * A missed car is the most serious — a car the system would drive a train
+   * into — then a phantom (a stop for nothing), then a duplicate (a false
+   * positive that at least found a real car), then a pose that only disagrees
+   * about extent.
+   */
   private get _queue(): readonly Finding[] {
-    const order = { missed: 0, phantom: 1, 'pose-off': 2, agreed: 3 };
+    const order: Record<string, number> = {
+      missed: 0,
+      phantom: 1,
+      duplicate: 2,
+      'pose-off': 3,
+      agreed: 4,
+    };
     return (this.image?.findings ?? [])
       .filter(finding => finding.kind !== 'agreed')
       .slice()

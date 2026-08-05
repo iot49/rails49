@@ -460,6 +460,13 @@ implementation:
 * **Matching is confidence-ordered greedy assignment over oriented-box IoU**, not nearest centre.
   The case that decided it is in the tests: a box lying *across* a car sits at zero centre distance
   and reads as a perfect match, where overlap correctly calls it a phantom over a missed car.
+* **`duplicate` is a separate kind from `phantom`, and the shipped model is why.** The first run of
+  this view against a real archive found the detector emitting two or three boxes per car — 48
+  duplicates against 29 genuine phantoms on `cars-0-10`. Both are false positives and a scorer
+  counts them alike, but they are different faults: a phantom is the model seeing a car in the
+  ballast, a duplicate is nothing having deduplicated the output. Collapsing them reports "77 boxes
+  over nothing" and sends the reader looking in the wrong place. A duplicate **carries the label it
+  duplicates** so the crop can frame both — that is not a claim it matched; the kind says otherwise.
 * **Matching is width-normalized**, the same substitution `occupancy()` makes and for the same
   reason: a label's width is *derived* from DPT rather than authored, so scoring the predicted width
   would charge the model against no ground truth. The raw ratio is reported, never matched on.

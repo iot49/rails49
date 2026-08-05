@@ -14,12 +14,20 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/range/range.js';
 
-type SortKey = 'name' | 'labels' | 'disagreements' | 'missed' | 'phantom' | 'pose-off' | 'conf';
+type SortKey =
+  | 'name'
+  | 'labels'
+  | 'disagreements'
+  | 'missed'
+  | 'phantom'
+  | 'duplicate'
+  | 'pose-off'
+  | 'conf';
 
 /** Crops per expanded row. Past this the strip is a scroll, not a summary. */
 const MAX_CROPS = 8;
 
-const KINDS: readonly FindingKind[] = ['agreed', 'pose-off', 'missed', 'phantom'];
+const KINDS: readonly FindingKind[] = ['agreed', 'pose-off', 'missed', 'phantom', 'duplicate'];
 
 /**
  * The archive-level diagnostics report: scorecard, one sortable row per image,
@@ -354,6 +362,13 @@ export class RRDiagnosticsReport extends LitElement {
           <div class="n">${diagnostics.counts.phantom}</div>
           <div class="t">phantom boxes</div>
         </div>
+        <div class="tile" style="--tint:${KIND_COLOR.duplicate}">
+          <div class="n">${diagnostics.counts.duplicate}</div>
+          <!-- Its own tile, not folded into phantoms: a duplicate is the model
+               seeing one car twice, which is a different fault with a different
+               fix than seeing a car that is not there. -->
+          <div class="t">duplicate boxes</div>
+        </div>
         <div class="tile" style="--tint:${KIND_COLOR['pose-off']}">
           <div class="n">${diagnostics.counts['pose-off']}</div>
           <div class="t">poses off</div>
@@ -417,8 +432,8 @@ export class RRDiagnosticsReport extends LitElement {
             <tr>
               ${this._header('name', 'Image')} ${this._header('labels', 'Labels')}
               ${this._header('disagreements', 'Disagree')} ${this._header('missed', 'Missed')}
-              ${this._header('phantom', 'Phantom')} ${this._header('pose-off', 'Pose off')}
-              ${this._header('conf', 'Lowest conf')}
+              ${this._header('phantom', 'Phantom')} ${this._header('duplicate', 'Duplicate')}
+              ${this._header('pose-off', 'Pose off')} ${this._header('conf', 'Lowest conf')}
               <th>Review</th>
             </tr>
           </thead>
@@ -459,6 +474,7 @@ export class RRDiagnosticsReport extends LitElement {
           ${image.disagreements}
         </td>
         ${cell(image.counts.missed, 'missed')} ${cell(image.counts.phantom, 'phantom')}
+        ${cell(image.counts.duplicate, 'duplicate')}
         ${cell(image.counts['pose-off'], 'pose-off')}
         <td class=${image.worstConfidence === null ? 'zero' : ''}>
           ${image.worstConfidence === null ? '—' : `${Math.round(image.worstConfidence * 100)}%`}
@@ -482,7 +498,7 @@ export class RRDiagnosticsReport extends LitElement {
       </tr>
       ${open
         ? html`<tr class="crops">
-            <td colspan="8">
+            <td colspan="9">
               <div class="crop-strip">
                 ${disagreeing.length === 0
                   ? html`<div class="empty">Every label on this image agreed.</div>`
