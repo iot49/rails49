@@ -9,9 +9,23 @@ reads, that the OBB head trains on it, and that the result survives the ONNX and
 
 Usage:
     uv run python train.py [--epochs 20] [--data ../dataset/yolo/data.yaml]
+    uv run python train.py --hours 10 --patience 30 --name tracer-long
+
+The 20-epoch default is the plumbing run and stays the default. `--hours` is for
+a real training session: the first run stopped at 20 epochs with **validation
+loss still falling** (box 1.575 → 0.861, cls 4.971 → 2.701, no divergence from
+the training curve), which is a model stopped early rather than converged. It
+also missed 23 of 92 cars on images it had *trained on* — a model that has fit
+its data does not do that.
+
+**Pass `--name` for a long run.** `exist_ok=True` means a repeat of the default
+name overwrites `runs/tracer/weights/`, and the currently shipped `.ort` was
+exported from those weights.
 
 Weights land in `runs/`, which is gitignored. Nothing here is published: see
-`SPEC.md` § Accuracy for why a tracer model must never become a release.
+`SPEC.md` § Accuracy for why a tracer model must never become a release — a
+longer run improves the numbers without changing that, since the six-image
+validation split is drawn from the same six archives as the training images.
 """
 
 from __future__ import annotations
@@ -59,7 +73,24 @@ def main() -> None:
         "--epochs",
         type=int,
         default=20,
-        help="Few by design. This is a plumbing run, not a training run.",
+        help="Few by design. This is a plumbing run, not a training run. "
+        "Ignored when --hours is given.",
+    )
+    parser.add_argument(
+        "--hours",
+        type=float,
+        default=None,
+        help="Wall-clock budget. Overrides --epochs and, importantly, rescales the "
+        "learning-rate schedule to fit the time available — appending epochs to a "
+        "schedule that has already decayed to lrf buys very little.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=100,
+        help="Epochs without validation improvement before stopping. The default is "
+        "Ultralytics' and never fires on a 20-epoch run; lower it on a long one so "
+        "the run ends when the model stops learning rather than when the clock does.",
     )
     parser.add_argument(
         "--batch", type=int, default=4, help="Small: 8 GB of RAM, no CUDA."
@@ -85,6 +116,15 @@ def main() -> None:
     model.train(
         data=str(args.data.resolve()),
         epochs=args.epochs,
+        # When `time` is set, Ultralytics times the first epoch, recomputes the
+        # total from the budget, and **rebuilds the LR scheduler** against it —
+        # so `epochs` above is discarded after epoch one and the decay to `lrf`
+        # spans the hours actually available. That rebuild is the reason to use
+        # a time budget rather than a guessed epoch count: a schedule sized for
+        # 20 epochs and then run for 300 spends 280 of them at a learning rate
+        # that has already bottomed out.
+        time=args.hours,
+        patience=args.patience,
         # Ultralytics takes a single `imgsz` for training and letterboxes to it.
         # The rectangular 960x544 shape is applied at *export* instead, which is
         # where it decides the deployed graph — see export_onnx.py.
