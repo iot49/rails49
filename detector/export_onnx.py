@@ -4,9 +4,16 @@ Three conversions, each of which can fail in a way the next stage would hide:
 
 1. **ONNX export at `detector.input`.** The rectangular 960x544 shape is applied
    here, not during training — this is the graph that gets deployed. `nms=False`
-   still yields final detections, because YOLO26's `end2end` head does the
-   300-detection selection *inside* the graph with `TopK`. That is what keeps a
-   rotated-NMS implementation out of the browser.
+   yields the `end2end` head's fixed 300-slot buffer, selected by `TopK`.
+
+   ⚠️ **`TopK` selects; it does not suppress.** This file used to claim the head
+   deduplicated in-graph, and that the browser therefore needed no NMS. Measured
+   across the fixture corpus (issue #107) that is false: fp32 emits 130 boxes
+   over 87 distinct vehicles and INT8 139 over 89 — up to four boxes on one car,
+   with quantization exonerated, since both rates match. Suppression now happens
+   in `lib/detector/src/decode.ts`, class-agnostic, at `detector.nms_iou`. If a
+   future export ever does insert NMS into the graph, that decode step becomes a
+   no-op rather than a conflict, but it should be removed deliberately.
 2. **Static INT8 quantization.** Static, never dynamic: dynamic emits
    `ConvInteger`, which the ORT CPU provider does not implement, so the model
    quantizes fine and then refuses to load. Static emits `QLinearConv`, which it
@@ -240,10 +247,12 @@ def main() -> None:
             outputs = cast(list[np.ndarray], session.run(None, {input_name: frame}))
             result = outputs[0]
 
-            # [1, 300, 7] is YOLO26's NMS-free head: 300 candidate slots, each
+            # [1, 300, 7] is YOLO26's end2end head: 300 candidate slots, each
             # (cx, cy, w, h, score, class, angle). Its survival through a
-            # *rectangular* export is not a given, and it is what keeps a
-            # rotated-NMS stage out of the browser — asserted, not assumed.
+            # *rectangular* export is not a given, so it is asserted rather than
+            # assumed — but note what it does NOT buy: the slots are selected,
+            # not deduplicated, and the browser suppresses duplicates itself
+            # (issue #107). This count is therefore boxes, not vehicles.
             if result.shape != (1, 300, 7):
                 raise SystemExit(
                     f"{model.name}: expected the end2end head's (1, 300, 7) output, "

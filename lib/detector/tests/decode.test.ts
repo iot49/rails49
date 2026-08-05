@@ -155,3 +155,79 @@ describe('the report frame', () => {
     expect(car.angle).toBeCloseTo(same.angle, 9);
   });
 });
+
+describe('duplicate suppression (#107)', () => {
+  const map = () => gridToReport(GRID, GRID, GRID);
+
+  it('keeps only the most confident of several boxes on one car', () => {
+    // What the shipped model actually emits. Measured across the fixture
+    // corpus: 130 boxes over 87 distinct vehicles at fp32, 139 over 89 at
+    // INT8 — up to four boxes on one car. `end2end`'s TopK selects the top 300
+    // slots; it suppresses nothing.
+    const data = tensor([
+      [480, 270, 200, 40, 0.55, 0, 0],
+      [484, 271, 205, 41, 0.83, 0, 0.02],
+      [477, 269, 198, 39, 0.46, 0, -0.01],
+    ]);
+
+    const detections = decodeDetections(data, dims(3), map(), 0.25);
+
+    expect(detections).toHaveLength(1);
+    expect(detections[0].confidence).toBeCloseTo(0.83, 6);
+  });
+
+  it('keeps both cars of a coupling, which abut rather than overlap', () => {
+    // The case suppression must never eat. Coupled cars share an endpoint, so
+    // their rectangles touch along one edge and score ~0 against each other —
+    // which is why 0.5 is safe here where a general-purpose default would not
+    // have to be.
+    const data = tensor([
+      [400, 270, 200, 40, 0.8, 0, 0],
+      [600, 270, 200, 40, 0.7, 0, 0],
+    ]);
+
+    const detections = decodeDetections(data, dims(2), map(), 0.25);
+
+    expect(detections).toHaveLength(2);
+    expect(detections.map(d => Math.round(d.centre.x)).sort((a, b) => a - b)).toEqual([400, 600]);
+  });
+
+  it('keeps two cars on parallel tracks, side by side', () => {
+    // Across the axis rather than along it: adjacent sidings put two cars a
+    // track apart with no overlap at all.
+    const data = tensor([
+      [480, 200, 200, 40, 0.8, 0, 0],
+      [480, 300, 200, 40, 0.7, 0, 0],
+    ]);
+
+    expect(decodeDetections(data, dims(2), map(), 0.25)).toHaveLength(2);
+  });
+
+  it('returns survivors in confidence order', () => {
+    // The raw decode was slot-ordered; slot order carries no meaning, and the
+    // sort suppression needs anyway is a better one to expose.
+    const data = tensor([
+      [200, 200, 100, 40, 0.4, 0, 0],
+      [500, 200, 100, 40, 0.9, 0, 0],
+      [800, 200, 100, 40, 0.6, 0, 0],
+    ]);
+
+    const detections = decodeDetections(data, dims(3), map(), 0.25);
+
+    expect(detections.map(d => d.confidence)).toEqual([0.9, 0.6, 0.4].map(v => expect.closeTo(v, 6)));
+  });
+
+  it('suppresses after thresholding, never before', () => {
+    // A high-scoring box must not be suppressed by one that never survived the
+    // confidence cut — that would drop a real car on the say-so of noise.
+    const data = tensor([
+      [480, 270, 200, 40, 0.30, 0, 0],
+      [482, 270, 200, 40, 0.10, 0, 0],
+    ]);
+
+    const detections = decodeDetections(data, dims(2), map(), 0.25);
+
+    expect(detections).toHaveLength(1);
+    expect(detections[0].confidence).toBeCloseTo(0.3, 6);
+  });
+});

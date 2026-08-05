@@ -460,13 +460,22 @@ implementation:
 * **Matching is confidence-ordered greedy assignment over oriented-box IoU**, not nearest centre.
   The case that decided it is in the tests: a box lying *across* a car sits at zero centre distance
   and reads as a perfect match, where overlap correctly calls it a phantom over a missed car.
-* **`duplicate` is a separate kind from `phantom`, and the shipped model is why.** The first run of
-  this view against a real archive found the detector emitting two or three boxes per car — 48
-  duplicates against 29 genuine phantoms on `cars-0-10`. Both are false positives and a scorer
-  counts them alike, but they are different faults: a phantom is the model seeing a car in the
-  ballast, a duplicate is nothing having deduplicated the output. Collapsing them reports "77 boxes
-  over nothing" and sends the reader looking in the wrong place. A duplicate **carries the label it
+* **`duplicate` is a separate kind from `phantom`, and finding out why is what this view was for.**
+  Its first run against a real archive showed the detector emitting two or three boxes per car — 48
+  duplicates against 29 genuine phantoms on `cars-0-10`. Both are false positives and a scorer counts
+  them alike, but they are different faults: a phantom is the model seeing a car in the ballast, a
+  duplicate is nothing having deduplicated the output. Collapsing them reports "77 boxes over
+  nothing" and sends the reader looking in the wrong place. A duplicate **carries the label it
   duplicates** so the crop can frame both — that is not a claim it matched; the kind says otherwise.
+
+  **The cause was found and fixed** (#107): `end2end`'s `TopK` selects the top 300 slots and
+  suppresses nothing, at fp32 and INT8 alike. `lib/detector/src/decode.ts` now suppresses duplicates
+  before returning L0, so this count should read near zero against a current model — **keep the kind
+  anyway**. It is the only thing that would show the suppression regressing, and it distinguishes
+  the two faults that a single "false positive" number cannot.
+* **The polygon IoU is `@occupancy/detector`'s**, not this module's. It moved down when the decode
+  became a second consumer, which is the bar that package sets for promoting anything; two copies of
+  a winding rule is exactly how a matcher and a suppressor come to disagree about what overlaps.
 * **Matching is width-normalized**, the same substitution `occupancy()` makes and for the same
   reason: a label's width is *derived* from DPT rather than authored, so scoring the predicted width
   would charge the model against no ground truth. The raw ratio is reported, never matched on.

@@ -1,5 +1,7 @@
-import { DETECTOR_CLASSES } from '@occupancy/config';
+import { DETECTOR_CLASSES, DETECTOR_NMS_IOU } from '@occupancy/config';
 import { mapPoint, mapVector, type GridToReport } from './letterbox.ts';
+import { boxCorners } from './geometry.ts';
+import { polygonIoU } from './overlap.ts';
 import type { Detection } from './types.ts';
 
 /** Fields per slot in the end2end head's output: `(cx, cy, w, h, score, class, angle)`. */
@@ -38,7 +40,7 @@ export function decodeDetections(
   if (dims.length !== 3 || dims[0] !== 1 || dims[2] !== STRIDE) {
     throw new Error(
       `expected the end2end head's [1, n, ${STRIDE}] output, got [${dims.join(', ')}]. ` +
-        `A JS-side NMS stage would now be required.`
+        `The suppression below assumes that layout.`
     );
   }
 
@@ -93,5 +95,49 @@ export function decodeDetections(
     });
   }
 
-  return detections;
+  return suppressDuplicates(detections);
+}
+
+/**
+ * Drop every box that is a second opinion about a car already accounted for.
+ *
+ * **The graph does not do this, contrary to what the export long assumed**
+ * (issue #107). `end2end`'s `TopK` selects the 300 highest-scoring slots and
+ * suppresses nothing, so the head routinely emits two, three or four boxes on
+ * one vehicle. Measured across the fixture corpus: 130 boxes over 87 distinct
+ * vehicles at fp32, 139 over 89 at INT8 — quantization is not the cause, the
+ * premise was simply wrong.
+ *
+ * It belongs here rather than downstream because L0 is defined as *every car
+ * the model found* (`SPEC.md` § Occupancy Output), and a list naming one car
+ * four times is not that. The same reasoning already puts thresholding here.
+ *
+ * Greedy by descending confidence, the standard construction: take the best
+ * box, drop everything overlapping it beyond `DETECTOR_NMS_IOU`, repeat.
+ *
+ * **Class-agnostic**, and deliberately: `DETECTOR_CLASSES` holds one entry, and
+ * two boxes on one vehicle disagreeing about its class is exactly the case
+ * worth collapsing to the more confident answer rather than reporting twice.
+ * Revisit if the vocabulary ever grows classes that legitimately nest.
+ *
+ * The result is **confidence-ordered**, where the raw decode was slot-ordered.
+ * Slot order carries no meaning, and the survivors come out of the sort this
+ * needs anyway; nothing downstream depended on the old order.
+ */
+function suppressDuplicates(detections: readonly Detection[]): Detection[] {
+  // Corners once per box, not once per comparison: this runs per frame in the
+  // live view, and the polygon clip is the expensive part.
+  const ranked = detections
+    .map(detection => ({ detection, corners: boxCorners(detection) }))
+    .sort((a, b) => b.detection.confidence - a.detection.confidence);
+
+  const kept: { detection: Detection; corners: readonly { x: number; y: number }[] }[] = [];
+  for (const candidate of ranked) {
+    const duplicate = kept.some(
+      winner => polygonIoU(candidate.corners, winner.corners) > DETECTOR_NMS_IOU
+    );
+    if (!duplicate) kept.push(candidate);
+  }
+
+  return kept.map(entry => entry.detection);
 }

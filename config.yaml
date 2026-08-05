@@ -73,6 +73,22 @@ detector:
   # It has a floor above zero: at 0 you accept 300 padding slots as phantom
   # cars and every sensor reads `occupied` on every frame.
   confidence_threshold: 0.25
+  # Rotated-box IoU above which two detections are taken to be the same car,
+  # and the lower-scoring one dropped (issue #107).
+  #
+  # The exported graph does **not** deduplicate. `end2end`'s `TopK` selects the
+  # 300 highest-scoring slots; it suppresses nothing, and measurement across the
+  # fixture corpus found 130 boxes over 87 distinct vehicles at fp32 and 139
+  # over 89 at INT8 — up to four boxes on one car. Quantization is not the
+  # cause; the premise that the head deduplicates was simply wrong.
+  #
+  # 0.5, not Ultralytics' predict-time 0.7: coupled cars **abut** rather than
+  # overlap, so a consist's neighbours score near zero against each other and
+  # are never at risk, which buys room to suppress harder than a general-purpose
+  # default would. Raise it if a real overlap ever gets eaten; the failure that
+  # would show is a car vanishing from a tight curve where two boxes genuinely
+  # overlap.
+  nms_iou: 0.5
   # Fraction of exported images held out as the validation split. The split is
   # by image, not by label — every car in an image must land on the same side,
   # or the same frame appears in both. Deterministic in the image's identity,

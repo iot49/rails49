@@ -36,6 +36,15 @@ export { occupancy } from './occupancy.ts';
 // the constant both are built on, and L1 substitutes for the model's own.
 export { boxCorners, carWidthPx, spanToPolygon } from './geometry.ts';
 
+//── Box overlap ──────────────────────────────────────────────────────────────
+// How much two oriented boxes share. Exported because it has two consumers
+// that are not each other's: the decode suppresses duplicate boxes with it
+// (#107), and the UI's archive diagnostics match predictions against labels
+// with it. It lived in `ui/src/diagnostics.ts` until the second caller
+// appeared, which is the bar this file sets everywhere else for moving
+// something down.
+export { convexIntersectionArea, polygonArea, polygonIoU } from './overlap.ts';
+
 // Withheld: `covers`, the point-in-oriented-box test, and the width
 // normalization it is applied with. `occupancy` is the only caller, so
 // exporting them would publish a seam nothing yet stands on. `boxCorners` is
