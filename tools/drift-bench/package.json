@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@occupancy/drift": "workspace:*",
     "@occupancy/r49": "workspace:*",
     "sharp": "^0.33.4",
     "tsx": "^4.10.5"

@@ -10,6 +10,8 @@ Computer vision suite for model railroaders: camera-based track occupancy detect
 
 **SPEC § Format is now implemented.** The manifest is **v4** — cars as two-point spans with provenance, sensors per layout, multi-point calibration, `labeled_complete` per image — and `@occupancy/r49` reads and writes nothing else. Every authoring surface the v4 editor asks for is built, but the editor is not finished — see `ui/CLAUDE.md` for its state, GitHub Issues for what is open, and `SPEC.md` § In scope for the still-unresolved proposal interaction. The detector path is now wired end to end: the dataset export and the training/export path run (`dataset/src/yolo_export.ts`, then `detector/`), and **`rr-live-view` loads the detector, draws L0 boxes and reports L1 per sensor** (#85) — the CNN is retained and retrainable but nothing loads it. What is still missing is archive diagnostics in the UI (#87).
 
+**Camera-drift detection is built** (map #89): `@occupancy/drift` measures how far the camera has moved from the pose an archive's images were shot in, the live view **refuses to classify** past `layout.max_drift_track_fraction` of a track width with a visible override (#94), reporting the alignment continuously in the stats bar, and the editor **warns without blocking** on a freshly added image (#95). Validation is entirely synthetic — the fixtures were all shot on a tripod, so `tools/drift-bench` warps them — and the recovery flow after a refusal is deliberately unspecified until real usage exists.
+
 ## Commands
 
 Run from the repo root unless noted. pnpm workspace + `uv` for Python.
@@ -28,6 +30,7 @@ Run from the repo root unless noted. pnpm workspace + `uv` for Python.
 | Deploy to Cloudflare Pages | `bin/deploy.sh` |
 | Python lint/format/types | `cd <classifier/resnet\|detector> && uv run ruff check . && uv run black --check . && uv run pyright` |
 | Derive the detector dataset | `pnpm --filter dataset run export:yolo` (reads `dataset/r49/`, writes `dataset/yolo/`) |
+| Score the drift check on the fixtures | `pnpm --filter @occupancy/drift-bench bench` (needs `iot49/r49` cloned at `../r49`; ~10 min for 736 cases) |
 | Fine-tune + export the detector | `cd detector && uv run python train.py && uv run python export_onnx.py` |
 | Install pre-push hook (runs `bin/test.sh`) | `bin/install-hooks.sh` |
 
@@ -42,8 +45,18 @@ The whole system is one data path; each directory is a stage in it.
 Two branches share one corpus: the **detector** path runs, the **classifier**
 path is parked at its first arrow.
 
+The archives feed a third consumer that trains nothing: `lib/drift` derives
+reference spectra from the images at load time and both UI surfaces gate on them
+(#89). It is off the training path entirely — no model, no export, no artifact.
+
 ```
 .r49 archives (iot49/r49)         v4: layout photos, calibration, labels
+        │
+        ├── lib/drift/                   ✓ RUNS  createDriftCheck(images)
+        │       │                        block phase correlation, nothing stored
+        │       ├─▶ ui/rr-live-view       refuse to classify + override   ✓ #94
+        │       ├─▶ ui/rr-editor-view     warn, never block               ✓ #95
+        │       └─▶ tools/drift-bench     736 synthetic cases, AUC 1.000
         │
         ├── dataset/src/yolo_export.ts   ✓ RUNS  (labeled_complete gate, OBB spans)
         │       ▼
@@ -109,6 +122,7 @@ The conversion's regression guard is **retired** (#67) — its job ended with th
 `pnpm-workspace.yaml` covers `lib/*`, `ui`, `dataset`. The `lib/*` packages are consumed **as TypeScript source** — nothing under `lib/` is built or published.
 
 * `@occupancy/r49` — `.r49` archive parser/serializer (zip of `manifest.json` + images), zod-validated **v4-only** manifest schema, scale geometry (`getDPT`, and `getDPTResidual` — the same least-squares fit's disagreement, in image pixels, which is what makes a mis-typed world coordinate visible instead of silently absorbed into the scale). Loading a v3 archive fails on the version number alone: there is no compatibility shim, because a point marker carries neither extent nor orientation and so cannot be migrated. Its gauge, scale ratios and scale enum come from `@occupancy/config`.
+* `@occupancy/drift` — camera-drift detection (#89). `createDriftCheck(refs)` → `check(frame)` → `{ displacementPx, refIndex }` in the reference images' pixels. Block-wise phase correlation with a hand-rolled FFT, dependency-free, one entry point: it runs identically in the browser and in Node because `tools/drift-bench` scores **it** rather than a copy — 736 synthetic cases, AUC 1.000, every legitimate case exactly 0. **It measures and decides nothing**: the verdict is `layout.max_drift_track_fraction` in `config.yaml` — a fraction of a *track width*, converted to pixels in the one place that multiplies it by a DPT (`ui/src/driftSession.ts`'s `maxDriftPx`), because the failure is geometric and an absolute pixel count would have to be re-picked per camera. The live view refuses to classify on it (with an override) and the editor warns without blocking. Correction — homography fitting, fiducials — is out of scope by decision (#12).
 * `@occupancy/config` — **generated** from `config.yaml`, committed. Layout and detector constants.
 * `@occupancy/uid` — Snowflake-style id generator
 * `@occupancy/classifier` — ONNX Runtime classifier; **three entry points**, and the split is load-bearing: `.` exports only `ClassifierConfig`, `./browser` exports `BrowserClassifier`, `./node` exports `NodeClassifier`. This is what keeps `onnxruntime-node` and `sharp` out of the browser bundle. Shared preprocessing math lives in the unexported `BaseClassifier`. **Nothing loads it any more** (#7, #85) — `ui` does not even depend on it — but it stays retrainable and revivable.
@@ -123,6 +137,7 @@ Lit + Shoelace + Vite. Per-component contracts are documented at length in `ui/R
 * All custom elements are prefixed `rr-` (railroad). Non-element modules use plain camelCase filenames (`carMarker.ts`, `capture.ts`).
 * `rr-viewer` is shared by both the editor and live views — same component, `src` (image) in one, `stream` (video) in the other. Its media element and SVG overlay resolve to **one box** by construction (#41), so a marker lands on the pixel it names in either mode. It **reports pointer gestures but authors nothing**: typed `rr-pointer-*` events carry image-pixel coordinates, deciding what a gesture means is `rr-editor-view`'s job, and the arithmetic lives in the pure `ui/src/geometry.ts`. The editor's authoring surfaces — calibration points, sensors, car chaining with shared coupler handles, reclassify, the completeness affordance — and their invariants are documented in `ui/CLAUDE.md`.
 * `carMarker.ts`, `sensorMarker.ts` and `calibrationMarker.ts` are modules, not custom elements, because custom elements break the SVG namespace inside `<svg>`. Each one's renderer and styles must be used together. `carMarker.ts` draws both the authored car and the detector's L0 box — a detection is the same object seen from the other side, so it shares the ink and the winding rule (#85).
+* **Camera drift gates both views, asymmetrically** (#89). `ui/src/driftSession.ts` is the one place that holds a canvas for it — `openDriftCheck(archive)`, `grabPlane(source, w, h)` — because `@occupancy/drift` takes a `GrayPlane` rather than an `ImageData` so Node can call it too. In the **live view** a measurement past `maxDriftPx(dpt)` withholds L1 (every sensor `unknown` / `drift`) while **L0 keeps running**: the boxes are true of the frame they were computed in, and what a moved camera invalidates is their mapping onto sensors authored in the archive's frame — so sensor diamonds sitting off the track beside correct boxes is the statement of *why*. Occupancy is machine-consumable, so refusal is the honest response where a banner is not; the banner carries the number in pixels and track widths plus the "classify anyway" override, which exists because the check's false-positive rate is young, and `rr-stats-bar` carries the measurement *continuously* against the tolerance — the banner is an event, alignment is an instrument, and someone aiming a camera has to watch it move. In the **editor** an added image that disagrees earns a persistent warning bar and **nothing is blocked** — the `MIN_DPT` precedent. Drift is sampled every few seconds, never per frame, and sampling continues *while* refusing: putting the camera back is the fix, and a gate that stopped measuring could not see it happen.
 * The app is entirely client-side: layouts are opened and saved as `.r49` files through the file picker, and inference runs in the browser via ONNX Runtime's WASM backend. There is no backend — don't reintroduce one without discussion.
 * **The ORT runtime ships from origin, and every stage of the build depends on that** (#15). `rails49.org/_headers` cross-origin-isolates `/ui/` so ORT gets more than one WASM thread; `require-corp` then forbids the cross-origin CDN the runtime used to come from. It fits under Cloudflare's 25 MiB limit only because the app imports `onnxruntime-web/wasm` rather than the package root, which would pull the 25.02 MiB jsep (WebGPU/WebNN) binary the `executionProviders: ['wasm']` sessions never use. `ui/ortAssets.ts` names the binary, its Emscripten glue and the copy targets; `bin/deploy.sh` repeats the filename because a shell script cannot import it, and `ui/tests/ortAssets.test.ts` is what keeps the two from drifting.
 * Vite copies `detector/models/detector_int8.ort` into the bundle **only if that directory exists**, so builds succeed without a local model — the live view then shows a no-model banner and reports every sensor `unknown`. The filename comes from `ui/modelAssets.ts`, never a literal.

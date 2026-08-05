@@ -26,6 +26,38 @@ higher = more drift, continuous — thresholding is the harness's job. The
 report gives per-grade score distributions, AUC against the pass set, and
 detection rate at the zero-false-alarm threshold.
 
+## What it scores, and why that matters
+
+The default scorer is **`phasecorr`, which is `@occupancy/drift` itself** —
+`src/phasecorr.ts` is an adapter around `createDriftCheck` and holds no
+arithmetic of its own. That is the point: the benchmark exists to validate the
+code the UI runs, so a scorer carrying its own copy of the algorithm would grade
+the copy and pass while the shipped path failed. The throwaway prototype that
+proved the approach ([#92](https://github.com/iot49/rails49/issues/92)) lived in
+`src/prototype/` on a `drift-prototype` branch; it is gone, and nothing should
+take its place.
+
+Latest full run (46 fixture images, 736 cases, ~10 min on a 2017 i7):
+
+| scorer | overall AUC | pass max | flag min | det@0FA |
+| :-- | :-- | :-- | :-- | :-- |
+| mad | 0.596 | 0.245 | 0.020 | 0% |
+| zmad | 0.915 | 0.783 | 0.081 | 4–15% |
+| **phasecorr** | **1.000** | **0.00000** | **1.00000** | **100%** |
+
+Every one of the 230 must-pass cases scores **exactly 0** — the correlation peak
+is taken at integer lag, so an unmoved frame reads a hard zero rather than a
+noise floor — and every must-flag grade is detected at the zero-false-alarm
+threshold, down to 2 px of translation and the perspective tilt. The score is
+interpretable: `flag:translate-10px` reads a median of 10.00000.
+
+That gap is the check's **detection floor** — it says how little the check can
+resolve, not how much occupancy tolerates. The tolerance is
+`layout.max_drift_track_fraction`, a quarter of a track width, and it is
+deliberately far above this: the number that matters is the displacement at which
+a sensor stops sitting on the car it reads. `config.yaml` records the derivation
+of both.
+
 ## Running
 
 The fixtures live in [iot49/r49](https://github.com/iot49/r49) `fixtures/`;
@@ -36,7 +68,12 @@ pnpm --filter @occupancy/drift-bench bench
 pnpm --filter @occupancy/drift-bench bench -- --scorer zmad --archive lighting --json report.json
 ```
 
-Built-in scorers are the naive pixel baselines `mad` and `zmad`
-(`src/baseline.ts`). They exist to prove the harness and to set the bar a
-structural candidate has to beat — the prototype ticket
-([#92](https://github.com/iot49/rails49/issues/92)) brings its own.
+`phasecorr` is the default. The naive pixel baselines `mad` and `zmad`
+(`src/baseline.ts`) stay reachable by name: they prove the harness end to end and
+put a number on why structural comparison was needed at all — `zmad` tops out at
+AUC 0.915 because the lighting archive's legitimate variation scores like drift.
+A table without them loses the comparison that justifies the approach.
+
+A full run rebuilds each case's reference spectra from scratch, which the UI does
+once per session — so this pays setup 736 times. It measures separation, not
+throughput; use `--archive` to scope a run while iterating.

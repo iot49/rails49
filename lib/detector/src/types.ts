@@ -44,11 +44,14 @@ export interface Detection {
 /**
  * Why a sensor could not be answered.
  *
- * Deliberately omits camera drift: drift detection is unbuilt (issue #12), and
- * a reason nothing can currently produce would be speculative. The union grows
- * when it lands.
+ * `drift` is the one that is a **refusal** rather than an absence: a model is
+ * loaded, calibration resolves, the sensor is in frame, and the answer is still
+ * withheld because the camera no longer sees what the archive was authored
+ * against. It was omitted from this union until `@occupancy/drift` could produce
+ * it (issue #12 → #94); the other three describe missing capability, and this
+ * one describes measurement that would be wrong.
  */
-export type UnknownReason = 'no-model' | 'no-calibration' | 'outside-frame';
+export type UnknownReason = 'no-model' | 'no-calibration' | 'outside-frame' | 'drift';
 
 /**
  * One sensor's L1 state.

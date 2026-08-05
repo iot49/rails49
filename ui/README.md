@@ -53,7 +53,7 @@ rr-app                          ← shell: owns the archive and the view mode
 │   ├── rr-sensor-dialog        ← asks for a sensor's optional name (sl-dialog)
 │   └── rr-context-menu         ← right-click verbs on one object (sl-menu)
 ├── rr-live-view                ← live mode; owns the detector and the L0→L1 loop
-│   ├── rr-stats-bar            ← FPS / cars / occupied / inference overlay
+│   ├── rr-stats-bar            ← FPS / cars / occupied / inference / drift overlay
 │   └── rr-viewer               ← SAME component, video source instead of img
 │       ├── sensorMarker.ts     ← the diamond, coloured by occupied / clear / unknown
 │       └── carMarker.ts        ← renderDetection: the dashed L0 box
@@ -122,6 +122,8 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#82]: https://github.com/iot49/rails49/issues/82
 > [#85]: https://github.com/iot49/rails49/issues/85
 > [#87]: https://github.com/iot49/rails49/issues/87
+> [#94]: https://github.com/iot49/rails49/issues/94
+> [#95]: https://github.com/iot49/rails49/issues/95
 
 ## State and data flow
 
@@ -925,6 +927,21 @@ nothing would read as a broken editor, and `rr-app` owns the toast.
 * Image add (camera or file), delete, and reorder go through the corresponding `R49Archive` methods,
   each wrapped in `history.record` with target `images`. Deletion passes `retain` so the image's
   bytes survive for undo.
+* **Camera-drift warning on an added image** ([#95]). Both add paths run through one `_addImage`, and
+  the added image is compared against the rest of the archive — itself excluded, since it is already in
+  the manifest and an image compared with itself reports zero drift forever. Past
+  `maxDriftPx(dpt)` — `layout.max_drift_track_fraction` of a track width — it earns a persistent
+  `.drift-warning` bar naming the displacement in pixels *and* track widths plus the image it matched;
+  **nothing is blocked**, exactly as with a below-`MIN_DPT` DPT. An uncalibrated layout resolves no
+  tolerance and is not checked at all. The bar says explicitly that **labeling this image is
+  unaffected** — a car span is authored on the image's own pixels, so the training data derived from it
+  is self-consistent whatever the camera did; what is off is the per-*layout* sensor and calibration
+  overlay, and the fact that this image now counts as a valid camera pose in the live view. The check runs
+  unawaited, with a neutral "checking…" row meanwhile, and warnings are keyed by filename **in memory
+  only** — a verdict is derived, v4 stores no derived state, and the archive's images already are the
+  pose record. A first image finds no references and earns no warning: "nothing to have drifted from"
+  is not "checked and found steady". Cleared wholesale when the archive changes, since a filename
+  means nothing on the next one.
 * **Calibration authoring.** A **click** in the viewer — `rr-pointer-down` then `rr-pointer-up`
   within `CLICK_SLOP_SCREEN_PX`, on the same `pointerId` — is hit-tested against the layout's
   calibration points with `DEFAULT_GRAB_RADIUS_SCREEN_PX`. A hit opens `rr-calibration-dialog`
@@ -1198,11 +1215,23 @@ Camera stream under the two layers of the occupancy output ([#85]).
 * **The loop runs whether or not a model loaded.** `occupancy()` is total, and with `detections:
   null` it answers every sensor `unknown` / `no-model` — a state SPEC names and the user needs to
   see. Suppressing the loop would leave the previous frame's answers on screen instead.
-* Two banners, and each says what it costs: **no model** (every sensor `unknown`, with the command
-  that builds one) and **no calibration** (every sensor `unknown`, but *cars are still detected* —
-  L0 needs no DPT). The calibration one is resolved when the archive arrives rather than in the
-  loop, so a session where no frame ever runs still shows it.
-* Disposes the detector session and stops all camera tracks on disconnect.
+* Three banners, and each says what it costs: **no model** (every sensor `unknown`, with the command
+  that builds one), **no calibration** (every sensor `unknown`, but *cars are still detected* —
+  L0 needs no DPT), and **drift** (below). The calibration one is resolved when the archive arrives
+  rather than in the loop, so a session where no frame ever runs still shows it.
+* **Refuses to classify on camera drift, with an override** ([#94]). A drift check built from the
+  archive's own images (`driftSession.ts`) is sampled every `DRIFT_SAMPLE_INTERVAL_MS` (3 s) rather
+  than per frame, and a measurement past `maxDriftPx(dpt)` withholds **L1 only**: every sensor
+  reads `unknown` / `drift`, while the detector keeps running and the L0 boxes keep being drawn. The
+  boxes are true of the frame they were computed in; what a moved camera invalidates is their mapping
+  onto sensors authored in the archive's frame — so diamonds off the track beside correct boxes is the
+  statement of *why*. The banner carries the displacement in pixels and in track widths, the archive
+  image it matched, and a **"classify anyway"** button; overridden, it keeps saying so. The override is per-session and does
+  not survive a remount. Sampling continues while refusing, since putting the camera back is the fix.
+  An archive with no images, or a check that fails to build, reports **"not being checked"** — never
+  silence, which would read as "no drift found".
+* Disposes the detector session and stops all camera tracks on disconnect; the drift check is dropped
+  with it, which is also what keeps an in-flight sample from writing into a detached view.
 
 ---
 
@@ -1292,7 +1321,8 @@ The judging half: one disagreement at a time, on one image.
 
 ### `rr-stats-bar`
 
-Overlay showing live detection stats: the two layers, and what one inference cost.
+Overlay showing live detection stats: the two layers, what one inference cost, and how well the
+camera still lines up with the archive.
 
 | Property | Type | Description |
 |---|---|---|
@@ -1300,9 +1330,20 @@ Overlay showing live detection stats: the two layers, and what one inference cos
 | `cars` | `number` | **L0**: detections above the confidence threshold in this frame |
 | `occupied` | `number` | **L1**: how many sensors read `occupied` |
 | `inference` | `number` | Milliseconds in `detect` — preprocessing, session, decode. Not the whole frame: L1 is pure geometry, and folding it in would attribute the render to the model |
+| `alignment` | `number \| null` | Estimated camera misalignment in `camera.resolution` pixels, or `null` before the first sample |
+| `alignmentTolerance` | `number \| null` | What that is judged against — `maxDriftPx(dpt)`. `null` when no DPT resolves, and the row is then not rendered at all |
 
 Both counts are shown because the pair is the readout: cars with no occupied sensor is either an
 empty siding or a sensor in the wrong place, and one number cannot say which.
+
+**The alignment row is an instrument, and that is why it is here rather than in a banner.** The live
+view's refusal banner is an *event*; alignment is a continuous measurement, and someone aiming a camera
+needs to watch it move — a number that only appeared once it was already too large would leave them
+adjusting a mount blind, and "how much margin is left" is exactly what the banner cannot say. It shows
+measurement against tolerance rather than a red/green dot, because the ratio is what is being judged.
+`null` renders as `—`, never `0.0`: "not measured yet" and "measured, and the camera has not moved" are
+different facts, and this is the one readout where a zero is a claim. Past the tolerance the row turns
+amber, not red — the refusal banner is already red and carries the button that acts on it.
 
 ---
 

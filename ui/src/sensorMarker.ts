@@ -149,15 +149,19 @@ export interface SensorSymbolSize {
 /**
  * Why the system could not answer, in words.
  *
- * A total `Record` rather than a `switch` with a default: `UnknownReason` is
- * documented to grow when camera-drift detection lands (issue #12), and a
- * default would render the new reason as whatever the fallback string says
- * while typechecking cleanly. This way adding one is a compile error here.
+ * A total `Record` rather than a `switch` with a default: `UnknownReason` grows,
+ * and a default would render a new reason as whatever the fallback string says
+ * while typechecking cleanly. This way adding one is a compile error here — as
+ * `drift` was when it landed (#94), which is the mechanism working.
  */
 const UNKNOWN_REASONS: Record<UnknownReason, string> = {
   'no-model': 'no model loaded',
   'no-calibration': 'no calibration — DPT does not resolve',
   'outside-frame': 'outside the frame',
+  // The only refusal in the set: everything needed to answer is present, and
+  // the answer is withheld because the camera moved. The banner carries the
+  // number and the override; a tooltip is not where a user acts on either.
+  drift: 'camera has drifted — refusing to classify',
 };
 
 /**

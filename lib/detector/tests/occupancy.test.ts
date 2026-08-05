@@ -109,6 +109,36 @@ describe('unknown', () => {
     });
     expect(states.get('left')).toEqual({ state: 'unknown', reason: 'no-model' });
   });
+
+  it('says drift when the camera has moved, model and calibration or not', () => {
+    // The refusal (#94): drift outranks every other reason because the others
+    // say a measurement could not be made and this one says a measurement could,
+    // and would be wrong. Build the model and calibrate the layout and a drifted
+    // camera is still drifted.
+    const sensors = [sensor('a', 960, 540)];
+    expect(
+      occupancy({ detections: [detection({})], sensors, dpt: DPT, frame: FRAME, drifted: true }).get('a'),
+    ).toEqual({ state: 'unknown', reason: 'drift' });
+    expect(
+      occupancy({ detections: null, sensors, dpt: null, frame: FRAME, drifted: true }).get('a'),
+    ).toEqual({ state: 'unknown', reason: 'drift' });
+  });
+
+  it('treats a caller that passes no drift flag as not asserting anything', () => {
+    // Every caller before #94 omitted it, and none of them was claiming the
+    // camera was steady — so the default cannot be a refusal.
+    const sensors = [sensor('a', 960, 540)];
+    const withoutFlag = occupancy({ detections: [detection({})], sensors, dpt: DPT, frame: FRAME });
+    const withFalse = occupancy({
+      detections: [detection({})],
+      sensors,
+      dpt: DPT,
+      frame: FRAME,
+      drifted: false,
+    });
+    expect(withoutFlag.get('a')).toEqual(withFalse.get('a'));
+    expect(withoutFlag.get('a')).toMatchObject({ state: 'occupied' });
+  });
 });
 
 describe('width normalization', () => {
