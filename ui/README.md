@@ -562,7 +562,8 @@ rect as zero, so the suite cannot catch that; it was found by measuring a live p
 
 The editor's geometry, as pure functions. A module rather than anything inside a component, and that
 placement is the point: jsdom neither lays out nor paints, so arithmetic living in a Lit element is
-untestable until `@web/test-runner` is stood up, while the same arithmetic here is covered today.
+covered by nothing and nothing is coming to cover it (#109), while the same arithmetic here is
+covered today.
 
 | Export | Description |
 |---|---|

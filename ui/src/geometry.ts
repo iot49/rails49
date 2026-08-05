@@ -7,9 +7,10 @@ import type { CalibrationPoint, CarLabel, Point, Sensor } from '@occupancy/r49';
  * A plain module, not an element, and deliberately outside every component:
  * jsdom neither lays out nor paints, so `getBoundingClientRect()` is all zeros
  * and SVG geometry is absent. Arithmetic left inside a Lit element is therefore
- * untestable until `@web/test-runner` is stood up; the same arithmetic here is
- * covered today. Every editor-spec ticket that draws or grabs an object reads
- * its numbers from this file.
+ * not covered by anything, and nothing is coming to cover it — jsdom is the
+ * whole automated story here by decision (#109). The same arithmetic in this
+ * file is covered today, which is the entire reason the file exists. Every
+ * editor-spec ticket that draws or grabs an object reads its numbers from here.
  *
  * It is **outside** `@occupancy/r49` for the same reason `history.ts` is: that
  * package parses and serializes archives, and a grab radius is an editing
