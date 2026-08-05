@@ -4,14 +4,9 @@ import type { R49Archive } from '@occupancy/r49';
 import { getDPT } from '@occupancy/r49';
 import { occupancy } from '@occupancy/detector';
 import type { Detection, Frame, SensorState } from '@occupancy/detector';
-import { loadDetector } from '@occupancy/detector/browser';
 import type { Detector } from '@occupancy/detector/browser';
 import { getCameraStream } from './capture.js';
-import { DETECTOR_MODEL_URL } from '../modelAssets.js';
-// Must match the specifier `@occupancy/detector/browser` imports: two
-// specifiers are two module instances, and the `ort.env.wasm` configured here
-// would not be the one the detector's session reads.
-import * as ort from 'onnxruntime-web/wasm';
+import { openDetector, DETECTOR_SOURCE } from './detectorSession.js';
 import './rr-viewer.js';
 import './rr-stats-bar.js';
 
@@ -140,27 +135,16 @@ export class RRLiveView extends LitElement {
     if (!this.archive) return;
     this._running = true;
 
-    // Same path everywhere: the runtime ships with the bundle. A cross-origin
-    // CDN would fail COEP, which production now sets to get threading (#15).
-    ort.env.wasm.wasmPaths = '/ui/ort/';
-
-    // Losing isolation costs ~1.5x and breaks nothing visibly — ORT just drops
-    // to one thread. Say it, since nothing else can.
-    if (!self.crossOriginIsolated) {
-      console.warn(
-        'Not crossOriginIsolated: ONNX Runtime is limited to a single WASM ' +
-        'thread. Check the COOP/COEP headers this page was served with.'
-      );
-    }
-
     try {
-      this._detector = await loadDetector(DETECTOR_MODEL_URL);
+      // The runtime path and the crossOriginIsolated warning live in
+      // `detectorSession.ts`, which the diagnostics view shares (#87).
+      this._detector = await openDetector();
       this._modelError = null;
     } catch (err) {
       // Not fatal, and deliberately so — see the class comment. The loop starts
       // anyway and every sensor reports `unknown` / `no-model`.
       this._modelError = err instanceof Error ? err.message : String(err);
-      console.error(`Failed to load the detector from ${DETECTOR_MODEL_URL}`, err);
+      console.error(`Failed to load the detector from ${DETECTOR_SOURCE}`, err);
     }
 
     this._loop();

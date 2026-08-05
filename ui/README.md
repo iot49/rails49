@@ -39,7 +39,7 @@ Non-element modules use plain camelCase filenames with no prefix.
 
 ```
 rr-app                          ← shell: owns the archive and the view mode
-├── rr-header                   ← app bar: status slot, view toggle, source link, settings gear
+├── rr-header                   ← app bar: status slot, mode control, source link, settings gear
 │   └── rr-settings-dialog      ← layout metadata (sl-dialog)
 ├── rr-editor-view              ← editor mode; images, DPT readout, calibration points, sensors, cars
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
@@ -52,11 +52,16 @@ rr-app                          ← shell: owns the archive and the view mode
 │   ├── rr-calibration-dialog   ← asks for a point's x/y/z in mm (sl-dialog)
 │   ├── rr-sensor-dialog        ← asks for a sensor's optional name (sl-dialog)
 │   └── rr-context-menu         ← right-click verbs on one object (sl-menu)
-└── rr-live-view                ← live mode; owns the detector and the L0→L1 loop
-    ├── rr-stats-bar            ← FPS / cars / occupied / inference overlay
-    └── rr-viewer               ← SAME component, video source instead of img
-        ├── sensorMarker.ts     ← the diamond, coloured by occupied / clear / unknown
-        └── carMarker.ts        ← renderDetection: the dashed L0 box
+├── rr-live-view                ← live mode; owns the detector and the L0→L1 loop
+│   ├── rr-stats-bar            ← FPS / cars / occupied / inference overlay
+│   └── rr-viewer               ← SAME component, video source instead of img
+│       ├── sensorMarker.ts     ← the diamond, coloured by occupied / clear / unknown
+│       └── carMarker.ts        ← renderDetection: the dashed L0 box
+└── rr-diagnostics-view         ← diagnostics mode; sweeps the archive, owns the results
+    ├── rr-diagnostics-report   ← scorecard, sortable per-image table, crop strip
+    │   └── rr-viewer           ← SAME component, one crop per finding (zoom rect)
+    └── rr-diagnostics-queue    ← one disagreement at a time, on one image
+        └── rr-viewer           ← SAME component, zoomed to the finding
 ```
 
 > **The editor authors calibration points, sensors and cars.** v3's point-marker
@@ -114,7 +119,9 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#49]: https://github.com/iot49/rails49/issues/49
 > [#52]: https://github.com/iot49/rails49/issues/52
 > [#7]: https://github.com/iot49/rails49/issues/7
+> [#82]: https://github.com/iot49/rails49/issues/82
 > [#85]: https://github.com/iot49/rails49/issues/85
+> [#87]: https://github.com/iot49/rails49/issues/87
 
 ## State and data flow
 
@@ -146,7 +153,15 @@ rr-app ─────────── rr-editor-view ────────
   panning at the same zoom level where the changed objects fit, and fitting where they do not.
 * **`rr-live-view` owns:** the camera stream, the detector, and the detection loop. It never
   mutates the archive.
-* **Only the live view loads a model, and it is the detector.** The CNN is retained and retrainable
+* **`rr-diagnostics-view` owns:** one sweep of the archive — a detector session, blob URLs, the raw
+  detections per image, the confidence floor, and which image (if any) is being reviewed. It never
+  mutates the archive either; diagnostics is read-only by construction, so nothing it shows can
+  change what it is measuring. The sweep runs at a **confidence floor far below the shipped
+  threshold** and filters afterwards, which is what makes the threshold control free: re-scoring is
+  pure arithmetic where re-running inference is twenty seconds of WASM.
+* **Only two views load a model, and they load it the same way.** Both go through
+  `detectorSession.ts`, which is the one place `ort.env.wasm.wasmPaths` is set and the one place the
+  model URL is read. The CNN is retained and retrainable
   but nothing loads it ([#7], [#85]): L1 is a pure function of L0, so the per-sensor answer is a
   geometric consequence of the detector's boxes and there is nothing for a second model to say.
 
@@ -234,7 +249,7 @@ Feedback is a Shoelace `sl-alert` toast (`_notify`), not `alert()`.
 
 ### `rr-header`
 
-Top app bar. Renders the view toggle, the status slot, a source link, and the settings gear; hosts
+Top app bar. Renders the mode control, the status slot, a source link, and the settings gear; hosts
 `rr-settings-dialog` and opens it imperatively via its `show()` method.
 
 The source link is an `sl-icon-button` with an `href`, so it renders as an anchor rather than a
@@ -244,16 +259,22 @@ held in memory with it — untouched. The `rel` is Shoelace's, not ours (it emit
 the host, where a `rel` attribute would be inert. The URL is a module constant, not a property; the
 element's interface is unchanged by it.
 
+The mode control is a **segmented control, not a toggle** ([#87]). Two modes could cycle on one
+button because "the other one" is unambiguous; three cannot — from Live, a user wanting Diagnostics
+would have to guess whether the button steps forward or back, and one destination ends up two clicks
+away with nothing on screen saying which. So every mode is one click, and the control marks the mode
+you are **in** rather than showing the icon of where you would go next.
+
 | Property | Type | Description |
 |---|---|---|
-| `viewMode` | `'editor' \| 'live'` | Selects the toggle icon and tooltip |
+| `viewMode` | `ViewMode` (`'editor' \| 'live' \| 'diagnostics'`) | Which mode is marked current |
 | `layout` | `object` | Passed through to `rr-settings-dialog` |
 
 | Slot | Content |
 |---|---|
 | `status` | Status text; falls back to "Occupancy UI" |
 
-**Emits:** `rr-view-toggle` (no detail).
+**Emits:** `rr-view-change` — `{ mode: ViewMode }`. Clicking the current mode emits nothing.
 
 ---
 
@@ -1182,6 +1203,90 @@ Camera stream under the two layers of the occupancy output ([#85]).
   L0 needs no DPT). The calibration one is resolved when the archive arrives rather than in the
   loop, so a session where no frame ever runs still shows it.
 * Disposes the detector session and stops all camera tracks on disconnect.
+
+---
+
+### `rr-diagnostics-view`
+
+The shipped detector run over an opened archive, read against the labels a human authored ([#87]).
+
+| Property | Type |
+|---|---|
+| `archive` | `R49Archive \| null` |
+
+* **This is the first thing that measures the artifact that ships.** The only figures that exist for
+  the detector come from the training run's own validation split on `best.pt`; nothing has scored
+  `detector_int8.ort`, whose quantisation is Conv-only because quantising the whole graph zeroed
+  every score ([#82]). What this reports is **agreement between one model and one archive's labels**
+  — not accuracy, and not a generalization estimate, which `../SPEC.md` § Accuracy makes a property
+  of a held-out protocol over a corpus that does not exist yet.
+* Sweeps images **sequentially**: one ORT session and one WASM heap, so concurrent `detect` calls
+  would queue inside the session anyway while making the progress count meaningless and holding
+  every decoded bitmap in memory at once.
+* Runs inference at a confidence floor **far below** `DETECTOR_CONFIDENCE_THRESHOLD` and filters
+  afterwards. That is what `detect`'s `minConfidence` override is for: running at the shipped
+  threshold would discard exactly the boxes that answer "what would a lower threshold have caught?".
+* **A missing model is fatal here**, unlike the live view. There, `occupancy()` is total and an
+  honest `unknown` per sensor is still an answer; here the model's output is the entire content of
+  the view and there is no partial result to show.
+* Aborts an in-flight sweep and releases the session on disconnect, so switching modes mid-sweep
+  does not leave twenty seconds of inference running against a detached element.
+
+---
+
+### `rr-diagnostics-report`
+
+The document half: scorecard, one sortable row per image, a crop strip behind each row.
+
+| Property | Type | Description |
+|---|---|---|
+| `diagnostics` | `ArchiveDiagnostics \| null` | Scored results; `null` before the first image |
+| `imageUrls` | `ReadonlyMap<string, string>` | Blob URL per filename |
+| `dpt` | `number \| null` | Layout DPT, for the crop rectangles |
+| `resolution` | `Frame` | The authored frame every coordinate is in |
+| `threshold` | `number` | Confidence floor currently applied |
+| `sweeping` | `boolean` | True while inference is still running, so the numbers are partial |
+
+**Emits:** `rr-diagnostics-threshold` — `{ value: number }`; `rr-diagnostics-review` —
+`{ filename: string }`.
+
+* **The wording is "agreed", never "accurate".** The percentage describes this archive against this
+  model; a tile reading "accuracy" would be a claim nothing here can support.
+* **`Duplicate` is its own tile and column, separate from `Phantom`.** A duplicate is a second box
+  on a car that was already found; a phantom is a box over nothing. Both are false positives, but
+  the first is a deduplication failure and the second a detection failure — and the shipped model
+  produces mostly the first, which folding them together would hide.
+* Images **not marked `labeled_complete`** are flagged in the row and counted in the legend: a
+  phantom there may simply be a car nobody has labelled, so it is not evidence against the model.
+  Nothing is filtered on the flag — hiding those images would hide real detections.
+* Sorting by lowest confidence puts the **weakest** box first, because that is the one that decides
+  where a threshold should sit.
+
+---
+
+### `rr-diagnostics-queue`
+
+The judging half: one disagreement at a time, on one image.
+
+| Property | Type |
+|---|---|
+| `image` | `ImageDiagnostics \| null` |
+| `imageUrl` | `string \| null` |
+| `dpt` | `number \| null` |
+| `resolution` | `Frame` |
+
+**Emits:** `rr-diagnostics-close` (no detail).
+
+* Shows **exactly one finding**, zoomed to it. A surface that drew all of them would be the report
+  again; the question here is whether *this* box is wrong, which needs the photograph legible.
+* **Agreed findings are not in the queue** — there is nothing to judge about a box that matched, and
+  including them would bury four disagreements among forty.
+* `↓`/`↑` step (with `j`/`k` alongside), `z` toggles zoom, `Esc` returns to the report. The arrows
+  are what the buttons name and what the tooltips teach; the vim pair is muscle memory for whoever
+  has it.
+* The zoom rect spans **label and detection together** (`diagnostics.ts` § `findingBounds`). Framing
+  on one side lets a box that slid two car lengths off its label fall outside the crop meant to show
+  the disagreement.
 
 ---
 

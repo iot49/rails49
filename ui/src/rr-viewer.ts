@@ -381,6 +381,20 @@ export class RrViewer extends LitElement {
    */
   @property({ attribute: false }) detections: readonly Detection[] = [];
   /**
+   * Per-detection ink, parallel to {@link detections} (#87).
+   *
+   * A short array reads as "no override" — the live view passes nothing and
+   * gets the shared car ink, unfilled. The diagnostics view passes each box's
+   * verdict colour. Parallel arrays rather than a richer per-detection object
+   * for the reason `rr-thumbnail-bar.complete` is one: a `Detection` is the
+   * model's output and colouring is the caller's opinion of it, and putting the
+   * opinion inside the data would make the viewer's input something no
+   * detector produces.
+   */
+  @property({ attribute: false }) detectionInks: readonly (string | null)[] = [];
+  /** Per-car ink, parallel to {@link cars}. Same rule (#87). */
+  @property({ attribute: false }) carInks: readonly (string | null)[] = [];
+  /**
    * The current image's car labels, drawn as a chord inside a width rectangle.
    *
    * Display only, like `calibrationPoints` and `sensors`. Cars are per
@@ -878,13 +892,14 @@ export class RrViewer extends LitElement {
             <!-- Cars first: their width rectangles are the only area fills here,
                  so drawing them underneath keeps a crosshair or a sensor placed
                  on a car visible instead of tinted over. -->
-            ${this.cars.map(c =>
+            ${this.cars.map((c, i) =>
               renderCar(
                 c,
                 carSize,
                 coupledEnds(c, couplers),
                 this.carWarning(c),
-                this.highlight?.cars.includes(c.id) ?? false
+                this.highlight?.cars.includes(c.id) ?? false,
+                this.carInks[i] ?? null
               )
             )}
 
@@ -901,7 +916,9 @@ export class RrViewer extends LitElement {
                  the prediction is what is being read *against* the label, so it
                  goes on top of it. Sensors and crosshairs still win over both —
                  a point must never be buried under an area. -->
-            ${this.detections.map(d => renderDetection(d, carSize, this.resolution))}
+            ${this.detections.map((d, i) =>
+              renderDetection(d, carSize, this.resolution, this.detectionInks[i] ?? null)
+            )}
 
             ${this.calibrationPoints.map((p, i) =>
               // `resolution` is the group's user space, so it is also the frame

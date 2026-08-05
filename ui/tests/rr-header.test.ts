@@ -61,12 +61,44 @@ describe('rr-header', () => {
     expect(el).to.be.instanceOf(RRHeader);
   });
 
-  it('emits rr-view-toggle when toggle button is clicked', async () => {
+  it('offers every mode as its own control, so none is two clicks away', async () => {
+    // The reason this is a segmented control rather than the old toggle (#87):
+    // with three modes, a single cycling button puts one destination behind two
+    // clicks with nothing on screen saying which.
     const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
-    const toggleBtn = el.shadowRoot!.querySelector('.left-section sl-icon-button')!;
-    
-    setTimeout(() => (toggleBtn as HTMLElement).click());
-    await oneEvent(el, 'rr-view-toggle');
+    const labels = [...el.shadowRoot!.querySelectorAll('.modes sl-icon-button')].map(b =>
+      b.getAttribute('label')
+    );
+    expect(labels).to.deep.equal(['Label', 'Live', 'Diagnostics']);
+  });
+
+  it('emits rr-view-change naming the mode chosen', async () => {
+    const el = await fixture<RRHeader>(html`<rr-header></rr-header>`);
+    const diagnostics = el.shadowRoot!.querySelector('sl-icon-button[label="Diagnostics"]')!;
+
+    setTimeout(() => (diagnostics as HTMLElement).click());
+    const event = await oneEvent(el, 'rr-view-change');
+    expect(event.detail.mode).to.equal('diagnostics');
+  });
+
+  it('says which mode is current, rather than which one is next', async () => {
+    // The old toggle showed the icon of where you would *go*. With three modes
+    // that reads backwards, so the control marks the one you are in.
+    const el = await fixture<RRHeader>(html`<rr-header .viewMode=${'live'}></rr-header>`);
+    const active = el.shadowRoot!.querySelectorAll('.modes sl-icon-button.active');
+    expect(active).to.have.lengthOf(1);
+    expect(active[0].getAttribute('label')).to.equal('Live');
+  });
+
+  it('emits nothing when the current mode is clicked again', async () => {
+    const el = await fixture<RRHeader>(html`<rr-header .viewMode=${'editor'}></rr-header>`);
+    const label = el.shadowRoot!.querySelector('sl-icon-button[label="Label"]')!;
+
+    let fired = false;
+    el.addEventListener('rr-view-change', () => (fired = true));
+    (label as HTMLElement).click();
+    await el.updateComplete;
+    expect(fired).to.be.false;
   });
 
   // Selected by name rather than by index: the right-hand group holds more than

@@ -40,13 +40,27 @@ describe('the shipped model', () => {
     expect(DETECTOR_MODEL_FILE).toMatch(/_int8\.ort$/);
   });
 
-  it('is named by neither the config nor the view — both import it', () => {
+  it('is named by neither the config nor the loader — both import it', () => {
     // The whole point. A literal in either file would typecheck, build, deploy,
-    // and 404 the moment the camera came up.
-    for (const file of ['ui/vite.config.ts', 'ui/src/rr-live-view.ts']) {
+    // and 404 the moment the camera came up. The run-time side moved from the
+    // live view to `detectorSession.ts` in #87, when a second view started
+    // needing a session.
+    for (const file of ['ui/vite.config.ts', 'ui/src/detectorSession.ts']) {
       const source = read(file);
       expect(source, file).toMatch(/from '\.\.?\/modelAssets\.js'/);
       expect(source, file).not.toContain(DETECTOR_MODEL_FILE);
+    }
+  });
+
+  it('is named in no view at all — they go through the loader', () => {
+    // The filename must not spread as views multiply. A view that fetched the
+    // model itself would be a second run-time name for it, which is the exact
+    // drift this module exists to prevent.
+    const views = fs
+      .readdirSync(path.join(repoRoot, 'ui/src'))
+      .filter(f => f.startsWith('rr-') && f.endsWith('.ts'));
+    for (const view of views) {
+      expect(read(`ui/src/${view}`), view).not.toContain(DETECTOR_MODEL_FILE);
     }
   });
 
