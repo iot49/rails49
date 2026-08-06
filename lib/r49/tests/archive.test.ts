@@ -472,10 +472,13 @@ describe('R49Archive', () => {
   // a schema that gained a nested object without `.strict()` would pass every
   // test above while silently deleting whatever a newer build wrote into it.
   describe('unknown keys are rejected, not stripped', () => {
-    const cases: Array<[string, Record<string, unknown>]> = [
-      ['the manifest root', manifest({ vendor_extra: 1 })],
-      ['layout', manifest({ layout: { scale: 'HO', calibration: { points: [] }, sensors: [], hue: 1 } })],
-      ['calibration', manifest({ layout: { scale: 'HO', calibration: { points: [], fitted: true }, sensors: [] } })],
+    // Asserted on the *offending key*, not on the wording. The message is
+    // reworded for the person who meets it (#139) and may be reworded again;
+    // what must never change is that the refusal names what was wrong.
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['the manifest root', manifest({ vendor_extra: 1 }), 'vendor_extra'],
+      ['layout', manifest({ layout: { scale: 'HO', calibration: { points: [] }, sensors: [], hue: 1 } }), 'layout.hue'],
+      ['calibration', manifest({ layout: { scale: 'HO', calibration: { points: [], fitted: true }, sensors: [] } }), 'layout.calibration.fitted'],
       [
         'a calibration point',
         manifest({
@@ -485,6 +488,7 @@ describe('R49Archive', () => {
             sensors: [],
           },
         }),
+        'layout.calibration.points.0.label',
       ],
       [
         'a point',
@@ -495,6 +499,7 @@ describe('R49Archive', () => {
             sensors: [],
           },
         }),
+        'layout.calibration.points.0.px.z',
       ],
       [
         'a world point',
@@ -505,6 +510,7 @@ describe('R49Archive', () => {
             sensors: [],
           },
         }),
+        'layout.calibration.points.0.world.w',
       ],
       [
         'a sensor',
@@ -515,16 +521,17 @@ describe('R49Archive', () => {
             sensors: [{ id: 's1', x: 1, y: 2, colour: 'red' }],
           },
         }),
+        'layout.sensors.0.colour',
       ],
-      ['camera', manifest({ camera: { resolution: { width: 1920, height: 1080 }, fps: 30 } })],
-      ['camera resolution', manifest({ camera: { resolution: { width: 1920, height: 1080, depth: 8 } } })],
-      ['an image', manifest({ images: [{ filename: 'a.jpg', labels: [], captured_at: 'now' }] })],
-      ['a car label', manifest({ images: [{ filename: 'a.jpg', labels: [car({ colour: 'red' })] }] })],
+      ['camera', manifest({ camera: { resolution: { width: 1920, height: 1080 }, fps: 30 } }), 'camera.fps'],
+      ['camera resolution', manifest({ camera: { resolution: { width: 1920, height: 1080, depth: 8 } } }), 'camera.resolution.depth'],
+      ['an image', manifest({ images: [{ filename: 'a.jpg', labels: [], captured_at: 'now' }] }), 'images.0.captured_at'],
+      ['a car label', manifest({ images: [{ filename: 'a.jpg', labels: [car({ colour: 'red' })] }] }), 'images.0.labels.0.colour'],
     ];
 
-    for (const [where, data] of cases) {
+    for (const [where, data, key] of cases) {
       it(`rejects an unknown key in ${where}`, () => {
-        expect(rejection(data)).toMatch(/[Uu]nrecognized key/);
+        expect(rejection(data)).toContain(key);
       });
     }
 

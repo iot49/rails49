@@ -176,3 +176,51 @@ describe('the residual validates the camera height', () => {
     );
   });
 });
+
+describe('the unknown-key refusal is worded for the person who meets it', () => {
+  /**
+   * The additive fields add no version (#139), so an unknown key — not a
+   * version mismatch — is how a stale reader meets a newer archive. zod's own
+   * `Unrecognized key(s) in object` is legible to someone holding the schema
+   * and useless to a model railroader looking at a file that will not open.
+   */
+  it('names the key, the likely cause, and the fix', () => {
+    const archive = new R49Archive();
+    let message = '';
+    try {
+      archive.setManifest(manifest({ points: [], invented_by_a_newer_build: 7 }));
+    } catch (err) {
+      message = String(err);
+    }
+    expect(message).toContain('invented_by_a_newer_build');
+    expect(message).toContain('newer version of rails49');
+    expect(message).toContain('reload the app');
+    // The hedge is not padding: an unknown key is equally a hand-edit typo,
+    // and nothing can tell the two apart.
+    expect(message).toContain('hand-edited');
+  });
+
+  it('gives the dotted path, so a nested key is findable', () => {
+    const archive = new R49Archive();
+    let message = '';
+    try {
+      archive.setManifest(manifest({ points: [], focal_length_mm: 24 }));
+    } catch (err) {
+      message = String(err);
+    }
+    expect(message).toContain('layout.calibration.focal_length_mm');
+  });
+
+  it('leaves every other validation failure alone', () => {
+    // Rewording a type error as "reload the app" would send the reader to the
+    // wrong place entirely.
+    const archive = new R49Archive();
+    let message = '';
+    try {
+      archive.setManifest(manifest({ points: [], camera_height_mm: 'tall' }));
+    } catch (err) {
+      message = String(err);
+    }
+    expect(message).not.toContain('reload the app');
+  });
+});

@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { make_id } from '@occupancy/uid';
 import {
-  ManifestDataSchema,
+  parseManifest,
   assertManifestVersion,
   type ManifestData,
   type Image,
@@ -55,7 +55,7 @@ export class R49Archive {
     const content = await manifestFile.async('string');
     const json = JSON.parse(content);
     assertManifestVersion(json);
-    this.manifest = ManifestDataSchema.parse(json);
+    this.manifest = parseManifest(json);
     return this.manifest;
   }
 
@@ -95,7 +95,7 @@ export class R49Archive {
    */
   setManifest(data: ManifestData): void {
     assertManifestVersion(data);
-    this.manifest = ManifestDataSchema.parse(data);
+    this.manifest = parseManifest(data);
   }
 
   /**

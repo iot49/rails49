@@ -50,6 +50,28 @@ export interface ArchiveReport {
    * inventing one here would put a number in the pipeline that nothing earned.
    */
   readonly dptResidual: number | null;
+  /**
+   * Camera height above layout zero in mm, or `null` when the archive does not
+   * carry one — **reported, never required**. Every archive predates the field,
+   * and blocking on it would reject real data with valid pixel-space labels for
+   * a defect nothing has shown costs accuracy (#136, #139). The editor is where
+   * it is required; here it is a fact a maintainer triaging a submission wants
+   * at a glance.
+   */
+  readonly cameraHeightMM: number | null;
+  /** Railhead height in mm — the plane DPT is reported at. `null` when unauthored (reads as 0). */
+  readonly referenceHeightMM: number | null;
+  /**
+   * Worst-case obliquity in degrees, and the apparent car-width inflation that
+   * follows from it — `null` unless a camera height and calibration extent make
+   * them computable.
+   *
+   * The same `dptResidual` rule applies, and for the same reason: the geometry
+   * is quantified but its cost to *accuracy* is unmeasured, so a threshold here
+   * would be a number nothing earned. See `SPEC.md` § Camera height.
+   */
+  readonly obliquityDeg: number | null;
+  readonly widthInflation: number | null;
   readonly images: number | null;
   readonly labels: number | null;
   readonly complete: number | null;
