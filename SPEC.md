@@ -43,7 +43,7 @@ Settled in [issue #3](https://github.com/iot49/rails49/issues/3) (feasibility) a
 | Family | Ultralytics **YOLO26n-OBB**, fine-tuned from the pretrained DOTA checkpoint |
 | Head | **Oriented** bounding box; NMS-free, exported `end2end: True` |
 | Output tensor | `[1, 300, 7]` — a fixed 300-slot buffer every frame |
-| Input | 960×544 (see [Parameters](#parameters-live-in-configyaml)) |
+| Input | one square canvas at constant DPT (see [Input geometry](#input-geometry-is-dpt-normalized)) |
 | Quantization | **static INT8** |
 | Shipped artifact | `.ort`, **3.30 MiB** measured, against the 25 MiB Cloudflare Pages ceiling |
 | Runtime | `onnxruntime-web`, WASM execution provider |
@@ -53,6 +53,25 @@ Settled in [issue #3](https://github.com/iot49/rails49/issues/3) (feasibility) a
 **Static INT8 is mandatory and dynamic quantization fails loudly.** `ConvInteger` is `NOT_IMPLEMENTED` on the CPU execution provider — dynamic quantization targets RNN and transformer graphs, static targets CNNs. Static requires calibration data; ten frames from the corpus sufficed. FP16 is not a useful intermediate rung on a CPU/WASM target.
 
 **Where the training pipeline lives in the repo is not specified here.** [Issue #3](https://github.com/iot49/rails49/issues/3) recommends a layout parallel to `classifier/resnet/`; nothing else about it is settled.
+
+#### Input geometry is DPT-normalized
+
+Settled in [issue #130](https://github.com/iot49/rails49/issues/130). **This is a target, not the current code** — `detector.input: [960, 544]` still ships.
+
+An authored input grid fixes object scale by accident: how many pixels a car spans falls out of the grid and the layout's extent, with nothing holding it constant. That is the pipeline's largest silent accuracy risk, because [issue #112](https://github.com/iot49/rails49/issues/112) measured the model scale-locking hard — 79% of cars found at 10 model-pixels of car width against 29% at 19.9, same weights, same data. So **scale is normalized instead of inherited**: every image is resampled to a constant DPT, and cars are then at the trained scale by construction, for every layout at every extent.
+
+The geometry that follows:
+
+* **One authored square canvas**, a `config.yaml` constant replacing `detector.input`. **Authored, never derived** as a maximum over the corpus — a derived size lets one contributor's large layout inflate training memory for everyone and change `imgsz` silently between exports, which is the [`classes` failure shape](#parameters-live-in-configyaml): a config that still validates while invalidating every comparison.
+* **Square is load-bearing, not cosmetic.** Ultralytics enforces a scalar `imgsz` for training, so without `rect=True` the letterbox pads to `imgsz × imgsz`. A rectangular canvas would train at one padding distribution and deploy at another — the failure [issue #114](https://github.com/iot49/rails49/issues/114) recorded, where a grid 43% grey in training ran 0.7% grey deployed. A square canvas makes every stage see an identical tensor, so the invariant is held by **shape identity rather than by a flag or a computed agreement**.
+* **Images are padded onto the canvas, never resized** — see [YOLO annotations](#yolo-annotations-for-the-detector), where the rule and its reason live.
+* **Captures larger than the canvas are tiled** into square crops with overlap exceeding the longest car, which makes "every car appears uncut in at least one tile" arithmetic rather than a hope: with stride `T − O`, a car of length `L` is wholly inside some tile exactly when `L ≤ O`.
+* **Tile detections are unioned in full-frame coordinates**, and the union is monotone in the safe direction. [The occupancy test](#the-occupancy-test) reports `occupied` if *any* detection covers the sensor, so adding boxes can only flip `clear → occupied` — **tiling cannot manufacture a false clear**. Its error lands on the phantom rate, which [Accuracy](#accuracy) allows ten times the headroom.
+* **Export stays static** at the canvas size. Every tensor the model ever sees is canvas-sized, so nothing is left to be dynamic about; a fixed canvas also turns the `end2end` head's anchor floor and its 300-slot ceiling into known properties rather than runtime surprises. A dynamic ONNX export is a *measured* fallback — it survives the whole INT8 → `.ort` chain at accuracy parity — held in reserve rather than adopted, because taking it would spend the chain's one unmeasured link (in-browser WASM at runtime-varying shapes) on flexibility the canvas already provides.
+
+**The canvas is invisible to users and to the format.** v4 needs no new field: a layout is authored with images at whatever size the camera produces, and both the editor and the live view draw in full-frame image pixels. Normalization and tiling happen between a frame arriving and occupancy being computed, and detections return mapped into the frame's own coordinates. Two things do reach the user, both pre-existing — the `min_dpt` bar at capture, and tile count scaling inference cost.
+
+Its value is not fixed here. It is bounded below by the head's anchor floor (`H·W ≥ ~14,629` px, measured) and above by training memory, which [issue #128](https://github.com/iot49/rails49/issues/128) exists to establish.
 
 #### Licensing: the project is AGPL-3.0
 
@@ -485,7 +504,7 @@ layout:
   min_dpt: 20                 # warns persistently, never blocks
 
 detector:
-  input: [960, 544]           # 640x384 is a live fallback, not a closed door
+  input: [960, 544]           # superseded — see below
   confidence_threshold: 0.25  # placeholder — needs held-out recall
   classes: ["stock"]          # YOLO class index order — append-only
   vocabulary:                 # a nested mapping is a subtype; anything else
@@ -501,6 +520,8 @@ detector:
 `vocabulary` is the authoring taxonomy — what the context menu offers and what a label's `class` must match. `classes` **is** the YOLO class list, verbatim and index-ordered. A label maps to the longest entry of `classes` that is a segment-prefix of its class, so `stock` matches `stock.loco.steam` but never `stockyard`; the same rule resolves an overriding `width_mm`. Adding a subtype to `classes` therefore re-maps every already-labeled car of that subtype with **no relabeling**.
 
 > ⚠️ **`classes` is append-only.** A list position *is* a YOLO class index, so reordering or deleting an entry invalidates trained weights while the file still validates. It is the one config edit that can break a model with nothing noticing.
+
+**`detector.input` is superseded** by [issue #130](https://github.com/iot49/rails49/issues/130) and shown above only because it is what the code still reads. It becomes a **single square canvas side** plus the target DPT — an authored `[w, h]` pair is the wrong *shape* of parameter once image size falls out of layout extent × DPT rather than being chosen. See [Input geometry](#input-geometry-is-dpt-normalized) for why square, why authored rather than derived, and what bounds its value.
 
 The `stock.` root is required rather than cosmetic: a new car is `stock` and refinements must roll up to it, so an unrooted class would match no entry and be dropped from the export — the unlabeled-car-as-background failure [Labeling completeness](#labeling-completeness) exists to prevent. The root never appears in the UI; the context menu renders its children.
 
@@ -519,6 +540,8 @@ Settled in [issue #4](https://github.com/iot49/rails49/issues/4); full working i
 * **Only `labeled_complete` images are exported.** This is the one hard gate. An image containing an unlabeled car teaches the detector that cars are background, and the loss is shared across the whole image so it cannot be scoped per class. Ultralytics states the same requirement directly — *"All instances of all classes in all images must be labeled. Partial labeling will not work."* — and two peer-reviewed studies of sparse-annotation degradation agree.
 * **Class index** is the position in `detector.classes` of the longest entry that is a segment-prefix of the label's `class`, as described under [Parameters](#parameters-live-in-configyaml). A label matching no entry is a **fatal export error**, never a silent drop — a dropped car is exactly the unlabeled-car-as-background failure above.
 * **Geometry** is the oriented box: centre and orientation from the `p0`–`p1` chord, length from its magnitude, width from `DPT × standard_width / standard_gauge`. Normalisation into the detector's input frame is generated, not stored.
+* **Images are resampled to the target DPT, then padded — never resized — onto the canvas.** The padding is not a formatting choice: Ultralytics' loader rescales every image's long side to `imgsz` before any letterbox or augmentation, in training and validation alike, so a corpus normalized only at capture time is **silently un-normalized by the dataloader**. Padding to exactly the canvas side makes that rescale a no-op, which is the whole mechanism by which [DPT normalization](#input-geometry-is-dpt-normalized) survives to the model.
+* **A capture larger than the canvas is tiled**, with overlap exceeding the longest car. **A car cut by a tile boundary is clipped and labeled, not dropped.** Dropping it would teach *partial car is not a car* — self-consistent under tiling, since the car is whole in some other tile, but it would blind the model to a car half-outside the **camera's** frame, which is a real and permanent case no overlap rule can fix.
 
 ### CNN crops, for the classifier
 
@@ -561,4 +584,4 @@ Two different things, kept apart deliberately: the first list is **ruled out** a
 
 ---
 
-*Design decisions, open questions, and the research behind them are tracked on the wayfinder map: [iot49/rails49#2](https://github.com/iot49/rails49/issues/2).*
+*Design decisions, open questions, and the research behind them are tracked on the wayfinder maps. The format and labeling decisions above came from [#2](https://github.com/iot49/rails49/issues/2); the accuracy campaign and the input geometry are [#125](https://github.com/iot49/rails49/issues/125), which is open.*
