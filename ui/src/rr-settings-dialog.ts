@@ -86,6 +86,16 @@ export class RRSettingsDialog extends LitElement {
       text-align: right;
       font-weight: 500;
       color: var(--sl-color-neutral-600);
+      /* Align with the first line of the control, not with the middle of the
+         cell. Centring on the grid centres against the whole row, so a control
+         carrying help text drags its label down past the input it names. Rows
+         without help text are unaffected: there the cell is exactly the input's
+         height, and this lands in the same place centring did. */
+      align-self: start;
+      line-height: var(--sl-line-height-normal);
+      padding-top: calc(
+        (var(--sl-input-height-medium) - 1em * var(--sl-line-height-normal)) / 2
+      );
     }
 
     sl-tab-panel {
