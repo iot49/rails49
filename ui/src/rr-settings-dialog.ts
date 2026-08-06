@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { VALID_SCALES } from '@occupancy/r49';
 import type { Layout } from '@occupancy/r49';
+import type { MissingRequirement } from './requiredMetadata.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
@@ -14,24 +15,63 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { SlDialog, SlInput, SlSelect } from '@shoelace-style/shoelace';
 
-/** The subset of `Layout` this dialog edits — the archive's other layout fields never pass through here. */
-type LayoutFields = Pick<Layout, 'name' | 'scale' | 'description' | 'contact'>;
+/**
+ * The subset of `Layout` this dialog edits, plus the calibration it reads.
+ *
+ * `calibration` is read-only here: the dialog edits one field inside it and
+ * never touches `points`, which is why the camera height leaves on its own
+ * event rather than through a spread of the parent object.
+ */
+type LayoutFields = Pick<Layout, 'name' | 'scale' | 'description' | 'contact'> & {
+  readonly calibration?: Layout['calibration'];
+};
 
 /**
- * Dialog for editing layout metadata.
+ * Dialog for editing layout metadata, and the **required-metadata gate** (#139).
  *
  * The "Ref Size (mm)" input was removed with the v4 reduction (#19): v4's
  * calibration is a list of points each carrying its own world coordinate, so
  * the single `size_mm` distance it wrote no longer exists. Calibration
  * authoring returns with the editor spec.
  *
+ * **While `requiredMissing` is non-empty the dialog opens itself and refuses to
+ * close.** One rule covers both cases SPEC names: a new archive has no camera
+ * height, so New opens it; an archive already carrying everything opens
+ * straight through and this dialog never appears. That is why no "was this a
+ * create?" flag exists anywhere — the state of the manifest is the trigger.
+ *
+ * It cannot fabricate a value on the author's behalf, and must not be given a
+ * default that would: a made-up camera height is worse than an absent one,
+ * because a single-plane calibration leaves the fit residual blind to it
+ * (`SPEC.md` § Camera height).
+ *
  * @fires rr-layout-change - When a layout field (name, scale, description, contact) changes. Detail: { layout: Partial<Layout> }
+ * @fires rr-camera-height-change - When the camera height changes. Detail: { camera_height_mm: number | undefined }
  */
 @customElement('rr-settings-dialog')
 export class RRSettingsDialog extends LitElement {
   @property({ type: Object }) layout: LayoutFields = { scale: 'N' };
 
+  /**
+   * What the layout still owes, from `requiredMetadata.ts`. Non-empty means
+   * this dialog is a gate rather than a settings panel.
+   */
+  @property({ type: Array }) requiredMissing: readonly MissingRequirement[] = [];
+
   @query('sl-dialog') private _dialog!: SlDialog;
+
+  private get _blocking(): boolean {
+    return this.requiredMissing.length > 0;
+  }
+
+  /**
+   * The gate opens itself, and only ever opens — closing is the user's, once
+   * they have satisfied it. Driving this from `updated` rather than from a
+   * caller is what lets New and Open share one rule; neither knows about it.
+   */
+  protected updated() {
+    if (this._blocking && this._dialog && !this._dialog.open) this._dialog.show();
+  }
 
   static styles = css`
     .settings-grid {
@@ -81,6 +121,23 @@ export class RRSettingsDialog extends LitElement {
       font-size: 0.8rem;
       color: var(--sl-color-neutral-500);
     }
+
+    .required {
+      border-left: 3px solid var(--sl-color-warning-600);
+      background: var(--sl-color-warning-100);
+      color: var(--sl-color-neutral-900);
+      padding: 0.75rem 1rem;
+      border-radius: var(--sl-border-radius-medium);
+    }
+
+    .required ul {
+      margin: 0.5rem 0 0;
+      padding-left: 1.25rem;
+    }
+
+    .required li + li {
+      margin-top: 0.35rem;
+    }
   `;
 
   public show() {
@@ -107,9 +164,46 @@ export class RRSettingsDialog extends LitElement {
     }));
   }
 
+  /**
+   * The camera height leaves on its own event rather than through
+   * `rr-layout-change`, because it lives inside `calibration` and a spread of
+   * that object from here would carry a copy of `points` with it — a stale one
+   * the moment anything else edits them.
+   *
+   * An emptied field emits `undefined`, not 0: absent means "unknown", which
+   * the fit has a defined fallback for, while 0 would be a camera at layout
+   * zero. The schema rejects the latter anyway.
+   */
+  private _onCameraHeightChange(raw: string) {
+    const trimmed = raw.trim();
+    const value = trimmed === '' ? undefined : Number(trimmed);
+    if (value !== undefined && !Number.isFinite(value)) return;
+    this.dispatchEvent(new CustomEvent('rr-camera-height-change', {
+      detail: { camera_height_mm: value },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
   render() {
     return html`
-      <sl-dialog label="Settings" style="--width: 500px;">
+      <sl-dialog
+        label="Settings"
+        style="--width: 500px;"
+        @sl-request-close=${(e: CustomEvent) => {
+          // Every route out — the close button, Escape, a click on the overlay
+          // — goes through here, so one guard covers all three.
+          if (this._blocking) e.preventDefault();
+        }}
+      >
+        ${this._blocking
+          ? html`<div class="required">
+              <strong>This layout needs a few details before it can be edited.</strong>
+              <ul>
+                ${this.requiredMissing.map(r => html`<li>${r.message}</li>`)}
+              </ul>
+            </div>`
+          : ''}
         <sl-tab-group>
           <sl-tab slot="nav" panel="layout">Layout</sl-tab>
 
@@ -135,6 +229,17 @@ export class RRSettingsDialog extends LitElement {
                 `)}
               </sl-select>
 
+              <div class="label">Camera height (mm)</div>
+              <sl-input
+                id="camera-height"
+                type="number"
+                min="1"
+                placeholder="e.g. 1150"
+                value=${this.layout?.calibration?.camera_height_mm ?? ''}
+                help-text="Above layout zero. Scale varies with height, so this is what makes DPT mean the same thing at the rails as on the baseboard."
+                @sl-change=${(e: Event) => this._onCameraHeightChange((e.target as SlInput).value)}
+              ></sl-input>
+
               <div class="label">Description</div>
               <sl-input
                 id="layout-description"
@@ -152,7 +257,13 @@ export class RRSettingsDialog extends LitElement {
           </sl-tab-panel>
         </sl-tab-group>
         
-        <sl-button slot="footer" variant="primary" @click=${() => this.hide()}>Close</sl-button>
+        <sl-button
+          slot="footer"
+          variant="primary"
+          ?disabled=${this._blocking}
+          @click=${() => this.hide()}
+          >Close</sl-button
+        >
       </sl-dialog>
     `;
   }

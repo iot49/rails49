@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { R49Archive, MANIFEST_VERSION, type ValidScales } from '@occupancy/r49';
+import { R49Archive, MANIFEST_VERSION, type Layout } from '@occupancy/r49';
+import { missingLayoutMetadata } from './requiredMetadata.js';
 import { EditHistory, revealTarget, type HistoryEntry } from './history.js';
 import { openArchive, writeArchive, type FileBinding } from './persistence.js';
 // Shared with the diagnostics queue, which binds bare keys to `window` too —
@@ -346,14 +347,38 @@ export class RRApp extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * The camera height, applied where it lives. It arrives on its own event
+   * rather than through `rr-layout-change` because it sits inside
+   * `calibration`, and spreading that object in from the dialog would carry a
+   * copy of `points` with it — stale the moment anything else edits them.
+   *
+   * `undefined` deletes the key rather than storing it: the schema is
+   * `.optional()` and never `.default()`, so an absent height must stay absent
+   * in the bytes (#139).
+   */
+  private async _onCameraHeightChange(e: CustomEvent<{ camera_height_mm: number | undefined }>) {
+    if (!this._archive) return;
+    const manifest = this._archive.getManifest();
+    const height = e.detail.camera_height_mm;
+    await this._history.record('edit camera height', { kind: 'layout' }, () => {
+      const calibration = { ...manifest.layout.calibration };
+      if (height === undefined) delete calibration.camera_height_mm;
+      else calibration.camera_height_mm = height;
+      manifest.layout = { ...manifest.layout, calibration };
+    });
+    this.requestUpdate();
+  }
+
   render() {
-    let layout: { name: string; scale: ValidScales } = { name: '', scale: 'N' };
+    // Widened for the required-metadata gate, which reads `calibration` too.
+    let layout: Layout = { name: '', scale: 'N', calibration: { points: [] }, sensors: [] };
     // Null until a manifest has actually been read (#52). The `N` above is a
     // placeholder for the dialog to render against, not an answer any archive
     // gave, so with nothing open the header states no scale rather than
     // inventing one. Read on every render, so a scale changed in the dialog is
     // the one shown.
-    let scale: ValidScales | null = null;
+    let scale: Layout['scale'] | null = null;
     try {
       if (this._archive) {
         layout = this._archive.getManifest().layout as any;
@@ -367,8 +392,10 @@ export class RRApp extends LitElement {
       <rr-header
         .viewMode=${this._viewMode}
         .layout=${layout}
+        .requiredMissing=${missingLayoutMetadata(this._archive ? layout : null)}
         @rr-view-change=${this._onViewChange}
         @rr-layout-change=${this._onLayoutChange}
+        @rr-camera-height-change=${this._onCameraHeightChange}
       >
         <!-- Three things, each qualifying the one before: the layout's name,
              the scale its geometry is read in (#52, resolved above), and the
