@@ -198,11 +198,13 @@ In practice **DPT > 20** is required: below that, a car is too few pixels across
 
 > **Consequence — UI development and training data are decoupled.** The existing 46 images are below the DPT threshold and need re-shooting, which is not currently possible. They remain perfectly adequate as **UI fixtures**: they exercise every code path in the editor and cost nothing. **Training will use fresh, higher-DPT images captured later.** Do not tune model accuracy against the current corpus, and do not treat its numbers as predictive.
 
-Ideally the layout is perfectly parallel to the camera plane. Then it suffices to specify the distance in millimeters between two points at the same height to establish DPT. Otherwise the image suffers perspective distortion, and several points in 3D space are required to compute the correcting transform.
+Ideally the layout is perfectly parallel to the camera plane, and at infinite distance from it. Then it suffices to specify the distance in millimeters between two points at the same height to establish DPT.
 
-In practice the errors from camera misalignment have been negligible and **two-point calibration is sufficient**, so that is what the UI uses. However the `.r49` format accepts a list of **3D coordinate points** (relative to an arbitrary but fixed origin) so full calibration remains possible later without another format change.
+Neither holds in practice, and **the cost has been measured rather than assumed** ([issue #103](https://github.com/iot49/rails49/issues/103), resolved under [map #125](https://github.com/iot49/rails49/issues/125); the derivations and their sources are in `docs/research/camera-calibration.md`). A real layout is not planar — track sits at 0–85 mm and scenery higher — and a real camera hangs a finite 1–1.5 m above it. Under a pinhole camera at height `h`, **every length at height `z` reads `z/(h−z)` too large**: 9.3% at track height under a 1 m camera, 30% at scenery height. That bias lands in DPT and so in everything DPT feeds — car width in pixels, the drift tolerance, the `min_dpt` gate, the [DPT-normalization](#input-geometry-is-dpt-normalized) resample factor.
 
-Other errors, such as camera barrel distortion, are ignored.
+Two properties of that expression decide the whole design. **Focal length cancels from it** — it is a ratio of depths — so lens choice cannot fix the error and camera *height* is the only lever. And the error is **one-dimensional**: a single measured number removes it, which is why [Camera height](#camera-height-is-what-corrects-the-third-dimension) is the correction rather than a full camera model.
+
+Other errors are ignored: barrel distortion (worst on the ultrawide lens a low mount forces), and camera tilt, which strictly adds to the figures above rather than replacing them.
 
 #### Reference points
 
@@ -221,23 +223,48 @@ calibration: {
 
 A point carries no `id` and no `name`. Nothing references an individual point, so identity buys nothing at the two-to-four points a real calibration has; both are additive later if perspective correction ever wants them. The v3 `size_mm` field is gone — the distance it encoded is implied by the world coordinates.
 
-**DPT is a single least-squares scale over equal-height pairs:**
+**DPT is a single least-squares scale, with each pair normalized to the reference plane by the camera height:**
 
 ```
-pairs = { (i,j) : z_i == z_j }
-s     = Σ(d_px · d_mm) / Σ(d_mm²)   over pairs
-DPT   = s · gauge_mm(scale)
+s   = Σ(d_px' · d_mm) / Σ(d_mm²)    over all pairs, where d_px' = d_px · (h − z)/h
+DPT = s · gauge_mm(scale) · h/(h − z_ref)
 ```
 
-Only pairs at equal `z` enter the fit. Under a pinhole camera, two points at different heights sit at different depths, so their pixel separation mixes scale with depth; including such a pair biases DPT silently, and worse the taller the feature. This is the "two points at the same height" rule above, generalised to N points.
+`h` is the authored camera height above layout zero and `z_ref` the authored reference height — see [Camera height](#camera-height-is-what-corrects-the-third-dimension). **Every pair enters the fit regardless of height**, because the normalization removes the depth term that made mixed heights incomparable.
 
-At N = 2 the single pair reduces the fit to `d_px / d_mm`, which is exactly what `getDPT()` computes today — so importing a v3 archive changes no existing DPT. The `d_mm²` weighting favours long baselines automatically, which is the right bias: click error is a fixed number of pixels, so short baselines are proportionally noisier. When no equal-`z` pair exists, DPT is `null` — uncalibrated. Points out of the reference plane are stored but **inert**: they provision perspective correction without implementing it.
+**Absent `h` the fit restricts to pairs at `z == z_ref`** — "without a camera height I can only speak about the plane you named" — and points off that plane stay stored but **inert**. That is the state every archive is in today, and the fallback is exactly the historical behaviour for an archive calibrated on one plane, which all six fixtures are.
+
+The `d_mm²` weighting favours long baselines automatically, which is the right bias: click error is a fixed number of pixels, so short baselines are proportionally noisier. It matters twice here, because recovering anything from the third dimension needs long baselines (below). When no usable pair exists, DPT is `null` — uncalibrated.
+
+> **This is a target, not the current code.** `getDPT()` fits equal-`z` pairs only, at any height, with no `h`. Note that today's rule admits pairs at *different* equal heights into one fit, silently blending scales up to 9% apart; the fallback above is narrower on purpose, and provably identical on every archive that exists.
 
 A v3 `{p0, p1, size_mm}` imports as two points at `world (0,0,0)` and `(0, size_mm, 0)`. Nothing is lost; a measured distance *is* a pair of positions in a frame you chose.
 
 **Minimum viable calibration is two points with a nonzero separation** — precisely "DPT resolves". Because car width is derived from DPT rather than stored, an uncalibrated archive cannot render a label at all, so the editor opens in calibration mode with the labeling tools **disabled and the reason stated**. The translucent width rectangle is the only feedback that tells a user whether their two clicks actually cover the car; labeling without it produces a corpus nobody can trust. A `DPT` below the threshold warns persistently but **never blocks** — the fixture corpus lives there.
 
 Points are placed with a tool **distinct from the sensor tool** and visually unmistakable from it: click a pixel, then enter the x/y/z millimetre coordinate. A point renders as a crosshair labelled with its world coordinate. With more than two points the editor shows the **fit residual**, so a mis-typed coordinate is visible rather than silently absorbed into the scale.
+
+#### Camera height is what corrects the third dimension
+
+Settled in [issue #135](https://github.com/iot49/rails49/issues/135). **This is a target, not the current code.**
+
+The layout is not planar and the camera is not at infinity, so scale varies with height by `z/(h−z)`. Two authored numbers remove it:
+
+* **`h` — camera height above layout zero**, optional. It is the *only* scalar that helps. Focal length was rejected outright: it cancels from every error term, all three Exif focal tags are optional in the standard, `DigitalZoomRatio` silently invalidates the conversion, and the live `getUserMedia` path carries no Exif at all — the W3C Image Capture spec exposes zoom and focus distance and **no focal length in any unit**. `h` reaches the correction directly, costs zero additional calibration points, and is available identically for an archive and for a live stream.
+* **`z_ref` — the reference height, i.e. railhead above layout zero**, optional, defaulting to 0. It fixes *where DPT is reported*. The argument is the name: **DPT is Dots Per Track**, its unit is a track width, and reporting it on a plane where there is no track is incoherent with what the number claims to be. Every consumer keeps taking one scalar, now the right one; `dptAtHeight(z)` serves anything else. A resample is a single global factor and cannot vary per pixel, so a reference height had to be chosen somewhere — this makes the choice authored and visible instead of implicit and wrong.
+
+**Accuracy of the correction is second-order**: the residual scale error is `(z/(h−z))·(Δh/h)`, so a tape measure good to ±20 mm leaves 0.19% at track height against 9.3% uncorrected — a ~50× reduction for one number a user can check by re-measuring.
+
+**`h` is cross-checked by the fit itself, not by a separate estimator.** A wrong `h` normalizes pairs at different heights inconsistently, and that inconsistency is exactly what the existing fit residual measures. Against a ~1.4 px click floor at DPT 20, a 50% error in `h` shows 28 px on 500 mm baselines and 14 px on 250 mm; even a 10% error shows 5.6 px. The check is **structurally blind when every point sits at one height** — a uniform scale bias is indistinguishable from a different camera distance — so it is a cross-check and never a gate. Where long-baseline pairs at two heights do exist, `h` is also *derivable* (`h = z·R/(R−1)`, ~3% at 500 mm baselines); the editor may **offer** that as a suggested value, but the fit never derives it silently, because a correction that appears and disappears with the shape of the point set is worse than no correction.
+
+**Scale is corrected; position is not.** A point at horizontal radius ρ and height `z` also lands displaced by `ρ·z/(h−z)` — photogrammetry's *relief displacement*, 104 mm ≈ 6.3 track gauges at the corner of a 2×1 m layout under a 1 m camera. It is **latent**: sensors, car spans and detections all live in image pixels, and nothing maps image↔world *positions*, so no running computation is wrong by it. A correction with no caller is not built. It also needs the nadir pixel, which assuming the image centre gets wrong in exactly the tilted case the correction would be for.
+
+**What the system does about what remains — warn, in one place, with no threshold** ([issue #136](https://github.com/iot49/rails49/issues/136)):
+
+* **The editor's DPT bar reports all three states**: no `h` (scale on the reference plane only, and enter the height to correct it), `h` present (*naming the height it corrected with*), and `h` present with poor geometry (below). The middle case is load-bearing rather than decorative — authoring `h` moves every DPT number by up to 9%, and a bar that spoke only on failure would let that happen with nothing on screen explaining it. This is the [drift reference-row](#image-alignment) precedent, and warn-never-block throughout.
+* **Absent `h`, no magnitude is quoted.** `z/(h−z)` is not computable without `h`, and a number printed under an assumed height would sit in the same bar as measured ones with nothing distinguishing them. `getDPT()` already sets the rule: `null` means "I cannot answer", not "zero".
+* **The live view says nothing and never refuses.** Refusal must mean *the mapping you authored is no longer valid* — true of drift, false here: perspective error is a **static** property, equally present when the images were shot, the sensors placed, and the labels drawn. The detector trains and infers in the same distorted frame, so nothing is invalidated. Refusing would reject every archive in existence for a condition already true when its labels were drawn. (An operator who re-mounts the camera at a height other than the authored `h` *is* a change from the authored pose — that is [drift](#image-alignment)'s domain.)
+* **The capture advisory reports obliquity and the lever, with no constant.** With `h` and the calibration points' own world extent, worst-case obliquity is `atan(ρ_max/h)` and the worst-case apparent-width inflation is `1 + (c/w)·tan θ`, where `c/w ≈ 1.43` is a prototype car's height over its width — **scale-independent**, since both divide by the same ratio, so one formula serves HO, N and Z. An HO car at the corner of a 2×1 m layout presents **2.6× its nadir width under a 1 m camera**, 1.8× at 2 m, 1.5× at 3 m. The bar states the number *and the lever*: height is the only control and it works twice, on obliquity and on the ultrawide lens a low mount forces (~19 mm equivalent at 1 m, ~39 mm at 2 m). **No `max_obliquity` constant is set** — the curve has no natural breakpoint and nothing has yet measured what obliquity costs *accuracy*, so a number picked now would be the substitute gate [Accuracy](#accuracy) warns against.
 
 #### Image Alignment
 
@@ -455,7 +482,9 @@ The `.r49` manifest is versioned. The current shipped version is 3; the model de
     "name": "…", "description": "…", "contact": "…",      // all optional
     "scale": "HO",
     "calibration": { "points": [ { "px":    { "x": 0, "y": 0 },
-                                   "world": { "x": 0, "y": 0, "z": 0 } } ] },  // mm
+                                   "world": { "x": 0, "y": 0, "z": 0 } } ],    // mm
+                     "camera_height_mm": 1050,        // optional — target, not yet built
+                     "reference_height_mm": 85 },     // optional, defaults to 0
     "sensors": [ { "id": "<snowflake>", "x": 0, "y": 0, "name": "…" } ]        // name optional
   },
   "camera": { "resolution": { "width": 0, "height": 0 }, "model": "…" },
@@ -482,6 +511,7 @@ Encoding rules, each with its reason:
 * **`provenance` is a discriminated union, with no default.** `proposed_by` is required on `proposed`/`corrected` and forbidden on `human`, enforced by the type rather than a runtime check. A default of `human` is specifically rejected: a forgotten field would launder model output as human authorship, which is the exact feedback loop [Provenance](#provenance-is-required-not-optional) exists to make measurable. `proposed_by` is a free-form non-empty string — no semver pattern, since it identifies a model and a future detector may be versioned differently.
 * **`class` is a plain string at the format layer**, *not* validated against the vocabulary at parse time. Conformance is a visible warning in the editor and a **fatal error in the training exporter**, which is where a mis-mapped class silently corrupts a model. A format that refuses to open files because someone pruned `config.yaml` would punish config edits.
 * **`calibration` is always present, with `points` defaulting to `[]`.** "Uncalibrated" is a real state the editor handles, and an empty list expresses it without every consumer null-checking the parent. `getDPT()` returns `null` when no equal-`z` pair exists, covering the empty and single-point cases with one rule.
+* **`camera_height_mm` and `reference_height_mm` are optional, and both are targets** — see [Camera height](#camera-height-is-what-corrects-the-third-dimension). Absent, the fit behaves as it does today; `reference_height_mm` defaults to 0, which is the historical meaning of DPT. They are the *only* two fields the non-planarity work adds: nothing about the camera model, the nadir pixel, or focal length is stored, because none of it is used. **Adding them is a coordinated change** under the strictness rule below — an archive written with them fails to parse on a build that predates them, which is what [the version question](#in-scope-still-unresolved) is about.
 * **`labeled_complete` defaults to `false`**, always. "A human asserts no car is unlabeled" is a claim no default and no conversion can make on a human's behalf.
 * **Unknown keys are rejected, not stripped.** Every object in the schema is strict, so a manifest carrying a field this build does not know fails to parse instead of loading shorter than it arrived. Silently deleting what a newer build wrote is the same failure class as a defaulted `scale` or a defaulted `provenance`: the damage is done at *save* time, to someone else's file, and nothing in the pipeline looks wrong afterwards. The cost is that adding a field is a coordinated change — which is what a version number is for.
 * **The archive-level `id` is identity, and it is optional here.** `R49Archive` mints one on write when it is absent and **never** overwrites one that exists, so a file lacks an `id` only until its first save. It is required by the [corpus repo](https://github.com/iot49/rails49/issues/54), never by the editor or the detector — the format stays loadable for a hand-built manifest, and every archive written before the field existed keeps working. It is not derived from the file's name or path: an archive can be renamed or moved without becoming a different archive, which is precisely what a per-contributor corpus path forces. Whether a *fork* — someone else's archive, edited and resubmitted under the same `id` — needs archive-level provenance is deliberately unresolved; v4 models provenance for labels only.
@@ -572,6 +602,8 @@ Two different things, kept apart deliberately: the first list is **ruled out** a
 | **Calibration provenance** — authoring-image references, per-point names, content fingerprints | The general case is camera drift, already [issue #12](https://github.com/iot49/rails49/issues/12). Settled in [issue #6](https://github.com/iot49/rails49/issues/6). |
 | **Coupling as a class or a field** | Derivable from L0 as two box endpoints coinciding. A 96 px crop cannot see the relationship between two cars that defines a coupler, which is why hand-placed coupling markers never worked. |
 | **A second model in the live path** | One detector, one ORT session, one vocabulary. The CNN stays retrainable and unloaded. |
+| **Warping images to correct perspective** | Ruled out in [issue #136](https://github.com/iot49/rails49/issues/136). A warp to the z=0 plane straightens layout zero and leaves everything at track height displaced by exactly the relief term — the true-orthophoto/DSM distinction — so it misses the objects being detected. It also bakes irreversible per-layout geometry into shared pixels, splits the corpus into warped and unwarped provenance, and contradicts [Input geometry](#input-geometry-is-dpt-normalized), which bought its simplicity by settling that authoring stays in full-frame pixels. A contributor who warps their **own** photos before submitting produces a self-consistent archive indistinguishable from one shot with different optics: the system neither performs nor detects warping, and needs no check for it. |
+| **Position (relief) correction** | Specified and deliberately not built — see [Camera height](#camera-height-is-what-corrects-the-third-dimension). Nothing maps image↔world positions, so it would be a correction with no caller. Returns as a fresh decision if such a consumer ever appears. |
 
 ### In scope, still unresolved
 
@@ -581,6 +613,8 @@ Two different things, kept apart deliberately: the first list is **ruled out** a
 * **L2: event and transition semantics.** Rocrail-style enter/in sensors fire on *transitions*; L1 is per-frame state. Converting one to the other needs debouncing and hysteresis, which is exactly where a phantom becomes a spurious "train entered block" a controller acts on. Deferred until a real controller is in the loop.
 * **Block-span occupancy.** Retrofittable for free from L0, but a named interval on track presupposes track — so it would have to bring spline authoring back with it.
 * **Whether the live view renders L0 boxes, L1 sensor states, or both by default.** Both are available, and [the output frame](#output-encoding) means boxes draw with no transform. A presentation choice, not an architectural one.
+* **Whether the two calibration-height fields force a version bump.** [Camera height](#camera-height-is-what-corrects-the-third-dimension) adds `camera_height_mm` and `reference_height_mm`, and [the manifest](#the-v4-manifest) rejects unknown keys rather than stripping them — so an archive written with either field fails to parse on any build predating it, which is precisely the coordinated change a version number exists for. Whether that makes it v5, or whether optional additive fields warrant a narrower rule, is [issue #139](https://github.com/iot49/rails49/issues/139); the fields' *semantics* are settled either way.
+* **What obliquity costs accuracy, and whether it earns a threshold.** The geometry is quantified — an HO car presents 2.6× its nadir width at the corner of a 2×1 m layout under a 1 m camera — but its effect on detection is unmeasured, so no constant is set. Two consequences wait on that measurement: whether the capture advisory gains a bar, and whether `spanToPolygon`'s constant car width needs an obliquity term ([issue #138](https://github.com/iot49/rails49/issues/138)), since a nadir-assumed box under-covers a corner car by up to 2.6× and *wrong labels* hurt training in a way distortion alone does not.
 
 ---
 
