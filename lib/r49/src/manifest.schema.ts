@@ -25,63 +25,103 @@ function getGaugeMM(scale: Scale): number {
 
 /**
  * Resolution in Dots Per Track (DPT): a least-squares scale fit over the
- * calibration pairs that sit at equal height, converted to track widths.
+ * calibration pairs, normalized to layout zero by the camera height and
+ * reported at the reference plane, converted to track widths.
  *
  * ```
  * pairs = { (i,j) : z_i == z_j,  i < j }
- * s     = Σ(d_px · d_mm) / Σ(d_mm²)   over pairs
- * DPT   = s · gauge_mm(scale)
+ * d_px' = d_px · (h − z)/h                      // camera height known
+ * s     = Σ(d_px' · d_mm) / Σ(d_mm²)   over pairs
+ * DPT   = s · gauge_mm(scale) · h/(h − z_ref)
  * ```
  *
- * Only equal-`z` pairs enter the fit. Under a pinhole camera two points at
- * different heights sit at different depths, so their pixel separation mixes
- * scale with depth and would bias the result silently — worse the taller the
- * feature. Points at other heights are stored but **inert**, which provisions
- * perspective correction without implementing it. `z` equality is exact: the
- * values are typed by hand, not measured.
+ * **Why a height at all.** Layouts are not planar and cameras are not at
+ * infinity, so under a pinhole camera at height `h` every length at height `z`
+ * images `z/(h−z)` too large — 9.3% at track height under a 1 m camera. That
+ * bias lands in DPT and so in car width, the drift tolerance, the `min_dpt`
+ * gate and the resample factor. `h` removes it in closed form; focal length
+ * cannot, because it cancels from the ratio. See `SPEC.md` § Camera height.
+ *
+ * **A pair still needs one height.** Both points of a pair must share `z`, and
+ * that is not a simplification: two points at different heights sit at
+ * different depths *and* different azimuths, so their pixel separation is not
+ * any scale times any distance — recovering it would need the position model
+ * deliberately not built (#135). What the camera height changes is that pairs
+ * at *different* heights now combine correctly into one fit, each normalized to
+ * layout zero, where before they either blended silently (a latent ~9% error)
+ * or one plane's worth was all you could use.
+ *
+ * **Absent `h` the fit restricts to the reference plane** — "without a camera
+ * height I can only speak about the plane you named" — and points off it stay
+ * stored but inert. That is the historical behaviour for the single-plane
+ * archives that are the only ones in existence, so it changes no number any of
+ * them reports. `z` equality is exact: the values are typed by hand.
  *
  * The `d_mm²` weighting favours long baselines automatically, which is the
  * right bias — click error is a fixed number of pixels, so short baselines are
- * proportionally noisier.
+ * proportionally noisier. It matters twice here, because a wrong `h` is only
+ * visible through pairs at two heights, and short baselines drown that signal.
  *
- * At two points the fit reduces to `d_px / d_mm`, so a converted archive
- * reports the DPT it reported under v3.
- *
- * @returns DPT, or `null` when no equal-`z` pair with a nonzero separation
- *          exists — one rule covering the empty, single-point,
- *          all-different-height, and coincident-point cases. `null` means "I
- *          cannot answer", not "zero".
+ * @returns DPT, or `null` when no usable pair with a nonzero separation exists
+ *          — one rule covering the empty, single-point, off-reference-plane and
+ *          coincident-point cases — or when the geometry is incoherent
+ *          (`h` at or below the reference plane). `null` means "I cannot
+ *          answer", not "zero".
  */
 export function getDPT(manifest: ManifestData): number | null {
-  const scale = fitScale(equalHeightPairs(manifest.layout.calibration.points));
+  const { calibration } = manifest.layout;
+  const h = calibration.camera_height_mm;
+  const zRef = calibration.reference_height_mm ?? 0;
+
+  if (h !== undefined && h <= zRef) return null;
+
+  const scale = fitScale(calibrationPairs(calibration));
   if (scale === null) return null;
-  return scale * getGaugeMM(manifest.layout.scale);
+
+  // Absent `h` the fit already sits on the reference plane; with it, the fit is
+  // at layout zero and this lifts it to where the track is.
+  const atReference = h === undefined ? scale : scale * (h / (h - zRef));
+  return atReference * getGaugeMM(manifest.layout.scale);
 }
 
 /** One equal-height pair of calibration points, as the two separations the fit sees. */
 interface CalibrationPair {
-  /** Separation in image pixels. */
+  /** Separation in image pixels, normalized to layout zero when the camera height is known. */
   readonly dPx: number;
   /** Separation on the layout, in mm. */
   readonly dMm: number;
 }
 
 /**
- * Every pair of calibration points at equal `z`, reduced to two separations.
+ * Every usable pair of calibration points, reduced to two separations.
  *
- * The one place the equal-`z` rule is applied. {@link getDPT} and
- * {@link getDPTResidual} must select the same pairs or the residual would
- * describe a fit nobody computed.
+ * The one place the pair rule is applied. {@link getDPT} and
+ * {@link getDPTResidual} must select and normalize the same pairs or the
+ * residual would describe a fit nobody computed — which is also what makes the
+ * residual validate the camera height for free: a wrong `h` normalizes pairs at
+ * different heights inconsistently, and that disagreement is exactly what the
+ * residual measures. It is blind when every point shares one height, because a
+ * uniform scale bias is indistinguishable from a different camera distance.
  */
-function equalHeightPairs(points: readonly CalibrationPoint[]): CalibrationPair[] {
+function calibrationPairs(calibration: ManifestData['layout']['calibration']): CalibrationPair[] {
+  const h = calibration.camera_height_mm;
+  const zRef = calibration.reference_height_mm ?? 0;
   const pairs: CalibrationPair[] = [];
-  for (let i = 0; i < points.length; i++) {
-    for (let j = i + 1; j < points.length; j++) {
-      const a = points[i];
-      const b = points[j];
-      if (a.world.z !== b.world.z) continue;
+
+  for (let i = 0; i < calibration.points.length; i++) {
+    for (let j = i + 1; j < calibration.points.length; j++) {
+      const a = calibration.points[i];
+      const b = calibration.points[j];
+      const z = a.world.z;
+      if (b.world.z !== z) continue;
+      // Without a camera height, only the named plane can be spoken about.
+      if (h === undefined && z !== zRef) continue;
+      // A point at or above the camera is not a pose the pinhole model has.
+      if (h !== undefined && z >= h) continue;
+
+      const dPx = Math.hypot(a.px.x - b.px.x, a.px.y - b.px.y);
       pairs.push({
-        dPx: Math.hypot(a.px.x - b.px.x, a.px.y - b.px.y),
+        dPx: h === undefined ? dPx : dPx * ((h - z) / h),
         dMm: Math.hypot(a.world.x - b.world.x, a.world.y - b.world.y),
       });
     }
@@ -110,12 +150,21 @@ function fitScale(pairs: readonly CalibrationPair[]): number | null {
 
 /**
  * How badly the calibration points disagree with the scale fitted through them:
- * the RMS of `d_px − s · d_mm` over the same equal-`z` pairs {@link getDPT}
- * uses, in **image pixels**.
+ * the RMS of `d_px − s · d_mm` over the same pairs {@link getDPT} uses and with
+ * the same height normalization applied, in **image pixels**.
  *
  * A mis-typed world coordinate is otherwise absorbed silently into `s`, which
  * shifts DPT and therefore every derived car width without anything looking
  * wrong. The residual is what makes it visible, so the editor shows it.
+ *
+ * It carries a second job once a camera height is authored: a wrong `h`
+ * normalizes pairs at different heights inconsistently, so the same number
+ * rises. Note the fit *refits* rather than holding a scale fixed, so the RMS
+ * lands at roughly half the raw disagreement between planes — a 50% error in
+ * `h` over 500 mm baselines at DPT 20 shows ~8 px, against a ~1.4 px click
+ * floor. It stays **one number** — which fault it is, is the reader's — and it
+ * is blind when every point shares a height, because a uniform scale bias is
+ * indistinguishable from a different camera distance. A cross-check, never a gate.
  *
  * Pixels rather than a percentage because a click error is a fixed number of
  * pixels; the number is directly comparable to how precisely a user can hit a
@@ -127,7 +176,7 @@ function fitScale(pairs: readonly CalibrationPair[]): number | null {
  *          "more than two coplanar points", stated in terms of the fit.
  */
 export function getDPTResidual(manifest: ManifestData): number | null {
-  const pairs = equalHeightPairs(manifest.layout.calibration.points);
+  const pairs = calibrationPairs(manifest.layout.calibration);
   if (pairs.length < 2) return null;
 
   const scale = fitScale(pairs);
@@ -184,9 +233,30 @@ const CalibrationPointSchema = z
 // Calibration is always present with `points` defaulting to []. "Uncalibrated"
 // is a real state the editor handles, and an empty list expresses it without
 // every consumer null-checking the parent.
+//
+// The two heights below are `.optional()` and deliberately **not** `.default()`
+// (#139). A default is populated by the parser, so the first save of any
+// archive — including one merely opened to look at — would write the key into
+// someone else's file. That is damage done at save time and invisible
+// afterwards, which is the failure the strictness note above exists to prevent.
+// They add no version: an old archive loads unchanged, and a new archive is
+// refused rather than misread, which is the loud failure `.strict()` produces.
 const CalibrationSchema = z
   .object({
     points: z.array(CalibrationPointSchema).default([]),
+    /**
+     * Camera height above layout zero, in mm. Optional here, required by the
+     * editor — see {@link getDPT}. `.positive()` because a camera at or below
+     * the origin is not a representable pose and every consumer divides by
+     * `h − z`; the cross-field rule that it must also clear the tallest
+     * calibration point is the editor's, not the schema's.
+     */
+    camera_height_mm: z.number().positive().optional(),
+    /**
+     * Railhead height above layout zero, in mm — the plane DPT is reported at.
+     * Absent reads as 0, which is the historical meaning of DPT.
+     */
+    reference_height_mm: z.number().optional(),
   })
   .strict()
   .default({});
