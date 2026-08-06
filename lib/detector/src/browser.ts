@@ -4,13 +4,11 @@
 import * as ort from 'onnxruntime-web/wasm';
 import { DETECTOR_CONFIDENCE_THRESHOLD, DETECTOR_INPUT } from '@occupancy/config';
 import { decodeDetections } from './decode.ts';
-import { gridToReport, letterbox } from './letterbox.ts';
+import { gridToReport } from './letterbox.ts';
+import { paintLetterbox } from './preprocess.ts';
 import type { Detection, Frame } from './types.ts';
 
 const [GRID_WIDTH, GRID_HEIGHT] = DETECTOR_INPUT;
-
-/** Ultralytics' letterbox fill. The model was trained on bars this colour. */
-const PAD_GRAY = 'rgb(114, 114, 114)';
 
 /**
  * A loaded detector. There is no unloaded one — see `loadDetector`.
@@ -147,21 +145,8 @@ class BrowserDetector implements Detector {
   ): Promise<readonly Detection[]> {
     const frame = sourceFrame(source);
     const grid = { width: GRID_WIDTH, height: GRID_HEIGHT };
-    const fit = letterbox(frame, grid);
 
-    this.#ctx.fillStyle = PAD_GRAY;
-    this.#ctx.fillRect(0, 0, GRID_WIDTH, GRID_HEIGHT);
-    this.#ctx.drawImage(
-      source,
-      0,
-      0,
-      frame.width,
-      frame.height,
-      fit.padX,
-      fit.padY,
-      fit.drawn.width,
-      fit.drawn.height
-    );
+    paintLetterbox(this.#ctx, source, frame, grid);
 
     const feeds = { [this.#session.inputNames[0]]: this.#toTensor() };
     const results = await this.#session.run(feeds);
