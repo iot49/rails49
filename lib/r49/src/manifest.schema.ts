@@ -402,6 +402,54 @@ export const ManifestDataSchema = z
  *
  * @throws If `data` is not an object, or its `version` is not 4.
  */
+/**
+ * Validate a manifest, rewording the one parse failure a user can act on.
+ *
+ * `.strict()` refuses an unknown key rather than stripping it, which is what
+ * stops a newer build's file round-tripping through an older one shorter than
+ * it arrived. That refusal is correct and stays — but zod states it as
+ * `Unrecognized key(s) in object: 'camera_height_mm'`, which is legible to
+ * someone holding the schema and useless to a model railroader looking at a
+ * file that will not open.
+ *
+ * It is worth rewording because the additive fields decided on
+ * [#139](https://github.com/iot49/rails49/issues/139) add **no version** — so
+ * this, and not a version mismatch, is how a stale reader meets a newer
+ * archive. A cached bundle is the ordinary way to be behind in a client-side
+ * app served from one origin, and "reload the app" is the one thing the reader
+ * can act on. Every future additive field inherits the wording.
+ *
+ * The hedge is not padding: an unknown key is equally a typo in a hand-built
+ * manifest, and nothing can tell the two apart.
+ *
+ * @throws A reworded `Error` for an unknown key; otherwise whatever zod threw.
+ */
+export function parseManifest(data: unknown): ManifestData {
+  try {
+    return ManifestDataSchema.parse(data);
+  } catch (err) {
+    const unknown = unknownKeyPaths(err);
+    if (unknown.length === 0) throw err;
+    const names = unknown.map(k => `\`${k}\``).join(', ');
+    throw new Error(
+      `This archive uses ${unknown.length === 1 ? 'a field' : 'fields'} this build does not ` +
+        `know (${names}). It may have been written by a newer version of rails49 — reload the ` +
+        `app and try again. If you hand-edited manifest.json, check the key ` +
+        `${unknown.length === 1 ? 'name' : 'names'}.`,
+    );
+  }
+}
+
+/** Dotted paths of every key `.strict()` rejected, or `[]` for any other failure. */
+function unknownKeyPaths(err: unknown): string[] {
+  if (!(err instanceof z.ZodError)) return [];
+  return err.issues.flatMap(issue =>
+    issue.code === 'unrecognized_keys'
+      ? issue.keys.map(key => [...issue.path, key].join('.'))
+      : [],
+  );
+}
+
 export function assertManifestVersion(data: unknown): void {
   const version = (data as { version?: unknown } | null)?.version;
   if (version === MANIFEST_VERSION) return;

@@ -81,7 +81,25 @@ archive-level `id` is present, no two archives in one contributor directory
 share an id, and the path is a slug under the author's own handle.
 
 Warnings — DPT below `MIN_DPT`, calibration that does not resolve, images not
-marked complete — are read by the maintainer and block nothing.
+marked complete, and calibration points off the reference plane with no camera
+height — are read by the maintainer and block nothing.
+
+**A missing `camera_height_mm` is deliberately not one of them.** It would fire
+on every submission from day one, fixtures included, and a warning that always
+fires devalues the ones that mean something ([#139]). The editor is where the
+height is *required*; here it is a fact in the table, alongside the reference
+height and the obliquity the two of them imply. The narrower warning above is
+the one place the fit silently means something other than the contributor
+intends: without a height, points off the reference plane are excluded from it.
+
+The geometry facts are **reported, never thresholded** — the `dptResidual`
+precedent. The obliquity is quantified but its cost to detection accuracy is
+unmeasured, so a bar here would be a number nothing earned ([#136]). It is also
+a *lower* bound: the camera is assumed to hang over the centre of the calibrated
+extent, and an archive calibrated on one patch of a larger layout under-reports.
+
+[#136]: https://github.com/iot49/rails49/issues/136
+[#139]: https://github.com/iot49/rails49/issues/139
 
 `fixtures/<slug>.r49` is held to structure only and gets **no warnings**: the six
 are known to be zero-label and below `min_dpt` by design, so annotating that on

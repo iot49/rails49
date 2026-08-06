@@ -78,6 +78,21 @@ function humanLines(report: ArchiveReport): string[] {
         `${report.dptResidual === null ? '' : ` (residual ${report.dptResidual.toFixed(1)} px)`}`;
 
   lines.push(`${report.errors.length === 0 ? '✅' : '❌'} ${report.path} — ${facts}`);
+  // Geometry on its own line, and only when there is something to say. A
+  // maintainer triaging a submission wants "shot from 0.8 m over a 2 m layout"
+  // at a glance; nothing here is thresholded, so it never changes the verdict.
+  if (report.cameraHeightMM !== null) {
+    const obliquity =
+      report.obliquityDeg === null || report.widthInflation === null
+        ? ''
+        : `, worst obliquity ${report.obliquityDeg.toFixed(0)}° ` +
+          `(cars up to ${report.widthInflation.toFixed(1)}× their nadir width)`;
+    lines.push(
+      `   camera  ${report.cameraHeightMM} mm above layout zero` +
+        `${report.referenceHeightMM === null ? '' : `, railhead at ${report.referenceHeightMM} mm`}` +
+        obliquity,
+    );
+  }
   for (const error of report.errors) lines.push(`   error   ${error.message}`);
   for (const warning of report.warnings) lines.push(`   warning ${warning.message}`);
   return lines;
