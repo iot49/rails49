@@ -5,6 +5,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './rr-settings-dialog.js';
 import type { RRSettingsDialog } from './rr-settings-dialog.js';
+import type { MissingRequirement } from './requiredMetadata.js';
 
 /**
  * Where the source lives — a constant, not bound state, so it is no property.
@@ -47,6 +48,12 @@ export type ViewMode = (typeof VIEW_MODES)[number]['mode'];
 export class RRHeader extends LitElement {
   @property({ type: String }) viewMode: ViewMode = 'editor';
   @property({ type: Object }) layout: any = null;
+  /**
+   * Passed straight through to the settings dialog, which opens itself on it
+   * (#139). The header decides nothing about it — it owns the dialog, so it is
+   * the only route from `rr-app` to a component the app does not render.
+   */
+  @property({ type: Array }) requiredMissing: readonly MissingRequirement[] = [];
 
   @query('rr-settings-dialog') settingsDialog!: RRSettingsDialog;
 
@@ -179,7 +186,10 @@ export class RRHeader extends LitElement {
         </div>
       </nav>
 
-      <rr-settings-dialog .layout=${this.layout}></rr-settings-dialog>
+      <rr-settings-dialog
+        .layout=${this.layout}
+        .requiredMissing=${this.requiredMissing}
+      ></rr-settings-dialog>
     `;
   }
 }

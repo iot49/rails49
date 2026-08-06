@@ -1,0 +1,148 @@
+import { describe, it, expect } from 'vitest';
+import { fixture, html } from '@open-wc/testing';
+import '../src/rr-settings-dialog.ts';
+import type { RRSettingsDialog } from '../src/rr-settings-dialog.ts';
+import type { MissingRequirement } from '../src/requiredMetadata.ts';
+import type { SlInput } from '@shoelace-style/shoelace';
+
+/**
+ * The required-metadata gate (#139), from the dialog's side.
+ *
+ * jsdom lays nothing out, so nothing here claims the dialog *looks* blocking —
+ * these assert the open state, the refused close, and the events that leave.
+ * The decision of *what* is missing is `requiredMetadata.ts`'s and is tested
+ * separately; this component only obeys the list it is handed.
+ */
+
+const NEEDS_HEIGHT: MissingRequirement[] = [
+  { field: 'camera_height_mm', message: 'Measure the camera height above layout zero, in mm.' },
+];
+
+const LAYOUT = { name: 'West Yard', scale: 'HO' as const, calibration: { points: [] } };
+
+async function open(requiredMissing: MissingRequirement[] = [], layout: any = LAYOUT) {
+  const el = await fixture<RRSettingsDialog>(
+    html`<rr-settings-dialog .layout=${layout} .requiredMissing=${requiredMissing}></rr-settings-dialog>`,
+  );
+  await el.updateComplete;
+  return el;
+}
+
+const dialogOf = (el: RRSettingsDialog) => el.shadowRoot!.querySelector('sl-dialog')! as any;
+
+describe('rr-settings-dialog', () => {
+  describe('the required-metadata gate', () => {
+    it('stays shut when nothing is required', async () => {
+      const el = await open([]);
+      expect(dialogOf(el).open).toBeFalsy();
+    });
+
+    it('opens itself when something is missing', async () => {
+      // One rule covers New and Open both: a new archive has no camera height.
+      const el = await open(NEEDS_HEIGHT);
+      expect(dialogOf(el).open).toBe(true);
+    });
+
+    it('states every missing requirement', async () => {
+      const el = await open(NEEDS_HEIGHT);
+      expect(el.shadowRoot!.querySelector('.required')?.textContent)
+        .toContain('Measure the camera height');
+    });
+
+    it('refuses to close while blocking, whichever route is taken', async () => {
+      const el = await open(NEEDS_HEIGHT);
+      // sl-request-close carries the route in `detail.source`; one guard covers
+      // the close button, Escape and the overlay alike.
+      for (const source of ['close-button', 'keyboard', 'overlay']) {
+        const event = new CustomEvent('sl-request-close', {
+          detail: { source },
+          cancelable: true,
+          bubbles: true,
+        });
+        dialogOf(el).dispatchEvent(event);
+        expect(event.defaultPrevented, source).toBe(true);
+      }
+    });
+
+    it('allows closing once the requirements are satisfied', async () => {
+      const el = await open(NEEDS_HEIGHT);
+      el.requiredMissing = [];
+      await el.updateComplete;
+
+      const event = new CustomEvent('sl-request-close', {
+        detail: { source: 'close-button' },
+        cancelable: true,
+        bubbles: true,
+      });
+      dialogOf(el).dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    });
+
+    it('disables the footer button while blocking', async () => {
+      const el = await open(NEEDS_HEIGHT);
+      expect(el.shadowRoot!.querySelector('sl-button')?.hasAttribute('disabled')).toBe(true);
+    });
+
+    it('does not reopen itself after the user closes a satisfied dialog', async () => {
+      // The gate only ever opens; closing is the user's once satisfied.
+      const el = await open([]);
+      el.show();
+      await el.updateComplete;
+      el.hide();
+      await el.updateComplete;
+      expect(dialogOf(el).open).toBeFalsy();
+    });
+  });
+
+  describe('the camera height field', () => {
+    const heightInput = (el: RRSettingsDialog) =>
+      el.shadowRoot!.querySelector('#camera-height') as SlInput;
+
+    it('shows the authored value', async () => {
+      const el = await open([], { ...LAYOUT, calibration: { points: [], camera_height_mm: 1150 } });
+      expect(heightInput(el).value).toBe('1150');
+    });
+
+    it('is empty when no height is authored', async () => {
+      const el = await open([]);
+      expect(heightInput(el).value).toBe('');
+    });
+
+    it('emits the parsed number on change', async () => {
+      const el = await open([]);
+      const seen: unknown[] = [];
+      el.addEventListener('rr-camera-height-change', (e) =>
+        seen.push((e as CustomEvent).detail.camera_height_mm));
+
+      const input = heightInput(el);
+      input.value = '1150';
+      input.dispatchEvent(new CustomEvent('sl-change', { bubbles: true, composed: true }));
+      expect(seen).toEqual([1150]);
+    });
+
+    it('emits undefined for an emptied field rather than zero', async () => {
+      // Absent means "unknown", which the fit has a defined fallback for; 0
+      // would be a camera at layout zero, which is not a pose.
+      const el = await open([], { ...LAYOUT, calibration: { points: [], camera_height_mm: 1150 } });
+      const seen: unknown[] = [];
+      el.addEventListener('rr-camera-height-change', (e) =>
+        seen.push((e as CustomEvent).detail.camera_height_mm));
+
+      const input = heightInput(el);
+      input.value = '   ';
+      input.dispatchEvent(new CustomEvent('sl-change', { bubbles: true, composed: true }));
+      expect(seen).toEqual([undefined]);
+    });
+
+    it('emits nothing for text that is not a number', async () => {
+      const el = await open([]);
+      const seen: unknown[] = [];
+      el.addEventListener('rr-camera-height-change', () => seen.push('fired'));
+
+      const input = heightInput(el);
+      input.value = 'tall';
+      input.dispatchEvent(new CustomEvent('sl-change', { bubbles: true, composed: true }));
+      expect(seen).toEqual([]);
+    });
+  });
+});

@@ -40,7 +40,7 @@ Non-element modules use plain camelCase filenames with no prefix.
 ```
 rr-app                          ← shell: owns the archive and the view mode
 ├── rr-header                   ← app bar: status slot, mode control, source link, settings gear
-│   └── rr-settings-dialog      ← layout metadata (sl-dialog)
+│   └── rr-settings-dialog      ← layout metadata + required-metadata gate (sl-dialog)
 ├── rr-editor-view              ← editor mode; images, DPT readout, calibration points, sensors, cars
 │   ├── rr-toolbar              ← vertical icon bar (file ops + undo/redo)
 │   ├── rr-tool-palette         ← active tool, and the calibration gate on the labeling ones
@@ -125,6 +125,7 @@ rr-app                          ← shell: owns the archive and the view mode
 > [#94]: https://github.com/iot49/rails49/issues/94
 > [#95]: https://github.com/iot49/rails49/issues/95
 > [#118]: https://github.com/iot49/rails49/issues/118
+> [#139]: https://github.com/iot49/rails49/issues/139
 
 ## State and data flow
 
@@ -272,6 +273,7 @@ you are **in** rather than showing the icon of where you would go next.
 |---|---|---|
 | `viewMode` | `ViewMode` (`'editor' \| 'live' \| 'diagnostics'`) | Which mode is marked current |
 | `layout` | `object` | Passed through to `rr-settings-dialog` |
+| `requiredMissing` | `readonly MissingRequirement[]` | Passed through; non-empty makes the dialog a gate |
 
 | Slot | Content |
 |---|---|
@@ -284,15 +286,30 @@ you are **in** rather than showing the icon of where you would go next.
 ### `rr-settings-dialog`
 
 Layout metadata, in an `sl-dialog` with a single "Layout" tab: name, scale (from `VALID_SCALES`),
-description, and contact.
+camera height, description, and contact. It is also the **required-metadata gate** ([#139]).
 
 | Property | Type | Description |
 |---|---|---|
-| `layout` | `{ name?, scale, description?, contact? }` | Current layout; defaults to scale `N` |
+| `layout` | `{ name?, scale, description?, contact?, calibration? }` | Current layout; defaults to scale `N`. `calibration` is read, never spread back |
+| `requiredMissing` | `readonly MissingRequirement[]` | What the layout still owes, from `requiredMetadata.ts`. Non-empty ⇒ the dialog opens itself and refuses to close |
 
 **Methods:** `show()`, `hide()`.
 
-**Emits:** `rr-layout-change` with `{ layout: Partial<Layout> }` — one changed field per event.
+**Emits:** `rr-layout-change` with `{ layout: Partial<Layout> }` — one changed field per event —
+and `rr-camera-height-change` with `{ camera_height_mm: number | undefined }`.
+
+**The gate opens itself and will not be dismissed while `requiredMissing` is non-empty**: every exit
+(`close-button`, `keyboard`, `overlay`) arrives as `sl-request-close` and is cancelled there, and the
+footer button is disabled. One rule covers both cases SPEC names — a new archive has no camera
+height, so New trips it; an archive already carrying everything opens straight through and this
+dialog never appears. There is no "was this a create?" flag: the state of the manifest is the
+trigger. Enforcement is here rather than in the schema because a required *field* would fail every
+archive predating it, while a required *dialog* migrates one on its first edit.
+
+The camera height leaves on its **own** event because it lives inside `calibration`, and spreading
+that object from here would carry a copy of `points` with it — stale the moment anything else edits
+them. An emptied field emits `undefined`, never `0`: absent means "unknown", which the fit has a
+defined fallback for, whereas `0` would be a camera at layout zero.
 
 Text fields fire on **`sl-change`** (blur or Enter), not `sl-input`. Per keystroke, each character
 would become its own undo entry, so Cmd+Z would chew backwards through a name one letter at a time.
@@ -1580,4 +1597,4 @@ it('renders <img> when src is set', async () => {
 are absent, so `rr-viewer`'s tests stub `createSVGPoint`/`getScreenCTM` per test. Assert DOM
 structure, attributes, and emitted events — visual appearance cannot be verified here.
 
-`capture.ts` and `rr-settings-dialog.ts` have no tests yet.
+`capture.ts` has no tests yet.
