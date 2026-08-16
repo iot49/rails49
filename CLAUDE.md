@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Computer vision suite for model railroaders: camera-based track occupancy detection using CNN image classification. Monorepo at https://github.com/iot49/rails49.git; UI served at https://rails49.org/ui.
+Computer vision suite for model railroaders: camera-based track occupancy detection using CNN image classification. Monorepo at https://github.com/rails49/occupancy.git; UI served at https://rails49.org/ui.
 
 **Safety note (from README):** the classifier does sometimes miss rolling stock or report phantom trains. Nothing here should be presented as a safety interlock.
 
@@ -48,7 +48,7 @@ Run from the repo root unless noted. pnpm workspace + `uv` for Python.
 | Deploy to Cloudflare Pages (needs permissions, ask user to run it) | `bin/deploy.sh` |
 | Python lint/format/types | `cd <classifier/resnet\|detector> && uv run ruff check . && uv run black --check . && uv run pyright` |
 | Derive the detector dataset | `pnpm --filter dataset run export:yolo` (reads `dataset/r49/`, writes `dataset/yolo/`) |
-| Score the drift check on the fixtures | `pnpm --filter @occupancy/drift-bench bench` (needs `iot49/r49` cloned at `../r49`; ~10 min for 736 cases) |
+| Score the drift check on the fixtures | `pnpm --filter @occupancy/drift-bench bench` (needs `rails49/r49` cloned at `../r49`; ~10 min for 736 cases) |
 | Fine-tune + export the detector | `cd detector && uv run python train.py && uv run python export_onnx.py` |
 | Install pre-push hook (runs `bin/test.sh`) | `bin/install-hooks.sh` |
 
@@ -68,7 +68,7 @@ reference spectra from the images at load time and both UI surfaces gate on them
 (#89). It is off the training path entirely — no model, no export, no artifact.
 
 ```
-.r49 archives (iot49/r49)         v4: layout photos, calibration, labels
+.r49 archives (rails49/r49)         v4: layout photos, calibration, labels
         │
         ├── lib/drift/                   ✓ RUNS  createDriftCheck(images)
         │       │                        block phase correlation, nothing stored
@@ -104,9 +104,9 @@ reference spectra from the images at load time and both UI surfaces gate on them
 ### The archives live in another repository
 
 **There are no `.r49` files in this repo any more** (#63). The corpus is
-[`iot49/r49`](https://github.com/iot49/r49): submissions arrive there by pull request under CC BY 4.0, and its CI checks them out of a `rails49` checkout at `main` and runs `tools/r49-validate` from it. See issue #54 for the whole design.
+[`rails49/r49`](https://github.com/rails49/r49): submissions arrive there by pull request under CC BY 4.0, and its CI checks them out of a `rails49` checkout at `main` and runs `tools/r49-validate` from it. See issue #54 for the whole design.
 
-> ⚠️ **This repository must stay public, or the corpus's CI breaks.** Its workflow does `actions/checkout` on `iot49/rails49`, and `GITHUB_TOKEN` is scoped to the repository running the workflow — a public repo's token 404s on a private one. No token fixes it either: every contributor submission is a **fork** pull request, and GitHub passes no secrets to those, so a PAT would work for the maintainer's own branches and fail for every real contributor. This was found the hard way in #74, and it is invisible from inside this repo — nothing here goes red.
+> ⚠️ **This repository must stay public, or the corpus's CI breaks.** Its workflow does `actions/checkout` on `rails49/occupancy`, and `GITHUB_TOKEN` is scoped to the repository running the workflow — a public repo's token 404s on a private one. No token fixes it either: every contributor submission is a **fork** pull request, and GitHub passes no secrets to those, so a PAT would work for the maintainer's own branches and fail for every real contributor. This was found the hard way in #74, and it is invisible from inside this repo — nothing here goes red.
 
 The six archives this repo used to carry moved to that repo's `fixtures/` tree — 46 images, real calibration, **zero labels**, DPT 18.0–19.1. They were converted from v3 once, in place, by a throwaway script deleted with the conversion (#22); all 1195 v3 point markers were **dropped, not promoted**, because a point carries neither extent nor orientation and any promotion would be fabricated geometry entering the corpus. Both the originals and the converted copies stay recoverable from this repo's git history — the deletion reclaims no weight, since every version is already in `.git`.
 
@@ -184,7 +184,7 @@ Which model ships is named **once**, in `ui/modelAssets.ts`: `ui/vite.config.ts`
 
 ### Issue tracker
 
-Issues live in GitHub Issues on `iot49/rails49`, driven via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues on `rails49/occupancy`, driven via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -413,7 +413,7 @@ export const ManifestDataSchema = z
  * file that will not open.
  *
  * It is worth rewording because the additive fields decided on
- * [#139](https://github.com/iot49/rails49/issues/139) add **no version** — so
+ * [#139](https://github.com/rails49/occupancy/issues/139) add **no version** — so
  * this, and not a version mismatch, is how a stale reader meets a newer
  * archive. A cached bundle is the ordinary way to be behind in a client-side
  * app served from one origin, and "reload the app" is the one thing the reader

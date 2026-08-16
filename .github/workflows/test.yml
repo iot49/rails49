@@ -1,7 +1,7 @@
 # The gate on `main`. Until now the only gate was `bin/test.sh` run from a
 # pre-push hook, which is installed by hand (`bin/install-hooks.sh`) and
 # skippable with `--no-verify`. That was fine while this repo's `main` was its
-# own only consumer. The corpus repo (iot49/r49) changed it: its CI checks out
+# own only consumer. The corpus repo (rails49/r49) changed it: its CI checks out
 # `rails49` at `main` and runs the validator from there, so a bad push here
 # reddens a *contributor's* pull request with nothing on their side at fault.
 #

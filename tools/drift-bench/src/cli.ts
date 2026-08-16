@@ -9,12 +9,12 @@ import { BASELINE_SCORERS } from './baseline.ts';
 import { phasecorrScorer } from './phasecorr.ts';
 
 /**
- * Synthetic camera-drift benchmark over the iot49/r49 fixture archives.
+ * Synthetic camera-drift benchmark over the rails49/r49 fixture archives.
  *
  *   pnpm --filter @occupancy/drift-bench bench
  *   pnpm --filter @occupancy/drift-bench bench -- --scorer zmad --json out.json
  *
- * The fixtures default to a sibling clone of iot49/r49; point --fixtures
+ * The fixtures default to a sibling clone of rails49/r49; point --fixtures
  * anywhere else that holds .r49 archives.
  */
 
@@ -53,8 +53,8 @@ try {
   archives = await loadArchives(values.fixtures!);
 } catch (err) {
   console.error(String(err));
-  console.error(`\nThe fixtures live in the iot49/r49 repo. Clone it beside this one:`);
-  console.error(`  gh repo clone iot49/r49 "${join(repoRoot, '..', 'r49')}" -- --depth 1`);
+  console.error(`\nThe fixtures live in the rails49/r49 repo. Clone it beside this one:`);
+  console.error(`  gh repo clone rails49/r49 "${join(repoRoot, '..', 'r49')}" -- --depth 1`);
   process.exit(1);
 }
 if (values.archive) {

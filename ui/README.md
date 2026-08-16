@@ -100,32 +100,32 @@ rr-app                          ← shell: owns the archive and the view mode
 > the media and the overlay keeps every screen-pixel tolerance and world-pixel
 > size correct with no arithmetic changed.
 >
-> [#19]: https://github.com/iot49/rails49/issues/19
-> [#27]: https://github.com/iot49/rails49/issues/27
-> [#28]: https://github.com/iot49/rails49/issues/28
-> [#29]: https://github.com/iot49/rails49/issues/29
-> [#30]: https://github.com/iot49/rails49/issues/30
-> [#31]: https://github.com/iot49/rails49/issues/31
-> [#32]: https://github.com/iot49/rails49/issues/32
-> [#33]: https://github.com/iot49/rails49/issues/33
-> [#35]: https://github.com/iot49/rails49/issues/35
-> [#36]: https://github.com/iot49/rails49/issues/36
-> [#37]: https://github.com/iot49/rails49/issues/37
-> [#41]: https://github.com/iot49/rails49/issues/41
-> [#42]: https://github.com/iot49/rails49/issues/42
-> [#43]: https://github.com/iot49/rails49/issues/43
-> [#44]: https://github.com/iot49/rails49/issues/44
-> [#48]: https://github.com/iot49/rails49/issues/48
-> [#49]: https://github.com/iot49/rails49/issues/49
-> [#52]: https://github.com/iot49/rails49/issues/52
-> [#7]: https://github.com/iot49/rails49/issues/7
-> [#82]: https://github.com/iot49/rails49/issues/82
-> [#85]: https://github.com/iot49/rails49/issues/85
-> [#87]: https://github.com/iot49/rails49/issues/87
-> [#94]: https://github.com/iot49/rails49/issues/94
-> [#95]: https://github.com/iot49/rails49/issues/95
-> [#118]: https://github.com/iot49/rails49/issues/118
-> [#139]: https://github.com/iot49/rails49/issues/139
+> [#19]: https://github.com/rails49/occupancy/issues/19
+> [#27]: https://github.com/rails49/occupancy/issues/27
+> [#28]: https://github.com/rails49/occupancy/issues/28
+> [#29]: https://github.com/rails49/occupancy/issues/29
+> [#30]: https://github.com/rails49/occupancy/issues/30
+> [#31]: https://github.com/rails49/occupancy/issues/31
+> [#32]: https://github.com/rails49/occupancy/issues/32
+> [#33]: https://github.com/rails49/occupancy/issues/33
+> [#35]: https://github.com/rails49/occupancy/issues/35
+> [#36]: https://github.com/rails49/occupancy/issues/36
+> [#37]: https://github.com/rails49/occupancy/issues/37
+> [#41]: https://github.com/rails49/occupancy/issues/41
+> [#42]: https://github.com/rails49/occupancy/issues/42
+> [#43]: https://github.com/rails49/occupancy/issues/43
+> [#44]: https://github.com/rails49/occupancy/issues/44
+> [#48]: https://github.com/rails49/occupancy/issues/48
+> [#49]: https://github.com/rails49/occupancy/issues/49
+> [#52]: https://github.com/rails49/occupancy/issues/52
+> [#7]: https://github.com/rails49/occupancy/issues/7
+> [#82]: https://github.com/rails49/occupancy/issues/82
+> [#85]: https://github.com/rails49/occupancy/issues/85
+> [#87]: https://github.com/rails49/occupancy/issues/87
+> [#94]: https://github.com/rails49/occupancy/issues/94
+> [#95]: https://github.com/rails49/occupancy/issues/95
+> [#118]: https://github.com/rails49/occupancy/issues/118
+> [#139]: https://github.com/rails49/occupancy/issues/139
 
 ## State and data flow
 

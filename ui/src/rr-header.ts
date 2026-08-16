@@ -19,7 +19,7 @@ import type { MissingRequirement } from './requiredMetadata.js';
  * handle on this one; `tests/rr-header.test.ts` asserts it on the rendered
  * anchor so an upgrade that dropped it fails there rather than silently.
  */
-const REPO_URL = 'https://github.com/iot49/rails49';
+const REPO_URL = 'https://github.com/rails49/occupancy';
 
 /**
  * The three things the app can be doing, and how each is offered.

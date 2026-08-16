@@ -140,7 +140,7 @@ describe('rr-header', () => {
     const githubBtn = group.querySelector('sl-icon-button[name="github"]')!;
 
     expect(githubBtn).to.exist;
-    expect(githubBtn.getAttribute('href')).to.equal('https://github.com/iot49/rails49');
+    expect(githubBtn.getAttribute('href')).to.equal('https://github.com/rails49/occupancy');
     expect(githubBtn.getAttribute('target')).to.equal('_blank');
     expect(githubBtn.getAttribute('label')).to.equal('Source on GitHub');
   });
@@ -156,7 +156,7 @@ describe('rr-header', () => {
     const anchor = githubBtn.shadowRoot!.querySelector('a')!;
 
     expect(anchor).to.exist;
-    expect(anchor.getAttribute('href')).to.equal('https://github.com/iot49/rails49');
+    expect(anchor.getAttribute('href')).to.equal('https://github.com/rails49/occupancy');
     expect(anchor.getAttribute('target')).to.equal('_blank');
     expect(anchor.getAttribute('rel')).to.contain('noopener');
     expect(anchor.getAttribute('rel')).to.contain('noreferrer');

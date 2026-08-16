@@ -6,7 +6,7 @@ Research note on `SPEC.md` § Classifier, option 1 ("Image change"), and its cit
 *Researched 2026-07-29. Sources: EX-SensorCAM source at `DCC-EX/EX-SensorCAM@b07c3f3` (v3.21,
 2026-05-23), the DCC-EX official manual, and a re-implementation of SensorCAM's decision metric run
 against `lighting.r49` — then at `dataset/r49/` in this repo, now at `fixtures/lighting.r49` in
-[iot49/r49](https://github.com/iot49/r49) (#63). Marker counts below are the v3 ones this research
+[rails49/r49](https://github.com/rails49/r49) (#63). Marker counts below are the v3 ones this research
 ran against; v4 dropped them.*
 
 ---
@@ -485,4 +485,4 @@ Input images are box-downsampled to 320 px wide and pushed through RGB888→RGB5
 
 **This repo:** `SPEC.md` (§ Classifier, § Accuracy, § Calibration, § Image Alignment),
 `ui/CLAUDE.md`, `CLAUDE.md`, and the six archives (46 images, all 1920×1080, HO) — read from
-`dataset/r49/` at the time, now [iot49/r49](https://github.com/iot49/r49)`/fixtures/`.
+`dataset/r49/` at the time, now [rails49/r49](https://github.com/rails49/r49)`/fixtures/`.

@@ -1,6 +1,6 @@
 # YOLO detection accuracy for track occupancy
 
-Research note on [issue #115](https://github.com/iot49/rails49/issues/115): is sufficient detection
+Research note on [issue #115](https://github.com/rails49/occupancy/issues/115): is sufficient detection
 accuracy of railroad cars achievable with a detector to virtually avoid crashes — miss rate < 0.1%,
 false positives < 1%, areas of 2×1 m or more, overhead camera, model trained on the layout it runs
 on? **The current stack (YOLO26n-OBB, ONNX INT8, browser WASM) is treated as one option, not a

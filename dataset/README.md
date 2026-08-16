@@ -19,7 +19,7 @@ pnpm --filter dataset run export:yolo -- --in ../../r49/fixtures --out yolo
 and is **replaced wholesale** on every run (it refuses to delete a directory
 that holds no `data.yaml`, so a mistyped `--out` cannot eat your home
 directory). Both are gitignored. Point `--in` at a checkout of
-[`iot49/r49`](https://github.com/iot49/r49); the labels live there, not here.
+[`rails49/r49`](https://github.com/rails49/r49); the labels live there, not here.
 
 ```
 yolo/
@@ -88,7 +88,7 @@ does not yet exist (`SPEC.md` § Accuracy).
 ## Directory Structure
 
 There are no `.r49` archives here any more (#63). The corpus is
-[`iot49/r49`](https://github.com/iot49/r49), which takes submissions by pull
+[`rails49/r49`](https://github.com/rails49/r49), which takes submissions by pull
 request under CC BY 4.0. The six this directory used to hold are in that repo's
 `fixtures/` tree — **fixtures, not training data**, sitting below
 `layout.min_dpt`, so no number derived from them predicts model accuracy. How

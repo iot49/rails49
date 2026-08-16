@@ -13,7 +13,7 @@ is a generalization estimate. See `models/version.txt`.
 
 ```bash
 # 0. the corpus, and the dataset derived from it
-git clone https://github.com/iot49/r49.git ../dataset/r49
+git clone https://github.com/rails49/r49.git ../dataset/r49
 pnpm --filter dataset run export:yolo
 
 # 1. fine-tune from the DOTA-pretrained OBB checkpoint

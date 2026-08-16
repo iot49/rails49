@@ -1,7 +1,7 @@
 # @occupancy/drift-bench
 
-Synthetic camera-drift benchmark for [issue #91](https://github.com/iot49/rails49/issues/91),
-under [Map: camera-drift detection](https://github.com/iot49/rails49/issues/89).
+Synthetic camera-drift benchmark for [issue #91](https://github.com/rails49/occupancy/issues/91),
+under [Map: camera-drift detection](https://github.com/rails49/occupancy/issues/89).
 
 No real drifted frame exists — the fixture corpus was shot with a static
 camera — so drift is synthesized. Each fixture image becomes a set of cases
@@ -33,7 +33,7 @@ The default scorer is **`phasecorr`, which is `@occupancy/drift` itself** —
 arithmetic of its own. That is the point: the benchmark exists to validate the
 code the UI runs, so a scorer carrying its own copy of the algorithm would grade
 the copy and pass while the shipped path failed. The throwaway prototype that
-proved the approach ([#92](https://github.com/iot49/rails49/issues/92)) lived in
+proved the approach ([#92](https://github.com/rails49/occupancy/issues/92)) lived in
 `src/prototype/` on a `drift-prototype` branch; it is gone, and nothing should
 take its place.
 
@@ -60,7 +60,7 @@ of both.
 
 ## Running
 
-The fixtures live in [iot49/r49](https://github.com/iot49/r49) `fixtures/`;
+The fixtures live in [rails49/r49](https://github.com/rails49/r49) `fixtures/`;
 clone it beside this repo (`../r49`), or point `--fixtures` at it.
 
 ```bash

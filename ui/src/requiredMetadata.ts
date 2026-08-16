@@ -4,7 +4,7 @@ import type { Layout } from '@occupancy/r49';
  * The layout metadata an archive must carry before it can be authored, and the
  * one place the list is declared.
  *
- * Decided on [#139](https://github.com/iot49/rails49/issues/139). `SPEC.md`
+ * Decided on [#139](https://github.com/rails49/occupancy/issues/139). `SPEC.md`
  * § Camera height carries the reasoning; the short version is that
  * `camera_height_mm` costs one tape measurement per layout, cannot be
  * recovered later once the camera has moved, and is the difference between

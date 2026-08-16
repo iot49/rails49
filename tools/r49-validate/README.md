@@ -2,7 +2,7 @@
 
 The corpus repo's validator, living here rather than there.
 
-`iot49/r49` holds `.r49` archives; this checks them. It runs from a checkout of
+`rails49/r49` holds `.r49` archives; this checks them. It runs from a checkout of
 `rails49` at `main` (issue #55), so nothing is published, no schema is vendored,
 and `@occupancy/config` supplies `MIN_DPT` and the class vocabulary — meaning
 `config.yaml` gains no second home for values that must agree.
@@ -98,8 +98,8 @@ unmeasured, so a bar here would be a number nothing earned ([#136]). It is also
 a *lower* bound: the camera is assumed to hang over the centre of the calibrated
 extent, and an archive calibrated on one patch of a larger layout under-reports.
 
-[#136]: https://github.com/iot49/rails49/issues/136
-[#139]: https://github.com/iot49/rails49/issues/139
+[#136]: https://github.com/rails49/occupancy/issues/136
+[#139]: https://github.com/rails49/occupancy/issues/139
 
 `fixtures/<slug>.r49` is held to structure only and gets **no warnings**: the six
 are known to be zero-label and below `min_dpt` by design, so annotating that on

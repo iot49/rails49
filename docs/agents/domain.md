@@ -4,7 +4,7 @@ How the engineering skills should consume this repo's domain documentation when 
 
 This repo keeps its domain documentation in **one place: `SPEC.md` at the root**, covering the whole pipeline (`dataset` → `classifier` → `lib/*` → `ui`). It carries the vocabulary, the requirements, and the reasoning behind each decision.
 
-**There is no `CONTEXT.md` and no `docs/adr/`, deliberately.** That split was considered and rejected while assembling the spec ([issue #9](https://github.com/iot49/rails49/issues/9)): decision rationale already lives on **GitHub issues** — wayfinder maps and their tickets — in more detail than an ADR would carry, and a separate glossary would duplicate vocabulary `SPEC.md` already defines. Three surfaces to keep in sync is worse than one. Don't create either without discussing it first.
+**There is no `CONTEXT.md` and no `docs/adr/`, deliberately.** That split was considered and rejected while assembling the spec ([issue #9](https://github.com/rails49/occupancy/issues/9)): decision rationale already lives on **GitHub issues** — wayfinder maps and their tickets — in more detail than an ADR would carry, and a separate glossary would duplicate vocabulary `SPEC.md` already defines. Three surfaces to keep in sync is worse than one. Don't create either without discussing it first.
 
 ## Before exploring, read these
 

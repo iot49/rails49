@@ -29,7 +29,7 @@ import { labelLine, outputStem, splitFor, type Split } from './obb.ts';
 const USAGE = `Usage: pnpm --filter dataset run export:yolo -- [--in <dir>] [--out <dir>]
 
   --in   Directory of .r49 archives, scanned recursively. Default: ./r49
-         (a checkout of https://github.com/iot49/r49 works as-is)
+         (a checkout of https://github.com/rails49/r49 works as-is)
   --out  Dataset root to write. Default: ./yolo — gitignored, and replaced
          wholesale on every run.
 `;
