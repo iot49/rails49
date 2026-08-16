@@ -4,7 +4,7 @@ import path from 'node:path';
 
 // `ui/public` is the one directory vite copies into `dist/` verbatim, with no
 // manifest of what it holds and no transform on the way — and `bin/deploy.sh`
-// rsyncs `dist/` to production. Everything else in the bundle is named
+// uploads `dist/` to production. Everything else in the bundle is named
 // somewhere: `ortAssets.ts` names the runtime, `modelAssets.ts` names the
 // model, and a test holds each of them to it. `public/` is named by nothing,
 // so what ships from it is whatever happens to be sitting there.
@@ -46,6 +46,10 @@ describe('ui/public', () => {
     // individually small and had a perfectly ordinary extension. Adding a real
     // asset here means adding it to this list, which is the point: `public/`
     // gets a manifest, like every other input to the bundle.
-    expect(walk(publicDir).sort()).toEqual(['favicon.svg', 'icons.svg']);
+    // `_headers` is here rather than beside the deploy script because Cloudflare
+    // Pages reads it from the root of the uploaded directory, and that directory
+    // is now `ui/dist/` itself (rails49/control#47). Shipping it through the
+    // build is what removed the staging copy — and put it under this manifest.
+    expect(walk(publicDir).sort()).toEqual(['_headers', 'favicon.svg', 'icons.svg']);
   });
 });

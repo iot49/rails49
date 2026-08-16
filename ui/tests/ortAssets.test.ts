@@ -104,7 +104,7 @@ describe('ORT wasm assets', () => {
     // fetching a hashed filename that isn't there, depending on mount order.
     const source = read('ui/src/detectorSession.ts');
     expect(source).not.toMatch(/cdn\.jsdelivr\.net/);
-    expect(source).toMatch(/ort\.env\.wasm\.wasmPaths\s*=\s*'\/ui\/ort\/'/);
+    expect(source).toMatch(/ort\.env\.wasm\.wasmPaths\s*=\s*'\/ort\/'/);
     expect(ortCopyTargets.every(t => t.dest === 'ort')).toBe(true);
   });
 
@@ -128,9 +128,9 @@ describe('ORT wasm assets', () => {
   });
 
   it('refuses to load a model before something says where the runtime is', async () => {
-    // The library has no correct default — `/ort/` is a 404 under this app's
-    // `/ui/` base — and the emitted fallback is gone, so an unset wasmPaths
-    // would 404 on a hashed filename. Fail where the cause is legible instead.
+    // The library has no correct default — it cannot know the app's base — and
+    // the emitted fallback is gone, so an unset wasmPaths would 404 on a hashed
+    // filename. Fail where the cause is legible instead.
     //
     // Asserted against the detector rather than the classifier because the
     // detector is what the live view loads: this is the shipped path, and the
@@ -147,19 +147,24 @@ describe('ORT wasm assets', () => {
   });
 });
 
-describe('rails49.org/_headers', () => {
-  const headers = fs.readFileSync(path.join(repoRoot, 'rails49.org/_headers'), 'utf8');
+describe('ui/public/_headers', () => {
+  const headers = fs.readFileSync(path.join(repoRoot, 'ui/public/_headers'), 'utf8');
 
   it('cross-origin isolates the app', () => {
-    const rule = headers.split(/\n(?=\S)/).find(block => block.startsWith('/ui/'));
+    const rule = headers.split(/\n(?=\S)/).find(block => block.startsWith('/*'));
     expect(rule).toBeDefined();
     expect(rule).toMatch(/^\s+Cross-Origin-Opener-Policy:\s*same-origin$/m);
     expect(rule).toMatch(/^\s+Cross-Origin-Embedder-Policy:\s*require-corp$/m);
   });
 
-  it('leaves the landing page alone', () => {
-    // rails49.org/index.html loads Google Fonts cross-origin; require-corp on
-    // `/*` would block them, and the landing page needs no isolation.
-    expect(headers).not.toMatch(/^\/\*\s*$/m);
+  it('isolates the whole origin, not a prefix under it', () => {
+    // The app owns occupancy.rails49.org outright (rails49/control#47). While
+    // it shared the apex with a landing page this had to be scoped to `/ui/*`,
+    // because require-corp on `/*` blocked that page's cross-origin Google
+    // Fonts. A rule that crept back under a prefix would silently un-isolate
+    // whatever the app moved to — and losing isolation throws no error, it
+    // just drops ORT to one thread.
+    const prefixed = headers.split(/\n(?=\S)/).filter(block => /^\/\S+/.test(block) && !block.startsWith('/*'));
+    expect(prefixed).toEqual([]);
   });
 });

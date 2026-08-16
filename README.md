@@ -10,7 +10,7 @@ This project provides a camera-based solution for track occupancy detection base
 
 **WARNING**: Although the software has been designed with the goal to be reliable, the ultimate responsibility for safe model railroad operation rests with the user. In particular, the software in some instances fails to detect rolling stock or detect trains where there are none.
 
-The application is offered as a static webapp served at https://rails49.org/. When run from a mobile device with an attached camera (e.g. a smartphone) it shows the locations of detected trains in the browser.
+The application is offered as a static webapp served at https://occupancy.rails49.org/. When run from a mobile device with an attached camera (e.g. a smartphone) it shows the locations of detected trains in the browser.
 
 ## 🤝 Contributing
 

@@ -1,0 +1,16 @@
+# Cross-origin isolation for the labeling app, so onnxruntime-web can use more
+# than one WASM thread (issue #15). Everything the app loads — the ORT runtime,
+# the model, Shoelace's assets — is same-origin, which is what require-corp
+# needs.
+#
+# `/*` rather than the `/ui/*` this was scoped to: the app had the apex to
+# itself only from `/ui/` down, and a rule on `/*` would have broken the landing
+# page's cross-origin Google Fonts. The app now owns occupancy.rails49.org
+# outright and the landing page lives on another origin, so there is nothing
+# left here to leave alone (rails49/control#47).
+#
+# Lives in `ui/public/` so vite copies it to the root of `ui/dist/`, which is
+# the directory `bin/deploy.sh` uploads. `ui/tests/publicDir.test.ts` names it.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

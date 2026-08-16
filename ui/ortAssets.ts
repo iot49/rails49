@@ -9,7 +9,7 @@
  * under the ceiling and lets it ship from origin.
  *
  * Serving it from origin is what makes `Cross-Origin-Embedder-Policy:
- * require-corp` safe (see `rails49.org/_headers`), and that header is what
+ * require-corp` safe (see `ui/public/_headers`), and that header is what
  * makes the deployed site `crossOriginIsolated` — without which ORT silently
  * falls back to a single WASM thread, costing roughly 1.5x on inference (#15).
  *

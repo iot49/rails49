@@ -375,16 +375,21 @@ carries the exact exports and glyphs. Two rules that don't show in the README ta
   each type's own ink is a requirement, so a coloured highlight would read as a fourth kind of
   object.
 
-### Absolute `/ui/` paths
+### Absolute asset paths
 
-`base: '/ui/'` in `vite.config.ts`, and runtime asset paths are hardcoded to match:
-`setBasePath('/ui/shoelace')` in `rr-app.ts`, `/ui/ort/`, and `modelAssets.ts`'s
+`base: '/'` in `vite.config.ts`, and runtime asset paths are hardcoded to match:
+`setBasePath('/shoelace')` in `rr-app.ts`, `/ort/`, and `modelAssets.ts`'s
 `DETECTOR_MODEL_URL`. Changing `base` means changing all of them.
+
+It was `/ui/` while the app shared the apex with a landing page; the app owns
+`occupancy.rails49.org` outright now (rails49/control#47). The hardcoding is the
+part that did not change — these are still literals rather than `import.meta.env.BASE_URL`,
+because `tests/ortAssets.test.ts` reads the `wasmPaths` assignment as source text.
 
 ### Model loading lives in `detectorSession.ts`, and the model is the detector (#85, #87)
 
 `ui/src/detectorSession.ts` is the sole place that calls `loadDetector`. It points
-`ort.env.wasm.wasmPaths` at `/ui/ort/` — the same path everywhere, deployed or not (#15) — then
+`ort.env.wasm.wasmPaths` at `/ort/` — the same path everywhere, deployed or not (#15) — then
 loads `DETECTOR_MODEL_URL`. **Two views open a session through it**: `rr-live-view` per camera
 frame, and `rr-diagnostics-view` over an archive's stills.
 
@@ -418,8 +423,8 @@ it reports every sensor `unknown` / `no-model`, which is a state SPEC names. A g
 the loop would leave the previous frame's answers on screen instead — the one outcome worse than
 saying nothing.
 
-**The ORT runtime is same-origin, and that is what pays for threading.** `rails49.org/_headers`
-cross-origin-isolates `/ui/`, without which ORT silently runs one WASM thread; `require-corp` then
+**The ORT runtime is same-origin, and that is what pays for threading.** `ui/public/_headers`
+cross-origin-isolates the app's origin, without which ORT silently runs one WASM thread; `require-corp` then
 rejects any cross-origin subresource, so the jsDelivr branch that used to serve the runtime is gone
 and cannot come back on its own. It existed because the default `onnxruntime-web` entry asks for the
 jsep (WebGPU/WebNN) binary, which is 25.02 MiB — 0.02 over Cloudflare's per-file limit. The app
@@ -434,8 +439,9 @@ the reasoning and the copy targets; `tests/ortAssets.test.ts` holds the chain to
 glue, which ORT resolves against `wasmPaths` exactly like the binary. Everything else in ORT's
 `dist/` reaches the browser through Rollup; globbing the directory put 44 MB of webgl, webgpu and
 node builds in the bundle that nothing could fetch. `@occupancy/detector` sets **no** default
-`wasmPaths` and throws if none is set: a library cannot know the app's base path, the old `/ort/`
-guess was a 404 under `/ui/`, and `vite.config.ts`'s `dropUnfetchableOrtWasm` removes the copy ORT
+`wasmPaths` and throws if none is set: a library cannot know the app's base path — the old `/ort/`
+guess was a 404 under the `/ui/` base this app used to have, and is right today only by coincidence
+of `base` being `/` — and `vite.config.ts`'s `dropUnfetchableOrtWasm` removes the copy ORT
 would otherwise fall back to — so an unset path fails on a hashed filename with no clue attached.
 
 `rr-editor-view.ts` used to carry a byte-identical copy; it went with the v4 reduction (#19).
@@ -715,7 +721,7 @@ caught none of the six. Two more things follow, and both are load-bearing:
   exercised as coordinates outside the image, which is what the editor actually sees.
 * The detector session is pinned from **two sides**, and they are different checks:
   `tests/ortAssets.test.ts` reads `detectorSession.ts` as source text — that the `wasmPaths`
-  assignment exists, names `/ui/ort/`, and appears in no view — because the link it guards runs
+  assignment exists, names `/ort/`, and appears in no view — because the link it guards runs
   between a build-time copy target and a run-time fetch, which neither the typechecker nor the build
   can see. `tests/detectorSession.test.ts` runs the module instead, and asserts the setup actually
   fires, fires once per page, and reaches `loadDetector` with the assets module's URL. An assignment

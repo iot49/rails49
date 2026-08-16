@@ -132,7 +132,7 @@ describe('rr-live-view', () => {
   it('loads the detector the bundle ships, and no classifier', async () => {
     await fixture<RRLiveView>(html`<rr-live-view .archive=${archive}></rr-live-view>`);
 
-    expect(loadDetector).toHaveBeenCalledWith('/ui/models/detector_int8.ort');
+    expect(loadDetector).toHaveBeenCalledWith('/models/detector_int8.ort');
   });
 
   it('passes the layout sensors and their states down, never markers', async () => {

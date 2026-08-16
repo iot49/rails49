@@ -40,11 +40,11 @@ export const DETECTOR_MODEL_DIR = '../detector/models';
 /**
  * The URL the browser fetches it from.
  *
- * Absolute under the app's `base: '/ui/'`, like `/ui/ort/` and
- * `/ui/shoelace` — changing `base` means changing all of them (see
- * `ui/CLAUDE.md` § Absolute `/ui/` paths).
+ * Absolute under the app's `base: '/'`, like `/ort/` and `/shoelace` —
+ * changing `base` means changing all of them (see `ui/CLAUDE.md` §
+ * Absolute asset paths).
  */
-export const DETECTOR_MODEL_URL = `/ui/models/${DETECTOR_MODEL_FILE}`;
+export const DETECTOR_MODEL_URL = `/models/${DETECTOR_MODEL_FILE}`;
 
 /** The `vite-plugin-static-copy` target, relative to `ui/`. */
 export const detectorCopyTarget = {

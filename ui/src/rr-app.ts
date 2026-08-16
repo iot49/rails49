@@ -18,7 +18,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 
 // Set the base path for Shoelace assets (icons, etc.)
-setBasePath('/ui/shoelace');
+setBasePath('/shoelace');
 
 /**
  * Top-level application shell.

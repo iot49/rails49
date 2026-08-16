@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DETECTOR_MODEL_URL } from '../modelAssets.js';
 
 // `tests/ortAssets.test.ts` pins this module as **source text** — that the
-// `wasmPaths` assignment exists, that it names `/ui/ort/`, and that no view
+// `wasmPaths` assignment exists, that it names `/ort/`, and that no view
 // writes one of its own. Source text is what that test can reach, because the
 // link it guards is between a build-time copy target and a run-time fetch.
 //
@@ -41,7 +41,7 @@ describe('detectorSession', () => {
   });
 
   it('points the runtime at the copy this app serves before loading anything', async () => {
-    // The library has no correct default under a `/ui/` base, and the emitted
+    // The library has no correct default of its own, and the emitted
     // fallback copy is dropped from the bundle — so an unconfigured runtime
     // 404s on a hashed filename with no error naming the cause.
     const { ort, openDetector } = await freshSession();
@@ -49,7 +49,7 @@ describe('detectorSession', () => {
 
     await openDetector();
 
-    expect(ort.env.wasm.wasmPaths).to.equal('/ui/ort/');
+    expect(ort.env.wasm.wasmPaths).to.equal('/ort/');
   });
 
   it('configures the runtime once per page, however many sessions are opened', async () => {

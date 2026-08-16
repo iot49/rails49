@@ -28,7 +28,6 @@ detector/*.log
 # The DOTA-pretrained checkpoint Ultralytics downloads into the working
 # directory on first use. Fetched, not authored.
 detector/*.pt
-rails49.org/ui/
 
 # Detector benchmarking scratch — exported .ort variants and their timings
 ui/bench/

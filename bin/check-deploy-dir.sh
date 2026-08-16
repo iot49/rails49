@@ -34,9 +34,12 @@ fi
 
 # --- The inventory -----------------------------------------------------------
 #
-# Two levels, because #122 landed on the second one: the archives appeared at
-# `ui/proto-fixtures/`, inside the subtree the build legitimately writes, where
-# a depth-1 list would have waved them through.
+# One level, and that is not a weakening of the two this had when the app was
+# staged under `ui/` (rails49/control#47). Those two levels were the staging
+# root and the build output's top level; the build output is now the deploy
+# directory itself, so this one list names exactly the set the two used to. #122
+# landed on that level — the archives appeared at `proto-fixtures/`, inside the
+# subtree the build legitimately writes — and it is still the level checked.
 #
 # A list rather than a rule, following `ui/tests/publicDir.test.ts` and
 # `ui/tests/modelAssets.test.ts`. Every cheaper rule has to guess which content
@@ -44,21 +47,17 @@ fi
 # equality: `ui/models/` is absent on a clone with no local detector, and the
 # app ships a no-model banner instead (#85).
 #
-# Two levels is where it stops, and that is a real limit rather than an
-# oversight: `shoelace/assets/icons/` is 2000 files three levels down, so a
-# deeper inventory would have to enumerate a vendored tree. Payload buried at
-# depth 3 under a name and extension the lists allow is left to the size
-# budget, which is why the budget is part of this and not a nicety.
+# One level is where it stops, and that is a real limit rather than an
+# oversight: `shoelace/assets/icons/` is 2000 files two levels down, so a deeper
+# inventory would have to enumerate a vendored tree. Payload buried under a name
+# and extension the list allows is left to the size budget, which is why the
+# budget is part of this and not a nicety.
 
-# Directly in the deploy directory. `_headers` and `index.html` are tracked; the
-# rsync's `--delete` covers only `ui/`, so anything else dropped here survives
-# every future deploy — which is how a `.DS_Store` came to be sitting in it.
-ROOT_ENTRIES="_headers index.html ui"
-
-# Directly under `ui/`. `assets` is vite's hashed output, `ort` and `shoelace`
-# and `models` are `viteStaticCopy` targets named in `ui/ortAssets.ts` and
-# `ui/modelAssets.ts`, and the two SVGs are all of `ui/public/`.
-UI_ENTRIES="index.html assets ort shoelace models favicon.svg icons.svg"
+# Everything the deploy directory may hold. `assets` is vite's hashed output,
+# `ort` and `shoelace` and `models` are `viteStaticCopy` targets named in
+# `ui/ortAssets.ts` and `ui/modelAssets.ts`, and `_headers` and the two SVGs are
+# all of `ui/public/`, which vite copies to the root verbatim.
+ROOT_ENTRIES="_headers index.html assets ort shoelace models favicon.svg icons.svg"
 
 # Extensions that never belong in a web bundle. Redundant with the inventory
 # above by design — each names a real directory in this repo or beside it that
@@ -108,7 +107,7 @@ unaccounted() {
   done
 }
 
-UNACCOUNTED=$(unaccounted "$DEPLOY_DIR" "$ROOT_ENTRIES"; unaccounted "$DEPLOY_DIR/ui" "$UI_ENTRIES")
+UNACCOUNTED=$(unaccounted "$DEPLOY_DIR" "$ROOT_ENTRIES")
 if [ -n "$UNACCOUNTED" ]; then
   echo "❌ Error: the deploy directory contains entries the inventory does not name:"
   echo "$UNACCOUNTED"
@@ -127,13 +126,32 @@ if [ -n "$FORBIDDEN" ]; then
   exit 1
 fi
 
+# `_headers` must ship, and must still isolate. It used to be a tracked file in
+# the staging directory, where it could not go missing without someone deleting
+# it from git; it comes through the build now (`ui/public/`), and the inventory
+# above is what *may* appear rather than what must. Its absence is the quietest
+# failure here — the app works, nothing logs anything, and ORT drops to a single
+# WASM thread for ~1.5x on every inference (#15). Checked like the ORT binary
+# below, and for the same reason: silent, and only visible at this point.
+HEADERS_FILE="$DEPLOY_DIR/_headers"
+if [ ! -f "$HEADERS_FILE" ]; then
+  echo "❌ Error: _headers is missing from the bundle; the app would lose cross-origin"
+  echo "   isolation silently. It ships from ui/public/ — check the build copied it."
+  exit 1
+fi
+if ! grep -qi '^[[:space:]]*Cross-Origin-Embedder-Policy:[[:space:]]*require-corp' "$HEADERS_FILE"; then
+  echo "❌ Error: _headers ships but no longer sets Cross-Origin-Embedder-Policy:"
+  echo "   require-corp, so the app would not be crossOriginIsolated."
+  exit 1
+fi
+
 # The ONNX Runtime WASM binary must ship from origin: `_headers` sets
-# Cross-Origin-Embedder-Policy: require-corp on /ui/ so the app is
+# Cross-Origin-Embedder-Policy: require-corp on /* so the app is
 # crossOriginIsolated and ORT can use more than one thread (#15), and a
 # cross-origin CDN would fail that check. Only the plain build is copied
 # (see ui/ortAssets.ts) — the jsep one is over Cloudflare's limit.
 ORT_WASM="ort-wasm-simd-threaded.wasm"
-if [ ! -f "$DEPLOY_DIR/ui/ort/$ORT_WASM" ]; then
+if [ ! -f "$DEPLOY_DIR/ort/$ORT_WASM" ]; then
   echo "❌ Error: $ORT_WASM is missing from the bundle; the app would not run."
   exit 1
 fi
@@ -158,7 +176,7 @@ if [ "$TOTAL_BYTES" -gt "$MAX_TOTAL_BYTES" ]; then
   # `|| true` because this is the diagnostic, not the verdict: `head` closing
   # the pipe early is a pipefail failure, and it must not pre-empt the two
   # lines below that say what to do about it.
-  du -sh "$DEPLOY_DIR"/* "$DEPLOY_DIR"/ui/* 2>/dev/null | sort -rh | head -5 || true
+  du -sh "$DEPLOY_DIR"/* 2>/dev/null | sort -rh | head -5 || true
   echo "   Either something is in there that should not be, or the budget needs"
   echo "   raising on purpose in $(basename "$0")."
   exit 1

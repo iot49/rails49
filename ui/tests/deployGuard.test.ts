@@ -40,18 +40,26 @@ let dir: string;
 
 /** The smallest directory that passes everything: the shape of a real deploy. */
 beforeEach(() => {
+  // One level deep, not two: the app has an origin to itself, so the deploy
+  // directory is `ui/dist/` rather than a staging root holding a landing page
+  // and the build under `ui/` (rails49/control#47).
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r49-deploy-'));
-  fs.writeFileSync(path.join(dir, '_headers'), '/ui/*\n');
+  // A real one, not a stub: the guard checks that the shipped `_headers` still
+  // sets require-corp, so a placeholder here would fail every test below for
+  // the wrong reason.
+  fs.writeFileSync(
+    path.join(dir, '_headers'),
+    '/*\n  Cross-Origin-Opener-Policy: same-origin\n  Cross-Origin-Embedder-Policy: require-corp\n',
+  );
   fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html>');
-  fs.mkdirSync(path.join(dir, 'ui/ort'), { recursive: true });
-  fs.mkdirSync(path.join(dir, 'ui/assets'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'ui/index.html'), '<!doctype html>');
+  fs.mkdirSync(path.join(dir, 'ort'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'assets'), { recursive: true });
   // Imported, never spelled out: these filenames are named once, in
   // `ortAssets.ts` and `modelAssets.ts`. The guard script repeats the ORT one
   // because a shell script cannot import — a test has no such excuse, and a
   // literal here would quietly stop constructing a passing bundle the day the
   // name changed.
-  fs.writeFileSync(path.join(dir, 'ui/ort', ORT_WASM_BINARY), '\0asm');
+  fs.writeFileSync(path.join(dir, 'ort', ORT_WASM_BINARY), '\0asm');
 });
 
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -70,8 +78,8 @@ describe('bin/check-deploy-dir.sh', () => {
   it('passes when the optional model directory is absent', () => {
     // A clone with no `detector/models/` builds fine and ships a no-model
     // banner (#85). The inventory is what *may* appear, not what must.
-    fs.mkdirSync(path.join(dir, 'ui/models'));
-    fs.writeFileSync(path.join(dir, 'ui/models', DETECTOR_MODEL_FILE), 'x');
+    fs.mkdirSync(path.join(dir, 'models'));
+    fs.writeFileSync(path.join(dir, 'models', DETECTOR_MODEL_FILE), 'x');
 
     expect(check(dir).status).toBe(0);
   });
@@ -80,16 +88,16 @@ describe('bin/check-deploy-dir.sh', () => {
     // The mechanism that made #122 invisible: the copy dereferences the link,
     // so what lands in the bundle is an ordinary file carrying no trace of
     // where it came from. Nothing downstream can tell it from build output.
-    fs.symlinkSync('/etc/hosts', path.join(dir, 'ui/assets/somewhere-else'));
+    fs.symlinkSync('/etc/hosts', path.join(dir, 'assets/somewhere-else'));
 
     const { status, output } = check(dir);
 
-    expect(output).toContain('ui/assets/somewhere-else');
+    expect(output).toContain('assets/somewhere-else');
     expect(status).not.toBe(0);
   });
 
   it('refuses an extension that has no business in a deploy, naming it', () => {
-    fs.writeFileSync(path.join(dir, 'ui/assets/cars-0-10.r49'), 'PK');
+    fs.writeFileSync(path.join(dir, 'assets/cars-0-10.r49'), 'PK');
 
     const { status, output } = check(dir);
 
@@ -97,9 +105,11 @@ describe('bin/check-deploy-dir.sh', () => {
     expect(status).not.toBe(0);
   });
 
-  it('refuses a top-level entry the inventory does not name', () => {
-    // The rsync's `--delete` covers `ui/` only, so anything dropped beside it
-    // persists across every future deploy. `.DS_Store` was really there.
+  it('refuses an entry the inventory does not name', () => {
+    // `.DS_Store` was really there, back when the deploy directory was a
+    // tracked staging root the build only partly overwrote. Vite empties
+    // `dist/` now, so nothing should survive a build — which is a reason to
+    // keep asserting it rather than to stop.
     fs.writeFileSync(path.join(dir, '.DS_Store'), 'junk');
 
     const { status, output } = check(dir);
@@ -108,12 +118,13 @@ describe('bin/check-deploy-dir.sh', () => {
     expect(status).not.toBe(0);
   });
 
-  it('refuses an entry under ui/ the inventory does not name', () => {
-    // #122's exact shape, minus the giveaway extension. A depth-1 inventory
-    // would not have seen it: the archives arrived one level down, inside the
-    // subtree the build legitimately writes.
-    fs.mkdirSync(path.join(dir, 'ui/proto-fixtures'));
-    fs.writeFileSync(path.join(dir, 'ui/proto-fixtures/simple.bin'), 'PK');
+  it('refuses a directory of payload inside the build output', () => {
+    // #122's exact shape, minus the giveaway extension: archives reaching the
+    // bundle through `ui/public/`, which vite copies verbatim. They landed a
+    // level down when the build was staged under `ui/`; they land here now, and
+    // the inventory follows the build output rather than a fixed depth.
+    fs.mkdirSync(path.join(dir, 'proto-fixtures'));
+    fs.writeFileSync(path.join(dir, 'proto-fixtures/simple.bin'), 'PK');
 
     const { status, output } = check(dir);
 
@@ -124,7 +135,7 @@ describe('bin/check-deploy-dir.sh', () => {
   it('refuses a total size over budget, though every file clears the per-file limit', () => {
     // The check that would have fired in #122. Six archives of ~5 MB each pass
     // a *per-file* 25 MiB ceiling with room to spare; only the total sees them.
-    for (const n of [1, 2, 3, 4, 5, 6]) sized(path.join(dir, `ui/assets/chunk-${n}.js`), 5 * 1024 * 1024);
+    for (const n of [1, 2, 3, 4, 5, 6]) sized(path.join(dir, `assets/chunk-${n}.js`), 5 * 1024 * 1024);
 
     const { status, output } = check(dir);
 
@@ -132,10 +143,40 @@ describe('bin/check-deploy-dir.sh', () => {
     expect(status).not.toBe(0);
   });
 
+  it('refuses a bundle whose _headers did not make it', () => {
+    // `_headers` used to be a tracked file in the staging directory, so it
+    // could not go missing without someone deleting it from git. It ships
+    // through the build now (`ui/public/`), which is one more way for it to be
+    // absent — and the inventory above is a list of what *may* appear, so a
+    // bundle without it passed every other check here.
+    //
+    // Worth a check of its own because losing it is the quietest failure in
+    // this repo: no error, no warning, the app works, and ORT drops to a single
+    // WASM thread for ~1.5x on every inference (#15).
+    fs.rmSync(path.join(dir, '_headers'));
+
+    const { status, output } = check(dir);
+
+    expect(output).toContain('_headers');
+    expect(status).not.toBe(0);
+  });
+
+  it('refuses a bundle whose _headers no longer isolates', () => {
+    // Present but not doing its job is the same outage as absent. The rule's
+    // *content* is pinned in `ortAssets.test.ts` against the source file; this
+    // is the copy that actually ships.
+    fs.writeFileSync(path.join(dir, '_headers'), '/*\n  X-Frame-Options: DENY\n');
+
+    const { status, output } = check(dir);
+
+    expect(output).toContain('_headers');
+    expect(status).not.toBe(0);
+  });
+
   it('still refuses a bundle missing the ORT binary', () => {
     // Pre-existing guard, kept: the app cannot run without it and it can no
     // longer be fetched from a CDN under COEP: require-corp (#15).
-    fs.rmSync(path.join(dir, 'ui/ort', ORT_WASM_BINARY));
+    fs.rmSync(path.join(dir, 'ort', ORT_WASM_BINARY));
 
     const { status, output } = check(dir);
 
@@ -146,7 +187,7 @@ describe('bin/check-deploy-dir.sh', () => {
   it('still refuses a single file over Cloudflare\'s 25 MiB limit', () => {
     // Pre-existing guard, kept. Cloudflare rejects the upload; failing here
     // says so in one line instead of partway through a push.
-    sized(path.join(dir, 'ui/assets/huge.js'), 26 * 1024 * 1024);
+    sized(path.join(dir, 'assets/huge.js'), 26 * 1024 * 1024);
 
     const { status, output } = check(dir);
 
@@ -161,13 +202,13 @@ describe('bin/check-deploy-dir.sh', () => {
     // however many bytes went unread. Measured at 200 KB before the fix — the
     // one gate here that failed open, in a guard whose whole point is the
     // opposite. An unreadable file is not a bundle anyone should publish.
-    sized(path.join(dir, 'ui/assets/unreadable.js'), 200 * 1024);
-    fs.chmodSync(path.join(dir, 'ui/assets/unreadable.js'), 0o000);
+    sized(path.join(dir, 'assets/unreadable.js'), 200 * 1024);
+    fs.chmodSync(path.join(dir, 'assets/unreadable.js'), 0o000);
 
     expect(check(dir).status).not.toBe(0);
 
     // So `afterEach` can remove it.
-    fs.chmodSync(path.join(dir, 'ui/assets/unreadable.js'), 0o644);
+    fs.chmodSync(path.join(dir, 'assets/unreadable.js'), 0o644);
   });
 
   it('refuses a directory that does not exist', () => {
@@ -187,6 +228,16 @@ describe('bin/deploy.sh', () => {
 
     expect(guardLine).toBeGreaterThan(-1);
     expect(deployLine).toBeGreaterThan(guardLine);
+  });
+
+  it('uploads the build output itself, with no staging copy in between', () => {
+    // The staging directory existed to hold a landing page beside the build.
+    // With the app on its own origin there is nothing to stage, and a copy step
+    // reintroduced here would be a second place for unaccounted files to sit —
+    // exactly what the guard above exists to catch, one level removed from the
+    // build that vite empties.
+    expect(source).toMatch(/^DEPLOY_DIR="ui\/dist"$/m);
+    expect(source).not.toContain('rsync');
   });
 
   it('leaves the checks to the guard rather than keeping a second copy', () => {

@@ -34,8 +34,8 @@ function configureRuntime(): void {
   // literal rather than through a constant because `tests/ortAssets.test.ts`
   // reads this assignment as source text — it is the link between the copy
   // target and the fetch, and neither the typechecker nor the build can see it.
-  // Absolute under `base: '/ui/'`, like `/ui/shoelace` and the model URL.
-  ort.env.wasm.wasmPaths = '/ui/ort/';
+  // Absolute under `base: '/'`, like `/shoelace` and the model URL.
+  ort.env.wasm.wasmPaths = '/ort/';
 
   // Losing isolation costs ~1.5x and breaks nothing visibly — ORT just drops to
   // a single WASM thread. Say it, since nothing else can: there is no error, no

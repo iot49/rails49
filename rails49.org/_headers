@@ -1,9 +1,0 @@
-# Cross-origin isolation for the labeling app, so onnxruntime-web can use more
-# than one WASM thread (issue #15). Everything /ui/ loads — the ORT runtime, the
-# model, Shoelace's assets — is same-origin, which is what require-corp needs.
-#
-# Scoped to /ui/ on purpose: the landing page at / pulls Google Fonts
-# cross-origin and needs no isolation, so a rule on /* would break it.
-/ui/*
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Embedder-Policy: require-corp

@@ -30,7 +30,7 @@ describe('the shipped model', () => {
   });
 
   it('is fetched from the directory it is copied into, under the app base', () => {
-    expect(DETECTOR_MODEL_URL).toBe(`/ui/${detectorCopyTarget.dest}/${DETECTOR_MODEL_FILE}`);
+    expect(DETECTOR_MODEL_URL).toBe(`/${detectorCopyTarget.dest}/${DETECTOR_MODEL_FILE}`);
   });
 
   it('is the quantized artifact, not the fp32 one', () => {

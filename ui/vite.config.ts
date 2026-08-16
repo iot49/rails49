@@ -38,14 +38,14 @@ const dropUnfetchableOrtWasm = {
  *
  * **Deliberately not under `publicDir`** (#122). It lived in `ui/public/` and
  * that directory means one thing — copied verbatim into `dist/`, and from there
- * `rsync`ed to production by `bin/deploy.sh`. Vite dereferences the symlink on
+ * uploaded to production by `bin/deploy.sh`. Vite dereferences the symlink on
  * the way, so ~21 MB of `.r49` archives arrived at rails49.org as ordinary
  * files, under every per-file size check and indistinguishable from bundle
  * output. Gitignoring it (#108) stopped git from carrying it and did nothing
  * about the build, which reads the working tree.
  */
 const PROTO_FIXTURES_DIR = 'proto-fixtures';
-const PROTO_FIXTURES_ROUTE = '/ui/proto-fixtures';
+const PROTO_FIXTURES_ROUTE = '/proto-fixtures';
 
 /**
  * Serve those fixtures in `pnpm dev`, and only there.
@@ -82,7 +82,7 @@ const serveProtoFixtures = {
 const includeModels = fs.existsSync(path.resolve(__dirname, DETECTOR_MODEL_DIR));
 
 const config: VitestConfig = {
-  base: '/ui/',
+  base: '/',
   plugins: [
     viteStaticCopy({
       targets: [

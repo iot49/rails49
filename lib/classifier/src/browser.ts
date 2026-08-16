@@ -8,8 +8,9 @@ import { BaseClassifier, type ClassifierConfig } from './base.ts';
 /**
  * Where the ORT runtime is served from is the **app's** to say — it depends on
  * the app's base path, which a library cannot know. This module used to guess
- * `/ort/`, which is a 404 under `ui`'s `/ui/` base and survived only because
- * the app overwrote it before the first session.
+ * `/ort/` — right for `ui` today by coincidence of its base, wrong the moment
+ * any app mounts under a prefix, and it survived only because the app
+ * overwrote it before the first session.
  *
  * There is no safe default left to fall back to: `ui` deletes the copy ORT
  * would otherwise resolve from `import.meta.url` (see `ui/ortAssets.ts`), so an
